@@ -1,0 +1,398 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  engineType = "library"
+}
+
+enum SessionStatus {
+  CREATED
+  ACTIVE
+  EXPIRED
+  INVALIDATED
+  REVOKED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+  FAILED
+}
+
+enum UserStatus {
+  NEW
+  PENDING_ACTIVATION
+  INVITED
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+}
+
+model Tenant {
+  id                String @id @default(uuid()) @db.Uuid
+  name              String
+  subscriptionPlanId String?
+  isActive          Boolean @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  roles              Role[]
+  permissions        Permission[]
+  users              User[]
+  userInvitations    UserInvitation[]
+  sessions           Session[]
+
+  @@index([deletedAt])
+}
+
+model Role {
+  id        String @id @default(uuid()) @db.Uuid
+  tenantId  String @db.Uuid
+  name      String
+  description String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+  userInvitations UserInvitation[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([deletedAt])
+}
+
+model Permission {
+  id        String @id @default(uuid()) @db.Uuid
+  tenantId  String @db.Uuid
+  resource  String
+  action    String
+  description String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  rolePermissions RolePermission[]
+
+  @@unique([tenantId, resource, action])
+  @@index([tenantId])
+  @@index([deletedAt])
+}
+
+model RolePermission {
+  id           String @id @default(uuid()) @db.Uuid
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+  createdAt    DateTime @default(now())
+  deletedAt    DateTime?
+
+  role       Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+model User {
+  id                String @id @default(uuid()) @db.Uuid
+  tenantId          String @db.Uuid
+  email             String
+  password          String
+  status            UserStatus @default(NEW)
+  suspendedAt       DateTime?
+  suspensionReason  String?
+  terminatedAt      DateTime?
+  terminationReason String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  sessions        Session[]
+  userRoles       UserRole[]
+  assignedRoles   UserRole[] @relation("AssignedBy")
+  invitedUsers    UserInvitation[] @relation("InvitedBy")
+  acceptedInvitations UserInvitation[] @relation("AcceptedBy")
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model UserRole {
+  id          String @id @default(uuid()) @db.Uuid
+  userId      String @db.Uuid
+  roleId      String @db.Uuid
+  invitationId String? @db.Uuid
+  assignedAt  DateTime @default(now())
+  assignedBy  String? @db.Uuid
+  createdAt   DateTime @default(now())
+  deletedAt   DateTime?
+
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedByUser User? @relation("AssignedBy", fields: [assignedBy], references: [id], onDelete: SetNull)
+
+  @@unique([userId, roleId])
+  @@unique([userId, invitationId])
+  @@index([userId])
+  @@index([roleId])
+  @@index([deletedAt])
+}
+
+model UserInvitation {
+  id          String @id @default(uuid()) @db.Uuid
+  tenantId    String @db.Uuid
+  email       String
+  status      InvitationStatus @default(PENDING)
+  roleId      String @db.Uuid
+  token       String @unique
+  expiresAt   DateTime
+  invitedBy   String @db.Uuid
+  acceptedBy  String? @db.Uuid
+  acceptedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  role        Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  inviter     User @relation("InvitedBy", fields: [invitedBy], references: [id], onDelete: Restrict)
+  acceptor    User? @relation("AcceptedBy", fields: [acceptedBy], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([status])
+  @@index([token])
+  @@index([deletedAt])
+}
+
+model Session {
+  id               String @id @default(uuid()) @db.Uuid
+  tenantId         String @db.Uuid
+  userId           String @db.Uuid
+  status           SessionStatus @default(CREATED)
+  refreshTokenHash String
+  expiresAt        DateTime
+  lastActivityAt   DateTime?
+  revokedAt        DateTime?
+  invalidatedAt    DateTime?
+  expiredAt        DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  deletedAt        DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([deletedAt])
+  @@index([tenantId, userId, status])
+}
+
+model AuditLog {
+  id              String @id @default(uuid()) @db.Uuid
+  tenantId        String @db.Uuid
+  eventType       String
+  entityType      String
+  entityId        String
+  actorUserId     String? @db.Uuid
+  actorIp         String?
+  actorUserAgent  String?
+  operation       String
+  payload         Json
+  previousHash    String? @db.Char(64)
+  currentHash     String @db.Char(64)
+  createdAt       DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([entityType, entityId])
+  @@index([currentHash])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// S2 CRM DOMAIN
+// ═══════════════════════════════════════════════════════════════════
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  DISQUALIFIED
+  CONVERTED
+}
+
+enum LeadSource {
+  WEBSITE
+  REFERRAL
+  COLD_CALL
+  EMAIL_CAMPAIGN
+  SOCIAL_MEDIA
+  TRADE_SHOW
+  OTHER
+}
+
+enum OpportunityStage {
+  PROSPECTING
+  QUALIFICATION
+  PROPOSAL
+  NEGOTIATION
+  CLOSED_WON
+  CLOSED_LOST
+}
+
+enum OpportunityCurrency {
+  INR
+  USD
+  EUR
+  GBP
+}
+
+enum ActivityType {
+  CALL
+  EMAIL
+  MEETING
+  NOTE
+  TASK
+}
+
+// ─── Lead ─────────────────────────────────────────────────────────
+// A prospect not yet converted to a contact/opportunity.
+model Lead {
+  id          String      @id @default(uuid()) @db.Uuid
+  tenantId    String      @db.Uuid
+  firstName   String
+  lastName    String
+  email       String?
+  phone       String?
+  company     String?
+  source      LeadSource  @default(OTHER)
+  status      LeadStatus  @default(NEW)
+  ownerId     String?     @db.Uuid
+  notes       String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  deletedAt   DateTime?
+
+  contacts      Contact[]
+  opportunities Opportunity[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, ownerId])
+  @@index([deletedAt])
+}
+
+// ─── Contact ──────────────────────────────────────────────────────
+// A known person at a company, optionally linked to a Lead.
+model Contact {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @db.Uuid
+  leadId      String?   @db.Uuid
+  firstName   String
+  lastName    String
+  email       String?
+  phone       String?
+  title       String?
+  company     String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  lead          Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  opportunities Opportunity[]
+
+  @@index([tenantId])
+  @@index([tenantId, leadId])
+  @@index([deletedAt])
+}
+
+// ─── Opportunity ──────────────────────────────────────────────────
+// A deal in progress — the core CRM entity with value + lifecycle.
+model Opportunity {
+  id                String              @id @default(uuid()) @db.Uuid
+  tenantId          String              @db.Uuid
+  leadId            String              @db.Uuid
+  contactId         String?             @db.Uuid
+  ownerId           String              @db.Uuid
+  title             String
+  value             Decimal             @db.Decimal(18, 2)
+  currency          OpportunityCurrency @default(INR)
+  stage             OpportunityStage    @default(PROSPECTING)
+  expectedCloseDate DateTime?
+  closedAt          DateTime?
+  lostReason        String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  deletedAt         DateTime?
+
+  lead       Lead        @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact    Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  activities Activity[]
+  pipeline   Pipeline[]
+
+  @@index([tenantId])
+  @@index([tenantId, stage])
+  @@index([tenantId, ownerId])
+  @@index([tenantId, expectedCloseDate])
+  @@index([deletedAt])
+}
+
+// ─── Activity ─────────────────────────────────────────────────────
+// A timestamped interaction event tied to an Opportunity.
+model Activity {
+  id             String       @id @default(uuid()) @db.Uuid
+  tenantId       String       @db.Uuid
+  opportunityId  String       @db.Uuid
+  userId         String       @db.Uuid
+  type           ActivityType
+  subject        String
+  notes          String?
+  scheduledAt    DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, opportunityId])
+  @@index([tenantId, userId])
+  @@index([tenantId, type])
+  @@index([deletedAt])
+}
+
+// ─── Pipeline ─────────────────────────────────────────────────────
+// Stage-transition log for an Opportunity (audit trail for deal velocity).
+model Pipeline {
+  id            String           @id @default(uuid()) @db.Uuid
+  tenantId      String           @db.Uuid
+  opportunityId String           @db.Uuid
+  stage         OpportunityStage
+  enteredAt     DateTime         @default(now())
+  exitedAt      DateTime?
+  durationDays  Int?
+  createdAt     DateTime         @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, opportunityId])
+  @@index([tenantId, stage])
+}
+
