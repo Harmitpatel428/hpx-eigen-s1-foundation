@@ -49,7 +49,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
         ? await contactService.listContactsByLead({ tenantId, userId }, leadId)
         : await contactService.listContacts({ tenantId, userId });
 
-      res.json({ contacts, total: contacts.length });
+      res.json({ data: contacts, total: contacts.length });
     } catch (err) {
       next(err);
     }

@@ -63,7 +63,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
         { stage, ownerId }
       );
 
-      res.json({ opportunities, total: opportunities.length });
+      res.json({ data: opportunities, total: opportunities.length });
     } catch (err) {
       next(err);
     }

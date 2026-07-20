@@ -68,7 +68,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
         activities = await activityService.listByUser({ tenantId, userId }, userId);
       }
 
-      res.json({ activities, total: activities.length });
+      res.json({ data: activities, total: activities.length });
     } catch (err) {
       next(err);
     }

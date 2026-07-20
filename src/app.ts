@@ -51,11 +51,11 @@ app.use('/api/roles', createRolesRouter(prisma));
 app.use('/api/sessions', createSessionsRouter(prisma));
 
 // ─── S2 CRM Domain Routers ────────────────────────────────────────────────────
-app.use('/api/leads', createLeadsRouter(prisma));
-app.use('/api/contacts', createContactsRouter(prisma));
-app.use('/api/opportunities', createOpportunitiesRouter(prisma));
-app.use('/api/activities', createActivitiesRouter(prisma));
-app.use('/api/pipeline', createPipelineRouter(prisma));
+app.use('/api/v1/leads', createLeadsRouter(prisma));
+app.use('/api/v1/contacts', createContactsRouter(prisma));
+app.use('/api/v1/opportunities', createOpportunitiesRouter(prisma));
+app.use('/api/v1/activities', createActivitiesRouter(prisma));
+app.use('/api/v1/analytics/pipeline', createPipelineRouter(prisma));
 
 // ─── Legacy Invitation Routes (backward compat) ───────────────────────────────
 // These paths existed in S1 and may be relied on by existing tests.

@@ -52,7 +52,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
       }
 
       const leads = await leadService.listLeads({ tenantId, userId }, { status, ownerId });
-      res.json({ leads, total: leads.length });
+      res.json({ data: leads, total: leads.length });
     } catch (err) {
       next(err);
     }
