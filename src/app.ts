@@ -45,10 +45,10 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 // ─── Domain Routers ───────────────────────────────────────────────────────────
-app.use('/api/auth', createAuthRouter(prisma));
-app.use('/api/users', createUsersRouter(prisma));
-app.use('/api/roles', createRolesRouter(prisma));
-app.use('/api/sessions', createSessionsRouter(prisma));
+app.use('/api/v1/auth', createAuthRouter(prisma));
+app.use('/api/v1/users', createUsersRouter(prisma));
+app.use('/api/v1/roles', createRolesRouter(prisma));
+app.use('/api/v1/sessions', createSessionsRouter(prisma));
 
 // ─── S2 CRM Domain Routers ────────────────────────────────────────────────────
 app.use('/api/v1/leads', createLeadsRouter(prisma));
