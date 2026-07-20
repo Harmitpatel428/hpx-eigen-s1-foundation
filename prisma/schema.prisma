@@ -412,9 +412,9 @@ enum InvoiceStatus {
 enum PaymentMethod {
   CREDIT_CARD
   BANK_TRANSFER
+  UPI
+  CHEQUE
   CASH
-  CHECK
-  OTHER
 }
 
 // ─── Invoice ──────────────────────────────────────────────────────
@@ -444,7 +444,7 @@ model Payment {
   tenantId      String        @db.Uuid
   invoiceId     String        @db.Uuid
   amount        Decimal       @db.Decimal(18, 2)
-  method        PaymentMethod @default(OTHER)
+  method        PaymentMethod @default(CASH)
   paidAt        DateTime?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt

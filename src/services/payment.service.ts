@@ -30,7 +30,7 @@ export class PaymentService {
         tenantId,
         invoiceId: data.invoiceId,
         amount: data.amount,
-        method: data.method || PaymentMethod.OTHER,
+        method: data.method || PaymentMethod.CASH,
         paidAt: data.paidAt || new Date()
       }
     });
