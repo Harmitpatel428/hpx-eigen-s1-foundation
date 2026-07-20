@@ -344,6 +344,7 @@ model Opportunity {
   contact    Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
   activities Activity[]
   pipeline   Pipeline[]
+  invoices   Invoice[]
 
   @@index([tenantId])
   @@index([tenantId, stage])
@@ -396,3 +397,62 @@ model Pipeline {
   @@index([tenantId, stage])
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// S3 FINANCE DOMAIN
+// ═══════════════════════════════════════════════════════════════════
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CREDIT_CARD
+  BANK_TRANSFER
+  CASH
+  CHECK
+  OTHER
+}
+
+// ─── Invoice ──────────────────────────────────────────────────────
+model Invoice {
+  id            String        @id @default(uuid()) @db.Uuid
+  tenantId      String        @db.Uuid
+  opportunityId String        @db.Uuid
+  amount        Decimal       @db.Decimal(18, 2)
+  status        InvoiceStatus @default(DRAFT)
+  dueDate       DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+
+  opportunity   Opportunity   @relation(fields: [opportunityId], references: [id], onDelete: Restrict)
+  payments      Payment[]
+
+  @@index([tenantId])
+  @@index([tenantId, opportunityId])
+  @@index([tenantId, status])
+  @@index([deletedAt])
+}
+
+// ─── Payment ──────────────────────────────────────────────────────
+model Payment {
+  id            String        @id @default(uuid()) @db.Uuid
+  tenantId      String        @db.Uuid
+  invoiceId     String        @db.Uuid
+  amount        Decimal       @db.Decimal(18, 2)
+  method        PaymentMethod @default(OTHER)
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+
+  invoice       Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, invoiceId])
+  @@index([deletedAt])
+}

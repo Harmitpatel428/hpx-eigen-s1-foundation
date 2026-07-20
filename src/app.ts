@@ -16,6 +16,10 @@ import { createOpportunitiesRouter } from './routes/opportunities.router';
 import { createActivitiesRouter } from './routes/activities.router';
 import { createPipelineRouter } from './routes/pipeline.router';
 
+// ─── Route Factories (S3 Finance Domain) ───────────────────────────────────────
+import { createInvoicesRouter } from './routes/invoices.router';
+import { createPaymentsRouter } from './routes/payments.router';
+
 // ─── Invitation Routes (legacy paths — kept for backward compat) ──────────────
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
 import { InvitationService } from './services/invitation.service';
@@ -56,6 +60,10 @@ app.use('/api/v1/contacts', createContactsRouter(prisma));
 app.use('/api/v1/opportunities', createOpportunitiesRouter(prisma));
 app.use('/api/v1/activities', createActivitiesRouter(prisma));
 app.use('/api/v1/analytics/pipeline', createPipelineRouter(prisma));
+
+// ─── S3 Finance Domain Routers ────────────────────────────────────────────────
+app.use('/api/v1/invoices', createInvoicesRouter(prisma));
+app.use('/api/v1/payments', createPaymentsRouter(prisma));
 
 // ─── Legacy Invitation Routes (backward compat) ───────────────────────────────
 // These paths existed in S1 and may be relied on by existing tests.
