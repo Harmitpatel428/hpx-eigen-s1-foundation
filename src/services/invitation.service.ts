@@ -1,6 +1,7 @@
 import { PrismaClient, InvitationStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { AuditService } from './audit.service';
+import { EmailService } from './email.service';
 import {
   ResourceNotFoundError,
   DuplicateResourceError,
@@ -11,9 +12,11 @@ const INVITATION_EXPIRY_DAYS = 7;
 
 export class InvitationService {
   private readonly auditService: AuditService;
+  private readonly emailService: EmailService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.auditService = new AuditService(prisma);
+    this.emailService = new EmailService();
   }
 
   /**
@@ -54,6 +57,9 @@ export class InvitationService {
       operation: 'CREATE',
       payload: { email, roleId }
     });
+
+    // Send email
+    await this.emailService.sendInvitationEmail(email, token);
 
     return invitation;
   }
