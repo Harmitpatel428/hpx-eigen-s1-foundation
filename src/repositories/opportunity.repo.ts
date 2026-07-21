@@ -9,6 +9,8 @@ export interface CreateOpportunityInput {
   title: string;
   value: number | string;
   currency?: OpportunityCurrency;
+  opportunityTypeId?: string;
+  customOpportunityType?: string;
   expectedCloseDate?: Date;
 }
 
@@ -18,6 +20,8 @@ export interface UpdateOpportunityInput {
   title?: string;
   value?: number | string;
   currency?: OpportunityCurrency;
+  opportunityTypeId?: string;
+  customOpportunityType?: string;
   expectedCloseDate?: Date;
 }
 
@@ -37,6 +41,8 @@ export class OpportunityRepository extends BaseRepository {
         title: input.title,
         value: new Prisma.Decimal(input.value),
         currency: input.currency ?? OpportunityCurrency.INR,
+        opportunityTypeId: input.opportunityTypeId ?? null,
+        customOpportunityType: input.customOpportunityType ?? null,
         stage: OpportunityStage.PROSPECTING,
         expectedCloseDate: input.expectedCloseDate ?? null
       }
@@ -52,7 +58,8 @@ export class OpportunityRepository extends BaseRepository {
       },
       include: {
         lead: { select: { id: true, firstName: true, lastName: true, company: true } },
-        contact: { select: { id: true, firstName: true, lastName: true } }
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        opportunityType: { select: { id: true, name: true, isDefault: true } }
       }
     });
     if (!opp) throw new ResourceNotFoundError();
@@ -67,6 +74,9 @@ export class OpportunityRepository extends BaseRepository {
         ...(options?.stage ? { stage: options.stage } : {}),
         ...(options?.ownerId ? { ownerId: options.ownerId } : {})
       },
+      include: {
+        opportunityType: { select: { id: true, name: true, isDefault: true } }
+      },
       orderBy: { createdAt: 'desc' }
     });
   }
@@ -78,6 +88,9 @@ export class OpportunityRepository extends BaseRepository {
         ...this.buildTenantFilter(),
         stage
       },
+      include: {
+        opportunityType: { select: { id: true, name: true, isDefault: true } }
+      },
       orderBy: { expectedCloseDate: 'asc' }
     });
   }
@@ -88,6 +101,9 @@ export class OpportunityRepository extends BaseRepository {
       where: {
         ...this.buildTenantFilter(),
         ownerId
+      },
+      include: {
+        opportunityType: { select: { id: true, name: true, isDefault: true } }
       },
       orderBy: { createdAt: 'desc' }
     });
@@ -105,6 +121,8 @@ export class OpportunityRepository extends BaseRepository {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.value !== undefined ? { value: new Prisma.Decimal(input.value) } : {}),
         ...(input.currency !== undefined ? { currency: input.currency } : {}),
+        ...(input.opportunityTypeId !== undefined ? { opportunityTypeId: input.opportunityTypeId } : {}),
+        ...(input.customOpportunityType !== undefined ? { customOpportunityType: input.customOpportunityType } : {}),
         ...(input.expectedCloseDate !== undefined ? { expectedCloseDate: input.expectedCloseDate } : {})
       }
     });

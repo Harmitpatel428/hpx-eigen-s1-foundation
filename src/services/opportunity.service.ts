@@ -36,6 +36,21 @@ export class OpportunityService {
       throw new ValidationError('value must be a non-negative number.');
     }
 
+    if (input.opportunityTypeId) {
+      const type = await this.prisma.opportunityType.findFirst({
+        where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: null }
+      });
+      if (!type) {
+        throw new ValidationError('Selected opportunity type is invalid.');
+      }
+      if (type.isDefault && type.name === 'Other' && !input.customOpportunityType?.trim()) {
+        throw new ValidationError('Please specify a custom opportunity type.');
+      }
+      if ((!type.isDefault || type.name !== 'Other') && input.customOpportunityType) {
+        input.customOpportunityType = undefined; // clear it if not 'Other'
+      }
+    }
+
     const repos = this.makeRepos(ctx);
 
     // Create opportunity and open its first pipeline stage atomically
@@ -105,6 +120,21 @@ export class OpportunityService {
 
   /** Update opportunity metadata (title, value, dates, owner) */
   async updateOpportunity(ctx: TenantContext, opportunityId: string, input: UpdateOpportunityInput) {
+    if (input.opportunityTypeId) {
+      const type = await this.prisma.opportunityType.findFirst({
+        where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: null }
+      });
+      if (!type) {
+        throw new ValidationError('Selected opportunity type is invalid.');
+      }
+      if (type.isDefault && type.name === 'Other' && !input.customOpportunityType?.trim()) {
+        throw new ValidationError('Please specify a custom opportunity type.');
+      }
+      if ((!type.isDefault || type.name !== 'Other') && input.customOpportunityType) {
+        input.customOpportunityType = undefined; // clear it if not 'Other'
+      }
+    }
+    
     const repos = this.makeRepos(ctx);
     const opportunity = await repos.opportunity.update(opportunityId, input);
 

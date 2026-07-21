@@ -47,6 +47,7 @@ model Tenant {
   users              User[]
   userInvitations    UserInvitation[]
   sessions           Session[]
+  opportunityTypes   OpportunityType[]
 
   @@index([deletedAt])
 }
@@ -321,34 +322,59 @@ model Contact {
   @@index([deletedAt])
 }
 
+// ─── OpportunityType ──────────────────────────────────────────────
+// A customizable dictionary of opportunity types for a given tenant.
+model OpportunityType {
+  id           String      @id @default(uuid()) @db.Uuid
+  tenantId     String      @db.Uuid
+  name         String
+  displayOrder Int         @default(0)
+  isActive     Boolean     @default(true)
+  isDefault    Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  deletedAt    DateTime?
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  opportunities Opportunity[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([deletedAt])
+}
+
 // ─── Opportunity ──────────────────────────────────────────────────
 // A deal in progress — the core CRM entity with value + lifecycle.
 model Opportunity {
-  id                String              @id @default(uuid()) @db.Uuid
-  tenantId          String              @db.Uuid
-  leadId            String              @db.Uuid
-  contactId         String?             @db.Uuid
-  ownerId           String              @db.Uuid
-  title             String
-  value             Decimal             @db.Decimal(18, 2)
-  currency          OpportunityCurrency @default(INR)
-  stage             OpportunityStage    @default(PROSPECTING)
-  expectedCloseDate DateTime?
-  closedAt          DateTime?
-  lostReason        String?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  deletedAt         DateTime?
+  id                    String              @id @default(uuid()) @db.Uuid
+  tenantId              String              @db.Uuid
+  leadId                String              @db.Uuid
+  contactId             String?             @db.Uuid
+  ownerId               String              @db.Uuid
+  opportunityTypeId     String?             @db.Uuid
+  customOpportunityType String?
+  title                 String
+  value                 Decimal             @db.Decimal(18, 2)
+  currency              OpportunityCurrency @default(INR)
+  stage                 OpportunityStage    @default(PROSPECTING)
+  expectedCloseDate     DateTime?
+  closedAt              DateTime?
+  lostReason            String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  deletedAt             DateTime?
 
-  lead       Lead        @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  contact    Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  activities Activity[]
-  pipeline   Pipeline[]
-  invoices   Invoice[]
+  lead            Lead             @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact         Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  opportunityType OpportunityType? @relation(fields: [opportunityTypeId], references: [id], onDelete: Restrict)
+  activities      Activity[]
+  pipeline        Pipeline[]
+  invoices        Invoice[]
 
   @@index([tenantId])
   @@index([tenantId, stage])
   @@index([tenantId, ownerId])
+  @@index([tenantId, opportunityTypeId])
   @@index([tenantId, expectedCloseDate])
   @@index([deletedAt])
 }

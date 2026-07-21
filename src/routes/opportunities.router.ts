@@ -20,6 +20,8 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
         title: string;
         value: number | string;
         currency?: OpportunityCurrency;
+        opportunityTypeId?: string;
+        customOpportunityType?: string;
         expectedCloseDate?: string;
       };
 
@@ -36,6 +38,8 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
           title,
           value,
           currency,
+          opportunityTypeId: req.body.opportunityTypeId,
+          customOpportunityType: req.body.customOpportunityType,
           expectedCloseDate: expectedCloseDate ? new Date(expectedCloseDate) : undefined
         }
       );
@@ -95,6 +99,8 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
         title?: string;
         value?: number | string;
         currency?: OpportunityCurrency;
+        opportunityTypeId?: string;
+        customOpportunityType?: string;
         expectedCloseDate?: string;
       };
 
@@ -107,6 +113,8 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
           title,
           value,
           currency,
+          opportunityTypeId: req.body.opportunityTypeId,
+          customOpportunityType: req.body.customOpportunityType,
           expectedCloseDate: expectedCloseDate ? new Date(expectedCloseDate) : undefined
         }
       );
