@@ -75,7 +75,9 @@ export class OpportunityRepository extends BaseRepository {
         ...(options?.ownerId ? { ownerId: options.ownerId } : {})
       },
       include: {
-        opportunityType: { select: { id: true, name: true, isDefault: true } }
+        opportunityType: { select: { id: true, name: true, isDefault: true } },
+        lead: { select: { id: true, firstName: true, lastName: true, company: true, email: true, phone: true } },
+        contact: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } }
       },
       orderBy: { createdAt: 'desc' }
     });
