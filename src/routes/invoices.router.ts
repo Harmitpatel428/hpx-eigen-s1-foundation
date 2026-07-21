@@ -13,7 +13,12 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   // ─── GET /api/v1/invoices ───────────────────────────────────────────
   router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const user = (req as AuthenticatedRequest).user;
+      if (!user || !user.tenantId) {
+        res.status(401).json({ message: 'Tenant ID missing from token' });
+        return;
+      }
+      const { userId, tenantId } = user;
       const status = req.query.status as InvoiceStatus | undefined;
       const opportunityId = req.query.opportunityId as string | undefined;
 
@@ -27,8 +32,9 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
       );
 
       res.json({ data: invoices, total: invoices.length });
-    } catch (err) {
-      next(err);
+    } catch (err: any) {
+      console.error('Error fetching invoices:', err);
+      res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
   });
 
