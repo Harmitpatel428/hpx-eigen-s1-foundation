@@ -69,6 +69,11 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
         throw new ValidationError('opportunityId and amount are required.');
       }
 
+      const isUUID = (str: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+      if (!isUUID(opportunityId)) {
+        throw new ValidationError('opportunityId must be a valid UUID.');
+      }
+
       const numericAmount = typeof amount === 'string' ? parseFloat(amount.replace(/,/g, '')) : amount;
       if (isNaN(numericAmount)) {
         throw new ValidationError('Amount must be a valid number.');
