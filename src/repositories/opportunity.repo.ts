@@ -70,16 +70,10 @@ export class OpportunityRepository extends BaseRepository {
   async findAll(options?: { stage?: OpportunityStage; ownerId?: string }) {
     return this.prisma.opportunity.findMany({
       where: {
-        ...this.buildTenantFilter(),
-        ...(options?.stage ? { stage: options.stage } : {}),
-        ...(options?.ownerId ? { ownerId: options.ownerId } : {})
+        tenantId: this.ctx.tenantId,
+        deletedAt: null
       },
-      include: {
-        opportunityType: { select: { id: true, name: true, isDefault: true } },
-        lead: { select: { id: true, firstName: true, lastName: true, company: true, email: true, phone: true } },
-        contact: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } }
-      },
-      orderBy: { createdAt: 'desc' }
+      include: { lead: true, contact: true }
     });
   }
 

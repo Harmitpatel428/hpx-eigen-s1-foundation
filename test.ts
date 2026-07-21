@@ -1,0 +1,1 @@
+import { PrismaClient } from '@prisma/client'; const prisma = new PrismaClient(); Promise.all([prisma.opportunity.count(), prisma.lead.count(), prisma.contact.count(), prisma.invoice.count()]).then(console.log).finally(() => prisma.$disconnect());
