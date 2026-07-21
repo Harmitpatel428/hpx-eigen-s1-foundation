@@ -52,7 +52,12 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   // ─── POST /api/v1/invoices ──────────────────────────────────────────
   router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const user = (req as AuthenticatedRequest).user;
+      if (!user || !user.tenantId) {
+        res.status(401).json({ message: 'Tenant ID missing from token' });
+        return;
+      }
+      const { userId, tenantId } = user;
       const { opportunityId, amount, status, dueDate } = req.body as {
         opportunityId: string;
         amount: number | string;
@@ -64,19 +69,30 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
         throw new ValidationError('opportunityId and amount are required.');
       }
 
+      const numericAmount = typeof amount === 'string' ? parseFloat(amount.replace(/,/g, '')) : amount;
+      if (isNaN(numericAmount)) {
+        throw new ValidationError('Amount must be a valid number.');
+      }
+      
+      const parsedDueDate = dueDate ? new Date(dueDate) : undefined;
+      if (parsedDueDate && isNaN(parsedDueDate.getTime())) {
+        throw new ValidationError('Invalid dueDate format.');
+      }
+
       const invoice = await invoiceService.createInvoice(
         { tenantId, userId },
         {
           opportunityId,
-          amount,
+          amount: numericAmount,
           status,
-          dueDate: dueDate ? new Date(dueDate) : undefined
+          dueDate: parsedDueDate
         }
       );
 
       res.status(201).json(invoice);
-    } catch (err) {
-      next(err);
+    } catch (err: any) {
+      console.error('Error creating invoice:', err);
+      res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
   });
 

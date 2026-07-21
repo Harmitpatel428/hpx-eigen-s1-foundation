@@ -52,7 +52,12 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   // ─── POST /api/v1/payments ──────────────────────────────────────────
   router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const user = (req as AuthenticatedRequest).user;
+      if (!user || !user.tenantId) {
+        res.status(401).json({ message: 'Tenant ID missing from token' });
+        return;
+      }
+      const { userId, tenantId } = user;
       const { invoiceId, amount, method, paidAt } = req.body as {
         invoiceId: string;
         amount: number | string;
@@ -64,19 +69,30 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
         throw new ValidationError('invoiceId and amount are required.');
       }
 
+      const numericAmount = typeof amount === 'string' ? parseFloat(amount.replace(/,/g, '')) : amount;
+      if (isNaN(numericAmount)) {
+        throw new ValidationError('Amount must be a valid number.');
+      }
+      
+      const parsedPaidAt = paidAt ? new Date(paidAt) : undefined;
+      if (parsedPaidAt && isNaN(parsedPaidAt.getTime())) {
+        throw new ValidationError('Invalid paidAt format.');
+      }
+
       const payment = await paymentService.createPayment(
         { tenantId, userId },
         {
           invoiceId,
-          amount,
+          amount: numericAmount,
           method,
-          paidAt: paidAt ? new Date(paidAt) : undefined
+          paidAt: parsedPaidAt
         }
       );
 
       res.status(201).json(payment);
-    } catch (err) {
-      next(err);
+    } catch (err: any) {
+      console.error('Error creating payment:', err);
+      res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
   });
 
