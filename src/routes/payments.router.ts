@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient, PaymentMethod } from '@prisma/client';
+import { PrismaClient, PaymentMethod, PaymentStatus } from '@prisma/client';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { PaymentService } from '../services/payment.service';
 import { ValidationError } from '../types/exceptions';
@@ -58,12 +58,10 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
         return;
       }
       const { userId, tenantId } = user;
-      const { invoiceId, amount, method, paidAt } = req.body as {
-        invoiceId: string;
-        amount: number | string;
-        method?: PaymentMethod;
-        paidAt?: string;
-      };
+      const {
+        invoiceId, amount, method, referenceNumber, bankName,
+        chequeNumber, status, receivedBy, notes, attachmentUrl, paidAt
+      } = req.body;
 
       if (!invoiceId || amount === undefined) {
         throw new ValidationError('invoiceId and amount are required.');
@@ -90,6 +88,13 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
           invoiceId,
           amount: numericAmount,
           method,
+          referenceNumber,
+          bankName,
+          chequeNumber,
+          status,
+          receivedBy,
+          notes,
+          attachmentUrl,
           paidAt: parsedPaidAt
         }
       );
@@ -98,6 +103,45 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
     } catch (err: any) {
       console.error('Error creating payment:', err);
       res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+  });
+
+  // ─── PATCH /api/v1/payments/:id ─────────────────────────────────────
+  router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const {
+        amount, method, referenceNumber, bankName, chequeNumber,
+        status, receivedBy, notes, attachmentUrl, paidAt
+      } = req.body;
+
+      if (method && !Object.values(PaymentMethod).includes(method)) {
+        throw new ValidationError(`method must be one of: ${Object.values(PaymentMethod).join(', ')}`);
+      }
+      if (status && !Object.values(PaymentStatus).includes(status)) {
+        throw new ValidationError(`status must be one of: ${Object.values(PaymentStatus).join(', ')}`);
+      }
+
+      const payment = await paymentService.updatePayment(
+        { tenantId, userId },
+        req.params.id,
+        {
+          amount,
+          method,
+          referenceNumber,
+          bankName,
+          chequeNumber,
+          status,
+          receivedBy,
+          notes,
+          attachmentUrl,
+          paidAt: paidAt ? new Date(paidAt) : undefined
+        }
+      );
+
+      res.json(payment);
+    } catch (err) {
+      next(err);
     }
   });
 

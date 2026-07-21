@@ -430,6 +430,7 @@ model Pipeline {
 enum InvoiceStatus {
   DRAFT
   SENT
+  PARTIALLY_PAID
   PAID
   OVERDUE
   CANCELLED
@@ -441,6 +442,18 @@ enum PaymentMethod {
   UPI
   CHEQUE
   CASH
+  NEFT
+  RTGS
+  IMPS
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  RECEIVED
+  FAILED
+  REFUNDED
+  CANCELLED
 }
 
 // ─── Invoice ──────────────────────────────────────────────────────
@@ -448,7 +461,19 @@ model Invoice {
   id            String        @id @default(uuid()) @db.Uuid
   tenantId      String        @db.Uuid
   opportunityId String        @db.Uuid
+  invoiceNumber String?
+  invoiceDate   DateTime      @default(now())
   amount        Decimal       @db.Decimal(18, 2)
+  taxPercentage Decimal?      @default(0) @db.Decimal(5, 2)
+  discount      Decimal?      @default(0) @db.Decimal(18, 2)
+  otherCharges  Decimal?      @default(0) @db.Decimal(18, 2)
+  taxAmount     Decimal?      @default(0) @db.Decimal(18, 2)
+  totalAmount   Decimal       @db.Decimal(18, 2)
+  paymentTerms  String?
+  internalNotes String?
+  invoiceNotes  String?
+  termsConditions String?
+  attachments   String[]      @default([])
   status        InvoiceStatus @default(DRAFT)
   dueDate       DateTime?
   createdAt     DateTime      @default(now())
@@ -469,9 +494,16 @@ model Payment {
   id            String        @id @default(uuid()) @db.Uuid
   tenantId      String        @db.Uuid
   invoiceId     String        @db.Uuid
-  amount        Decimal       @db.Decimal(18, 2)
-  method        PaymentMethod @default(CASH)
-  paidAt        DateTime?
+  amount          Decimal       @db.Decimal(18, 2)
+  method          PaymentMethod @default(CASH)
+  referenceNumber String?
+  bankName        String?
+  chequeNumber    String?
+  status          PaymentStatus @default(PENDING)
+  receivedBy      String?
+  notes           String?
+  attachmentUrl   String?
+  paidAt          DateTime?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
   deletedAt     DateTime?

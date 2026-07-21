@@ -58,12 +58,10 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
         return;
       }
       const { userId, tenantId } = user;
-      const { opportunityId, amount, status, dueDate } = req.body as {
-        opportunityId: string;
-        amount: number | string;
-        status?: InvoiceStatus;
-        dueDate?: string;
-      };
+      const {
+        opportunityId, invoiceNumber, invoiceDate, amount, taxPercentage, discount, otherCharges,
+        paymentTerms, internalNotes, invoiceNotes, termsConditions, attachments, status, dueDate
+      } = req.body;
 
       if (!opportunityId || amount === undefined) {
         throw new ValidationError('opportunityId and amount are required.');
@@ -88,7 +86,17 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
         { tenantId, userId },
         {
           opportunityId,
+          invoiceNumber,
+          invoiceDate: invoiceDate ? new Date(invoiceDate) : undefined,
           amount: numericAmount,
+          taxPercentage,
+          discount,
+          otherCharges,
+          paymentTerms,
+          internalNotes,
+          invoiceNotes,
+          termsConditions,
+          attachments,
           status,
           dueDate: parsedDueDate
         }
@@ -105,11 +113,10 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      const { amount, status, dueDate } = req.body as {
-        amount?: number | string;
-        status?: InvoiceStatus;
-        dueDate?: string;
-      };
+      const {
+        invoiceNumber, invoiceDate, amount, taxPercentage, discount, otherCharges,
+        paymentTerms, internalNotes, invoiceNotes, termsConditions, attachments, status, dueDate
+      } = req.body;
 
       if (status && !Object.values(InvoiceStatus).includes(status)) {
         throw new ValidationError(`status must be one of: ${Object.values(InvoiceStatus).join(', ')}`);
@@ -119,7 +126,17 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
         { tenantId, userId },
         req.params.id,
         {
+          invoiceNumber,
+          invoiceDate: invoiceDate ? new Date(invoiceDate) : undefined,
           amount,
+          taxPercentage,
+          discount,
+          otherCharges,
+          paymentTerms,
+          internalNotes,
+          invoiceNotes,
+          termsConditions,
+          attachments,
           status,
           dueDate: dueDate ? new Date(dueDate) : undefined
         }
