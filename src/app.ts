@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
+import cors from 'cors';
 import { prisma } from './db';
 import { AppException } from './types/exceptions';
 
@@ -27,19 +28,26 @@ import { InvitationService } from './services/invitation.service';
 const app = express();
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
-// Allow frontend dev server (localhost:5173) and any configured origin
-app.use((req: Request, res: Response, next: NextFunction) => {
-  const origin = req.headers.origin ?? '*';
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-tenant-id');
-  if (req.method === 'OPTIONS') {
-    res.status(204).end();
-    return;
-  }
-  next();
-});
+// Strict whitelist for allowed origins
+const allowedOrigins = [
+  'https://hpx-eigen-frontend.vercel.app', // Production frontend
+  'http://localhost:5173',                  // Local Vite dev server
+  'http://localhost:3000'                   // Local backend testing (if applicable)
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like curl, postman, or server-to-server)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true, // Required for cookies/auth headers
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id']
+}));
 
 app.use(express.json());
 
