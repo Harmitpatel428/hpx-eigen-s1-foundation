@@ -7,6 +7,10 @@ export class EmailService {
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
 
+    if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY.includes('placeholder')) {
+      console.log(`\n[DEV MODE] Verification URL: ${verifyUrl}\n`);
+    }
+
     try {
       await resend.emails.send({
         from: 'HPX Eigen <noreply@hpx-eigen.com>',
@@ -27,7 +31,7 @@ export class EmailService {
       });
     } catch (error) {
       console.error('Failed to send verification email:', error);
-      // We don't throw here to prevent blocking signup if email fails in dev without a real key
+      throw error;
     }
   }
 }

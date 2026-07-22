@@ -8,7 +8,9 @@ import {
   SessionRevokedError,
   ResourceNotFoundError,
   TenantNotFoundError,
-  ValidationError
+  ValidationError,
+  AppException,
+  RetryTag
 } from '../types/exceptions';
 import { AuditService } from './audit.service';
 
@@ -18,6 +20,7 @@ export interface LoginResult {
   sessionId: string;
   expiresAt: Date;
   userId: string;
+  tenantId: string;
 }
 
 export interface RefreshResult {
@@ -39,35 +42,30 @@ export class AuthService {
    * Session transitions to ACTIVE on the first authenticated request (via middleware).
    */
   async login(
-    tenantIdOrName: string,
     email: string,
     password: string,
     meta: { ip?: string; userAgent?: string; deviceName?: string }
   ): Promise<LoginResult> {
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantIdOrName);
-    
-    // Validate tenant exists
-    const tenant = await this.prisma.tenant.findFirst({
-      where: { 
-        ...(isUUID ? { id: tenantIdOrName } : { name: tenantIdOrName }),
-        isActive: true, 
-        deletedAt: null 
-      }
-    });
-    if (!tenant) throw new TenantNotFoundError();
-
-    const actualTenantId = tenant.id;
-
-    // Lookup user — tenant-scoped per TS-001
+    // Lookup user by email globally (emails are assumed unique for this phase)
     const user = await this.prisma.user.findFirst({
       where: {
-        tenantId: actualTenantId,
         email,
         deletedAt: null
       }
     });
 
     if (!user) throw new AuthenticationFailedError();
+
+    if (!user.emailVerified) {
+      throw new AppException(
+        'EMAIL_NOT_VERIFIED',
+        'Please verify your email before logging in.',
+        RetryTag.USER_ACTION_REQUIRED,
+        403
+      );
+    }
+
+    const actualTenantId = user.tenantId;
 
     // Constant-time password comparison
     const passwordValid = await bcrypt.compare(password, user.password);
@@ -112,7 +110,7 @@ export class AuthService {
       payload: { sessionId: session.id, email }
     });
 
-    return { accessToken, sessionId: session.id, expiresAt, userId: user.id };
+    return { accessToken, sessionId: session.id, expiresAt, userId: user.id, tenantId: actualTenantId };
   }
 
   /**

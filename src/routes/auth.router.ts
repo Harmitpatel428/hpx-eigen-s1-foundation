@@ -144,18 +144,17 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   /** Public — authenticate with email + password, returns accessToken + sessionId */
   router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { tenantId, email, password, deviceName } = req.body as {
-        tenantId: string;
+      const { email, password, deviceName } = req.body as {
         email: string;
         password: string;
         deviceName?: string;
       };
 
-      if (!tenantId || !email || !password) {
-        throw new ValidationError('tenantId, email, and password are required.');
+      if (!email || !password) {
+        throw new ValidationError('email and password are required.');
       }
 
-      const result = await authService.login(tenantId, email, password, {
+      const result = await authService.login(email, password, {
         ip: req.ip,
         userAgent: req.headers['user-agent'],
         deviceName
