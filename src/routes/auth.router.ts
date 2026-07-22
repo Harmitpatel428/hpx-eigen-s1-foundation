@@ -78,8 +78,13 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         }
       });
 
-      // Send verification email
-      await emailService.sendVerificationEmail(email, token);
+      // Attempt to send email, but don't crash the signup if it fails
+      const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+      try {
+        await emailService.sendVerificationEmail(email, token);
+      } catch (emailError) {
+        console.error('Resend Email Failed. Verification URL for manual testing:', verifyUrl);
+      }
 
       res.status(201).json({
         message: 'Signup successful. Check your email to verify account.',
