@@ -108,6 +108,7 @@ model User {
   id                String @id @default(uuid()) @db.Uuid
   tenantId          String @db.Uuid
   email             String
+  emailVerified     DateTime?
   password          String
   status            UserStatus @default(NEW)
   suspendedAt       DateTime?
@@ -513,4 +514,13 @@ model Payment {
   @@index([tenantId])
   @@index([tenantId, invoiceId])
   @@index([deletedAt])
+}
+
+model VerificationToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
