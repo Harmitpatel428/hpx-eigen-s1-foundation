@@ -13,7 +13,7 @@ export class EmailService {
 
     try {
       await resend.emails.send({
-        from: 'HPX Eigen <noreply@hpx-eigen.com>',
+        from: 'HPX Eigen <onboarding@resend.dev>',
         to: email,
         subject: 'Verify your HPX Eigen account',
         html: `
