@@ -33,7 +33,9 @@ const app = express();
 const allowedOrigins = [
   'https://hpx-eigen-frontend.vercel.app', // Production frontend
   'http://localhost:5173',                  // Local Vite dev server
-  'http://localhost:3000'                   // Local backend testing (if applicable)
+  'http://localhost:3000',                  // Local backend testing (if applicable)
+  'https://hpxeigen.com',                   // Custom production domain
+  'https://www.hpxeigen.com'                // Custom production domain (www)
 ];
 
 app.use(cors({
