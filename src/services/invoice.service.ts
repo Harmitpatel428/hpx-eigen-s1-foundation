@@ -147,7 +147,15 @@ export class InvoiceService {
 
     return this.prisma.invoice.findMany({
       where,
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
+      include: {
+        opportunity: {
+          include: {
+            lead: true,
+            contact: true
+          }
+        }
+      }
     });
   }
 
