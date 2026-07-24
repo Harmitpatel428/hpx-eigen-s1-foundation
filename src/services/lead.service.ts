@@ -1,5 +1,5 @@
 import { PrismaClient, LeadStatus, LeadSource, OpportunityCurrency } from '@prisma/client';
-import { LeadRepository, CreateLeadInput, UpdateLeadInput } from '../repositories/lead.repo';
+import { LeadRepository, CreateLeadInput, UpdateLeadInput, FindAllLeadsOptions } from '../repositories/lead.repo';
 import { ContactRepository } from '../repositories/contact.repo';
 import { OpportunityRepository } from '../repositories/opportunity.repo';
 import { PipelineRepository } from '../repositories/pipeline.repo';
@@ -70,8 +70,8 @@ export class LeadService {
     return repos.lead.findById(leadId);
   }
 
-  /** List leads with optional filters */
-  async listLeads(ctx: TenantContext, options?: { status?: LeadStatus; ownerId?: string }) {
+  /** List leads with optional filters, search, and pagination */
+  async listLeads(ctx: TenantContext, options?: FindAllLeadsOptions) {
     const repos = this.makeContext(ctx);
     return repos.lead.findAll(options);
   }

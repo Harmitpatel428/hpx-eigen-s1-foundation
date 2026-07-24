@@ -56,7 +56,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       });
       if (!adminRole) {
         adminRole = await prisma.role.create({
-          data: { tenantId: tenant.id, name: 'ADMIN', description: 'Administrator' }
+          data: { tenantId: tenant.id, name: 'ADMIN' }
         });
       }
 
@@ -198,7 +198,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
           createdAt: true,
           updatedAt: true,
           userRoles: {
-            where: { deletedAt: null },
             select: {
               role: { select: { id: true, name: true } }
             }
@@ -236,6 +235,20 @@ export function createAuthRouter(prisma: PrismaClient): Router {
     } catch (err) {
       next(err);
     }
+  });
+
+  // ─── GET /api/v1/auth/manifest ────────────────────────────────────
+  /**
+   * Protected — returns the authenticated user's compiled permission manifest.
+   * Frontend uses this to populate the AuthContext and gate UI elements.
+   *
+   * Response shape: { "lead:create": "TEAM", "contact:view": "DEPARTMENT", ... }
+   * The ScopeType value tells the frontend which scope the user has for each action.
+   */
+  router.get('/manifest', authMiddleware, (req: Request, res: Response) => {
+    // permissions are already loaded by authMiddleware via Redis/DB
+    const { permissions } = (req as AuthenticatedRequest).user;
+    res.json(permissions);
   });
 
   return router;

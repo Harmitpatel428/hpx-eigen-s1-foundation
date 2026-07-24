@@ -4,9 +4,13 @@ datasource db {
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
   engineType = "library"
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════════════════
 
 enum SessionStatus {
   CREATED
@@ -33,37 +37,84 @@ enum UserStatus {
   TERMINATED
 }
 
-model Tenant {
-  id                String @id @default(uuid()) @db.Uuid
-  name              String
-  subscriptionPlanId String?
-  isActive          Boolean @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  deletedAt         DateTime?
+// ABAC scope bound to a UserRole assignment.
+// OWN          = user sees only records they own
+// TEAM         = user sees all records owned by teammates
+// DEPARTMENT   = user sees all records owned by departmental members
+// ORGANIZATION = user sees all records in the tenant
+enum ScopeType {
+  OWN
+  TEAM
+  DEPARTMENT
+  ORGANIZATION
+}
 
-  roles              Role[]
-  permissions        Permission[]
-  users              User[]
-  userInvitations    UserInvitation[]
-  sessions           Session[]
-  opportunityTypes   OpportunityType[]
+// ═══════════════════════════════════════════════════════════════════
+// S1 FOUNDATION — AUTH, USERS, ROLES, SESSIONS
+// ═══════════════════════════════════════════════════════════════════
+
+model Tenant {
+  id                 String   @id @default(uuid()) @db.Uuid
+  name               String
+  subscriptionPlanId String?
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  deletedAt          DateTime?
+
+  roles           Role[]
+  users           User[]
+  userInvitations UserInvitation[]
+  sessions        Session[]
+  opportunityTypes OpportunityType[]
+  departments     Department[]
+  teams           Team[]
 
   @@index([deletedAt])
 }
 
-model Role {
-  id        String @id @default(uuid()) @db.Uuid
-  tenantId  String @db.Uuid
+// ─── Organizational Hierarchy ─────────────────────────────────────
+
+model Department {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
   name      String
-  description String?
+  parentId  String?  @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users   User[]
+
+  @@index([tenantId])
+}
+
+model Team {
+  id           String  @id @default(uuid()) @db.Uuid
+  tenantId     String  @db.Uuid
+  departmentId String? @db.Uuid
+  name         String
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users  User[]
+
+  @@index([tenantId, departmentId])
+}
+
+// ─── Roles & Permissions ──────────────────────────────────────────
+
+model Role {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  name      String
+  isSystem  Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
 
-  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  rolePermissions RolePermission[]
-  userRoles       UserRole[]
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  permissions     RolePermission[]
+  users           UserRole[]
   userInvitations UserInvitation[]
 
   @@unique([tenantId, name])
@@ -71,107 +122,96 @@ model Role {
   @@index([deletedAt])
 }
 
+// Global permissions (not tenant-scoped).
+// Slugs are the canonical reference: "lead:view", "contact:create", etc.
 model Permission {
-  id        String @id @default(uuid()) @db.Uuid
-  tenantId  String @db.Uuid
-  resource  String
-  action    String
-  description String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  deletedAt DateTime?
+  id          String @id @default(uuid()) @db.Uuid
+  slug        String @unique
+  module      String
+  description String
 
-  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  rolePermissions RolePermission[]
-
-  @@unique([tenantId, resource, action])
-  @@index([tenantId])
-  @@index([deletedAt])
+  roles RolePermission[]
 }
 
+// Junction table — composite PK, NO soft-delete (physical deletes only).
 model RolePermission {
-  id           String @id @default(uuid()) @db.Uuid
   roleId       String @db.Uuid
   permissionId String @db.Uuid
-  createdAt    DateTime @default(now())
-  deletedAt    DateTime?
 
-  role       Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
-  @@unique([roleId, permissionId])
-  @@index([roleId])
-  @@index([permissionId])
+  @@id([roleId, permissionId])
 }
 
+// Junction table — composite PK, NO soft-delete (physical deletes only).
+// scopeType determines ABAC data-access scope for this role assignment.
+model UserRole {
+  userId    String    @db.Uuid
+  roleId    String    @db.Uuid
+  scopeType ScopeType @default(OWN)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([userId])
+}
+
+// ─── Users ────────────────────────────────────────────────────────
+
 model User {
-  id                String @id @default(uuid()) @db.Uuid
-  tenantId          String @db.Uuid
+  id                String     @id @default(uuid()) @db.Uuid
+  tenantId          String     @db.Uuid
   email             String
   emailVerified     DateTime?
   password          String
   status            UserStatus @default(NEW)
+  teamId            String?    @db.Uuid
+  departmentId      String?    @db.Uuid
   suspendedAt       DateTime?
   suspensionReason  String?
   terminatedAt      DateTime?
   terminationReason String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
   deletedAt         DateTime?
 
-  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  sessions        Session[]
-  userRoles       UserRole[]
-  assignedRoles   UserRole[] @relation("AssignedBy")
-  invitedUsers    UserInvitation[] @relation("InvitedBy")
+  tenant              Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  team                Team?            @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  department          Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  sessions            Session[]
+  userRoles           UserRole[]
+  invitedUsers        UserInvitation[] @relation("InvitedBy")
   acceptedInvitations UserInvitation[] @relation("AcceptedBy")
 
   @@unique([tenantId, email])
   @@index([tenantId])
   @@index([status])
   @@index([deletedAt])
-}
-
-model UserRole {
-  id          String @id @default(uuid()) @db.Uuid
-  userId      String @db.Uuid
-  roleId      String @db.Uuid
-  invitationId String? @db.Uuid
-  assignedAt  DateTime @default(now())
-  assignedBy  String? @db.Uuid
-  createdAt   DateTime @default(now())
-  deletedAt   DateTime?
-
-  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  assignedByUser User? @relation("AssignedBy", fields: [assignedBy], references: [id], onDelete: SetNull)
-
-  @@unique([userId, roleId])
-  @@unique([userId, invitationId])
-  @@index([userId])
-  @@index([roleId])
-  @@index([deletedAt])
+  @@index([teamId, deletedAt])
+  @@index([departmentId, deletedAt])
 }
 
 model UserInvitation {
-  id          String @id @default(uuid()) @db.Uuid
-  tenantId    String @db.Uuid
+  id          String           @id @default(uuid()) @db.Uuid
+  tenantId    String           @db.Uuid
   email       String
   status      InvitationStatus @default(PENDING)
-  roleId      String @db.Uuid
-  token       String @unique
+  roleId      String           @db.Uuid
+  token       String           @unique
   expiresAt   DateTime
-  invitedBy   String @db.Uuid
-  acceptedBy  String? @db.Uuid
+  invitedBy   String           @db.Uuid
+  acceptedBy  String?          @db.Uuid
   acceptedAt  DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
   deletedAt   DateTime?
 
-  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  role        Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
-  inviter     User @relation("InvitedBy", fields: [invitedBy], references: [id], onDelete: Restrict)
-  acceptor    User? @relation("AcceptedBy", fields: [acceptedBy], references: [id], onDelete: SetNull)
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  role     Role    @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  inviter  User    @relation("InvitedBy", fields: [invitedBy], references: [id], onDelete: Restrict)
+  acceptor User?   @relation("AcceptedBy", fields: [acceptedBy], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -181,9 +221,9 @@ model UserInvitation {
 }
 
 model Session {
-  id               String @id @default(uuid()) @db.Uuid
-  tenantId         String @db.Uuid
-  userId           String @db.Uuid
+  id               String        @id @default(uuid()) @db.Uuid
+  tenantId         String        @db.Uuid
+  userId           String        @db.Uuid
   status           SessionStatus @default(CREATED)
   refreshTokenHash String
   expiresAt        DateTime
@@ -191,12 +231,12 @@ model Session {
   revokedAt        DateTime?
   invalidatedAt    DateTime?
   expiredAt        DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
   deletedAt        DateTime?
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([userId])
@@ -207,19 +247,19 @@ model Session {
 }
 
 model AuditLog {
-  id              String @id @default(uuid()) @db.Uuid
-  tenantId        String @db.Uuid
-  eventType       String
-  entityType      String
-  entityId        String
-  actorUserId     String? @db.Uuid
-  actorIp         String?
-  actorUserAgent  String?
-  operation       String
-  payload         Json
-  previousHash    String? @db.Char(64)
-  currentHash     String @db.Char(64)
-  createdAt       DateTime @default(now())
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @db.Uuid
+  eventType      String
+  entityType     String
+  entityId       String
+  actorUserId    String?  @db.Uuid
+  actorIp        String?
+  actorUserAgent String?
+  operation      String
+  payload        Json
+  previousHash   String?  @db.Char(64)
+  currentHash    String   @db.Char(64)
+  createdAt      DateTime @default(now())
 
   @@index([tenantId, createdAt])
   @@index([entityType, entityId])
@@ -231,6 +271,14 @@ model AuditLog {
 // ═══════════════════════════════════════════════════════════════════
 
 enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  DISQUALIFIED
+  CONVERTED
+}
+
+enum LeadStage {
   NEW
   CONTACTED
   QUALIFIED
@@ -273,22 +321,24 @@ enum ActivityType {
 }
 
 // ─── Lead ─────────────────────────────────────────────────────────
-// A prospect not yet converted to a contact/opportunity.
 model Lead {
-  id          String      @id @default(uuid()) @db.Uuid
-  tenantId    String      @db.Uuid
-  firstName   String
-  lastName    String
-  email       String?
-  phone       String?
-  company     String?
-  source      LeadSource  @default(OTHER)
-  status      LeadStatus  @default(NEW)
-  ownerId     String?     @db.Uuid
-  notes       String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  deletedAt   DateTime?
+  id            String     @id @default(uuid()) @db.Uuid
+  tenantId      String     @db.Uuid
+  firstName     String
+  lastName      String
+  email         String?
+  phone         String?
+  company       String?
+  source        LeadSource @default(OTHER)
+  status        LeadStatus @default(NEW)
+  stage         LeadStage  @default(NEW)
+  score         Int        @default(0)
+  expectedValue Decimal    @default(0) @db.Decimal(18, 2)
+  ownerId       String?    @db.Uuid
+  notes         String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  deletedAt     DateTime?
 
   contacts      Contact[]
   opportunities Opportunity[]
@@ -300,40 +350,40 @@ model Lead {
 }
 
 // ─── Contact ──────────────────────────────────────────────────────
-// A known person at a company, optionally linked to a Lead.
 model Contact {
-  id          String    @id @default(uuid()) @db.Uuid
-  tenantId    String    @db.Uuid
-  leadId      String?   @db.Uuid
-  firstName   String
-  lastName    String
-  email       String?
-  phone       String?
-  title       String?
-  company     String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  deletedAt   DateTime?
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  leadId    String?  @db.Uuid
+  firstName String
+  lastName  String
+  email     String?
+  phone     String?
+  title     String?
+  company   String?
+  ownerId   String?  @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
 
   lead          Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
   opportunities Opportunity[]
 
   @@index([tenantId])
   @@index([tenantId, leadId])
+  @@index([tenantId, ownerId])
   @@index([deletedAt])
 }
 
 // ─── OpportunityType ──────────────────────────────────────────────
-// A customizable dictionary of opportunity types for a given tenant.
 model OpportunityType {
-  id           String      @id @default(uuid()) @db.Uuid
-  tenantId     String      @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @db.Uuid
   name         String
-  displayOrder Int         @default(0)
-  isActive     Boolean     @default(true)
-  isDefault    Boolean     @default(false)
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  displayOrder Int      @default(0)
+  isActive     Boolean  @default(true)
+  isDefault    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
   deletedAt    DateTime?
 
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -345,7 +395,6 @@ model OpportunityType {
 }
 
 // ─── Opportunity ──────────────────────────────────────────────────
-// A deal in progress — the core CRM entity with value + lifecycle.
 model Opportunity {
   id                    String              @id @default(uuid()) @db.Uuid
   tenantId              String              @db.Uuid
@@ -381,20 +430,19 @@ model Opportunity {
 }
 
 // ─── Activity ─────────────────────────────────────────────────────
-// A timestamped interaction event tied to an Opportunity.
 model Activity {
-  id             String       @id @default(uuid()) @db.Uuid
-  tenantId       String       @db.Uuid
-  opportunityId  String       @db.Uuid
-  userId         String       @db.Uuid
-  type           ActivityType
-  subject        String
-  notes          String?
-  scheduledAt    DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  deletedAt      DateTime?
+  id            String       @id @default(uuid()) @db.Uuid
+  tenantId      String       @db.Uuid
+  opportunityId String       @db.Uuid
+  userId        String       @db.Uuid
+  type          ActivityType
+  subject       String
+  notes         String?
+  scheduledAt   DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?
 
   opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
 
@@ -406,7 +454,6 @@ model Activity {
 }
 
 // ─── Pipeline ─────────────────────────────────────────────────────
-// Stage-transition log for an Opportunity (audit trail for deal velocity).
 model Pipeline {
   id            String           @id @default(uuid()) @db.Uuid
   tenantId      String           @db.Uuid
@@ -459,30 +506,30 @@ enum PaymentStatus {
 
 // ─── Invoice ──────────────────────────────────────────────────────
 model Invoice {
-  id            String        @id @default(uuid()) @db.Uuid
-  tenantId      String        @db.Uuid
-  opportunityId String        @db.Uuid
-  invoiceNumber String?
-  invoiceDate   DateTime      @default(now())
-  amount        Decimal       @db.Decimal(18, 2)
-  taxPercentage Decimal?      @default(0) @db.Decimal(5, 2)
-  discount      Decimal?      @default(0) @db.Decimal(18, 2)
-  otherCharges  Decimal?      @default(0) @db.Decimal(18, 2)
-  taxAmount     Decimal?      @default(0) @db.Decimal(18, 2)
-  totalAmount   Decimal       @db.Decimal(18, 2)
-  paymentTerms  String?
-  internalNotes String?
-  invoiceNotes  String?
+  id              String        @id @default(uuid()) @db.Uuid
+  tenantId        String        @db.Uuid
+  opportunityId   String        @db.Uuid
+  invoiceNumber   String?
+  invoiceDate     DateTime      @default(now())
+  amount          Decimal       @db.Decimal(18, 2)
+  taxPercentage   Decimal?      @default(0) @db.Decimal(5, 2)
+  discount        Decimal?      @default(0) @db.Decimal(18, 2)
+  otherCharges    Decimal?      @default(0) @db.Decimal(18, 2)
+  taxAmount       Decimal?      @default(0) @db.Decimal(18, 2)
+  totalAmount     Decimal       @db.Decimal(18, 2)
+  paymentTerms    String?
+  internalNotes   String?
+  invoiceNotes    String?
   termsConditions String?
-  attachments   String[]      @default([])
-  status        InvoiceStatus @default(DRAFT)
-  dueDate       DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  deletedAt     DateTime?
+  attachments     String[]      @default([])
+  status          InvoiceStatus @default(DRAFT)
+  dueDate         DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
 
-  opportunity   Opportunity   @relation(fields: [opportunityId], references: [id], onDelete: Restrict)
-  payments      Payment[]
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Restrict)
+  payments    Payment[]
 
   @@index([tenantId])
   @@index([tenantId, opportunityId])
@@ -492,9 +539,9 @@ model Invoice {
 
 // ─── Payment ──────────────────────────────────────────────────────
 model Payment {
-  id            String        @id @default(uuid()) @db.Uuid
-  tenantId      String        @db.Uuid
-  invoiceId     String        @db.Uuid
+  id              String        @id @default(uuid()) @db.Uuid
+  tenantId        String        @db.Uuid
+  invoiceId       String        @db.Uuid
   amount          Decimal       @db.Decimal(18, 2)
   method          PaymentMethod @default(CASH)
   referenceNumber String?
@@ -505,11 +552,11 @@ model Payment {
   notes           String?
   attachmentUrl   String?
   paidAt          DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  deletedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  deletedAt       DateTime?
 
-  invoice       Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([tenantId, invoiceId])

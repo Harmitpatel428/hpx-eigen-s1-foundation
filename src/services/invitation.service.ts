@@ -114,27 +114,12 @@ export class InvitationService {
         throw new BusinessRuleViolationError();
       }
 
-      // Create UserRole — idempotent via ON CONFLICT (handled by P2002 catch)
-      try {
-        await tx.userRole.create({
-          data: {
-            userId: acceptingUserId,
-            roleId: inv.role_id,
-            invitationId: inv.id
-          }
-        });
-      } catch (e: unknown) {
-        const err = e as { code?: string };
-        if (err.code === 'P2002') {
-          // Duplicate — already exists, treat as success per spec
-          const exists = await tx.userRole.findFirst({
-            where: { userId: acceptingUserId, roleId: inv.role_id }
-          });
-          if (!exists) throw e;
-        } else {
-          throw e;
-        }
-      }
+      // Create UserRole — idempotent via upsert (invitationId field removed in ABAC schema)
+      await tx.userRole.upsert({
+        where: { userId_roleId: { userId: acceptingUserId, roleId: inv.role_id } },
+        create: { userId: acceptingUserId, roleId: inv.role_id },
+        update: {},
+      });
 
       // Update invitation to ACCEPTED
       await tx.userInvitation.update({

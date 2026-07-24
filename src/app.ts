@@ -22,6 +22,10 @@ import { createInvoicesRouter } from './routes/invoices.router';
 import { createPaymentsRouter } from './routes/payments.router';
 import { createOpportunityTypesRouter } from './routes/opportunity-types.router';
 
+// ─── Route Factories (Org Hierarchy) ─────────────────────────────────────────
+import { createDepartmentsRouter } from './routes/departments.router';
+import { createTeamsRouter } from './routes/teams.router';
+
 // ─── Invitation Routes (legacy paths — kept for backward compat) ──────────────
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
 import { InvitationService } from './services/invitation.service';
@@ -78,6 +82,10 @@ app.use('/api/v1/payments', createPaymentsRouter(prisma));
 
 // ─── Settings Domain Routers ──────────────────────────────────────────────────
 app.use('/api/v1/settings/opportunity-types', createOpportunityTypesRouter(prisma));
+
+// ─── Org Hierarchy Routers ────────────────────────────────────────────────────
+app.use('/api/v1/departments', createDepartmentsRouter(prisma));
+app.use('/api/v1/teams', createTeamsRouter(prisma));
 
 // ─── Legacy Invitation Routes (backward compat) ───────────────────────────────
 // These paths existed in S1 and may be relied on by existing tests.

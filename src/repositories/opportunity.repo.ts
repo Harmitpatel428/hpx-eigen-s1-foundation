@@ -68,13 +68,23 @@ export class OpportunityRepository extends BaseRepository {
 
   /** List all non-deleted opportunities in the tenant */
   async findAll(options?: { stage?: OpportunityStage; ownerId?: string }) {
-    return this.prisma.opportunity.findMany({
+    const opportunities = await this.prisma.opportunity.findMany({
       where: {
         tenantId: this.ctx.tenantId,
         deletedAt: null
       },
-      include: { lead: true, contact: true }
+      include: {
+        lead: true,
+        contact: true
+      }
     });
+
+    // Manually null out soft-deleted relations to prevent ghost data in the UI
+    return opportunities.map(opp => ({
+      ...opp,
+      lead: opp.lead?.deletedAt ? null : opp.lead,
+      contact: opp.contact?.deletedAt ? null : opp.contact
+    }));
   }
 
   /** Find opportunities by pipeline stage */

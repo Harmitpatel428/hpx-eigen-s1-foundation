@@ -162,7 +162,6 @@ export class UserService {
         createdAt: true,
         updatedAt: true,
         userRoles: {
-          where: { deletedAt: null },
           select: {
             role: { select: { id: true, name: true } }
           }
