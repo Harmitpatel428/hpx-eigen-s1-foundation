@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 
 export function createDepartmentsRouter(prisma: PrismaClient): Router {
@@ -10,7 +10,7 @@ export function createDepartmentsRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/v1/departments ──────────────────────────────────────
   /** List all departments for the caller's tenant */
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/', permissionMiddleware('department:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
@@ -35,7 +35,7 @@ export function createDepartmentsRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/v1/departments ─────────────────────────────────────
   /** Create a new department */
-  router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', permissionMiddleware('department:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { name, parentId } = req.body as { name: string; parentId?: string };
@@ -75,7 +75,7 @@ export function createDepartmentsRouter(prisma: PrismaClient): Router {
 
   // ─── PUT /api/v1/departments/:id ──────────────────────────────────
   /** Update department name or parent */
-  router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.put('/:id', permissionMiddleware('department:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { name, parentId } = req.body as { name?: string; parentId?: string | null };
@@ -113,7 +113,7 @@ export function createDepartmentsRouter(prisma: PrismaClient): Router {
 
   // ─── DELETE /api/v1/departments/:id ──────────────────────────────
   /** Delete a department (physical delete — no soft-delete for org entities) */
-  router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', permissionMiddleware('department:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
 

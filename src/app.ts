@@ -9,6 +9,7 @@ import { createAuthRouter } from './routes/auth.router';
 import { createUsersRouter } from './routes/users.router';
 import { createRolesRouter } from './routes/roles.router';
 import { createSessionsRouter } from './routes/sessions.router';
+import { createAuditRouter } from './routes/audit.router';
 
 // ─── Route Factories (S2 CRM Domain) ─────────────────────────────────────────
 import { createLeadsRouter } from './routes/leads.router';
@@ -68,6 +69,7 @@ app.use('/api/v1/auth', createAuthRouter(prisma));
 app.use('/api/v1/users', createUsersRouter(prisma));
 app.use('/api/v1/roles', createRolesRouter(prisma));
 app.use('/api/v1/sessions', createSessionsRouter(prisma));
+app.use('/api/v1/audit-logs', createAuditRouter(prisma));
 
 // ─── S2 CRM Domain Routers ────────────────────────────────────────────────────
 app.use('/api/v1/leads', createLeadsRouter(prisma));

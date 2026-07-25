@@ -42,6 +42,7 @@ const PERMISSIONS = [
   // Roles & Admin
   { slug: 'role:view',   module: 'Admin', description: 'View roles and permissions' },
   { slug: 'role:manage', module: 'Admin', description: 'Create, edit, and delete roles' },
+  { slug: 'audit:view',  module: 'Admin', description: 'View immutable audit logs' },
   // Users
   { slug: 'user:view',   module: 'Admin', description: 'View users' },
   { slug: 'user:manage', module: 'Admin', description: 'Invite, suspend, and manage users' },

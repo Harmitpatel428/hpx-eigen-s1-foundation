@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { UserService } from '../services/user.service';
 import { InvitationService } from '../services/invitation.service';
 import { ValidationError } from '../types/exceptions';
@@ -15,7 +15,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/users ───────────────────────────────────────────────
   /** List all non-deleted users in the caller's tenant */
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/', permissionMiddleware('user:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const users = await userService.listUsers(tenantId);
@@ -31,7 +31,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
    * Body: { email: string, roleId: string }
    * Returns: { invitationId, token, expiresAt }
    */
-  router.post('/invite', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/invite', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const { email, roleId } = req.body as { email: string; roleId: string };
@@ -58,7 +58,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
    * Body: { reason: string }
    * Returns: { success: true, sessionsRevoked: number }
    */
-  router.put('/:id/suspend', async (req: Request, res: Response, next: NextFunction) => {
+  router.put('/:id/suspend', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId: actorUserId, tenantId } = (req as AuthenticatedRequest).user;
       const targetUserId = req.params['id'] as string;
@@ -81,7 +81,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
    * Body: { reason: string }
    * Returns: { success: true, sessionsRevoked: number }
    */
-  router.put('/:id/terminate', async (req: Request, res: Response, next: NextFunction) => {
+  router.put('/:id/terminate', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId: actorUserId, tenantId } = (req as AuthenticatedRequest).user;
       const targetUserId = req.params['id'] as string;

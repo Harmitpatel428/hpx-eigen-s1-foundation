@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 
 export function createTeamsRouter(prisma: PrismaClient): Router {
@@ -10,7 +10,7 @@ export function createTeamsRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/v1/teams ────────────────────────────────────────────
   /** List all teams for the caller's tenant */
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/', permissionMiddleware('team:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
@@ -33,7 +33,7 @@ export function createTeamsRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/v1/teams ───────────────────────────────────────────
   /** Create a new team */
-  router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', permissionMiddleware('team:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { name, departmentId } = req.body as {
@@ -74,7 +74,7 @@ export function createTeamsRouter(prisma: PrismaClient): Router {
 
   // ─── PUT /api/v1/teams/:id ────────────────────────────────────────
   /** Update team name or department */
-  router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.put('/:id', permissionMiddleware('team:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { name, departmentId } = req.body as {
@@ -108,7 +108,7 @@ export function createTeamsRouter(prisma: PrismaClient): Router {
 
   // ─── DELETE /api/v1/teams/:id ─────────────────────────────────────
   /** Delete a team (physical delete) */
-  router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', permissionMiddleware('team:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
@@ -133,7 +133,7 @@ export function createTeamsRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/v1/teams/:id/members ──────────────────────────────
   /** Assign a user to a team */
-  router.post('/:id/members', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/:id/members', permissionMiddleware('team:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { userId } = req.body as { userId: string };
@@ -161,7 +161,7 @@ export function createTeamsRouter(prisma: PrismaClient): Router {
 
   // ─── DELETE /api/v1/teams/:id/members/:userId ─────────────────────
   /** Remove a user from a team */
-  router.delete('/:id/members/:userId', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id/members/:userId', permissionMiddleware('team:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
