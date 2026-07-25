@@ -4,6 +4,7 @@
  * Invalidates Redis permission version cache to prevent stale cache lockouts.
  * Run locally or in deployment shell: npx tsx prisma/seed-permissions.ts
  */
+import 'dotenv/config';
 import { PrismaClient, ScopeType } from '@prisma/client';
 import { PermissionService } from '../src/services/permission.service';
 

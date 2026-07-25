@@ -11,6 +11,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { redisGet, redisSet, redisIncr, redisKeys } from '../redis';
+import { AppException, RetryTag } from '../types/exceptions';
 
 /** Compiled permission manifest: { [slug]: ScopeType } */
 export type PermissionManifest = Record<string, string>;
@@ -51,6 +52,10 @@ export class PermissionService {
     // Cache miss — build from DB
     const manifest = await this.buildManifestFromDB(userId, tenantId);
 
+    if (Object.keys(manifest).length === 0) {
+      return manifest;
+    }
+
     // Write to Redis (non-blocking — failure is non-fatal)
     await redisSet(cacheKey, JSON.stringify(manifest), PERM_CACHE_TTL);
 
@@ -68,7 +73,10 @@ export class PermissionService {
    * Call this whenever a Role, RolePermission, or UserRole is mutated.
    */
   async invalidatePermissionCache(tenantId: string): Promise<void> {
-    await redisIncr(redisKeys.permVersion(tenantId));
+    const result = await redisIncr(redisKeys.permVersion(tenantId));
+    if (result === null) {
+      throw new AppException('CACHE_INVALIDATION_FAILED', 'Failed to invalidate permission cache. Operation aborted to prevent stale permissions.', RetryTag.NON_RETRYABLE, 500);
+    }
   }
 
   /**
