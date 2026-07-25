@@ -1,10 +1,9 @@
 /**
- * Permission Seed Script
- * Populates the global Permission table with canonical slugs.
- * Run once after migration: npx ts-node prisma/seed-permissions.ts
- * or add to package.json scripts and run: npx prisma db seed
+ * Permission & Super Admin Seeding Script
+ * Restores canonical permissions, Organization Admin role, and Super Admin user assignments.
+ * Run locally or in deployment shell: npx tsx prisma/seed-permissions.ts
  */
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, ScopeType } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -54,16 +53,94 @@ const PERMISSIONS = [
 ] as const;
 
 async function main(): Promise<void> {
-  let upserted = 0;
+  // Step 1: Seed the 32 canonical permissions
+  const createdPermissions = [];
   for (const perm of PERMISSIONS) {
-    await prisma.permission.upsert({
+    const p = await prisma.permission.upsert({
       where: { slug: perm.slug },
       create: perm,
       update: { module: perm.module, description: perm.description },
     });
-    upserted++;
+    createdPermissions.push(p);
   }
-  console.info(`✓ Seeded ${upserted} permissions`);
+  console.info(`✓ Seeded ${createdPermissions.length} permissions`);
+
+  // Step 2: Find the first Tenant in the database
+  const tenant = await prisma.tenant.findFirst({
+    where: { deletedAt: null },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (!tenant) {
+    console.warn('⚠️ Warning: No tenant found in database. Exiting seed script.');
+    return;
+  }
+
+  // Step 3: Upsert an "Organization Admin" Role for that tenant
+  const role = await prisma.role.upsert({
+    where: {
+      tenantId_name: {
+        tenantId: tenant.id,
+        name: 'Organization Admin',
+      },
+    },
+    create: {
+      tenantId: tenant.id,
+      name: 'Organization Admin',
+      isSystem: true,
+    },
+    update: {
+      isSystem: true,
+      deletedAt: null,
+    },
+  });
+  console.info(`✓ Upserted "Organization Admin" Role (ID: ${role.id})`);
+
+  // Step 4: Delete all existing RolePermission records for this Role, then recreate them
+  await prisma.rolePermission.deleteMany({
+    where: { roleId: role.id },
+  });
+
+  await prisma.rolePermission.createMany({
+    data: createdPermissions.map((perm) => ({
+      roleId: role.id,
+      permissionId: perm.id,
+    })),
+    skipDuplicates: true,
+  });
+  console.info(`✓ Mapped ${createdPermissions.length} permissions to "Organization Admin" role`);
+
+  // Step 5: Find the first User in that tenant
+  const user = await prisma.user.findFirst({
+    where: { tenantId: tenant.id, deletedAt: null },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (!user) {
+    console.warn('⚠️ Warning: No user found in tenant. Exiting seed script.');
+    return;
+  }
+
+  // Step 6: Upsert a UserRole record linking User to "Organization Admin" Role with scopeType: 'ORGANIZATION'
+  await prisma.userRole.upsert({
+    where: {
+      userId_roleId: {
+        userId: user.id,
+        roleId: role.id,
+      },
+    },
+    create: {
+      userId: user.id,
+      roleId: role.id,
+      scopeType: ScopeType.ORGANIZATION,
+    },
+    update: {
+      scopeType: ScopeType.ORGANIZATION,
+    },
+  });
+
+  // Step 7: Log success message
+  console.info(`✓ Super Admin access restored for ${user.email}`);
 }
 
 main()
