@@ -1,11 +1,14 @@
 /**
  * Permission & Super Admin Seeding Script
  * Restores canonical permissions, Organization Admin role, and Super Admin user assignments.
+ * Invalidates Redis permission version cache to prevent stale cache lockouts.
  * Run locally or in deployment shell: npx tsx prisma/seed-permissions.ts
  */
 import { PrismaClient, ScopeType } from '@prisma/client';
+import { PermissionService } from '../src/services/permission.service';
 
 const prisma = new PrismaClient();
+const permissionService = new PermissionService(prisma);
 
 const PERMISSIONS = [
   // Leads
@@ -53,7 +56,7 @@ const PERMISSIONS = [
 ] as const;
 
 async function main(): Promise<void> {
-  // Step 1: Seed the 32 canonical permissions
+  // Step 1: Seed the 33 canonical permissions
   const createdPermissions = [];
   for (const perm of PERMISSIONS) {
     const p = await prisma.permission.upsert({
@@ -138,6 +141,10 @@ async function main(): Promise<void> {
       scopeType: ScopeType.ORGANIZATION,
     },
   });
+
+  // Invalidate Redis permission version cache to clear stale empty manifest for this tenant
+  await permissionService.invalidatePermissionCache(tenant.id);
+  console.info(`✓ Invalidated Redis permission cache for tenant: ${tenant.id}`);
 
   // Step 7: Log success message
   console.info(`✓ Super Admin access restored for ${user.email}`);
