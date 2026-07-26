@@ -55,7 +55,7 @@ export class LeadRepository extends BaseRepository {
   async create(input: CreateLeadInput) {
     return this.prisma.lead.create({
       data: {
-        tenantId: this.ctx.tenantId,
+        tenantId: this.ctx.tenantId, // Required by Prisma schema types, though extension overwrites it
         firstName: input.firstName,
         lastName: input.lastName,
         email: input.email ?? null,
@@ -76,9 +76,8 @@ export class LeadRepository extends BaseRepository {
 
   /** Find lead by ID — tenant-scoped, throws if not found */
   async findById(leadId: string) {
-    const lead = await this.prisma.lead.findFirst({
+    const lead = await this.prisma.lead.findUnique({
       where: {
-        ...this.buildTenantFilter(),
         id: leadId
       }
     });
@@ -106,7 +105,6 @@ export class LeadRepository extends BaseRepository {
       : undefined;
 
     const where: Prisma.LeadWhereInput = {
-      ...this.buildTenantFilter(),
       ...(options?.status ? { status: options.status } : {}),
       ...(options?.ownerId ? { ownerId: options.ownerId } : {}),
       ...(searchWhere ? { OR: searchWhere } : {})
@@ -129,7 +127,6 @@ export class LeadRepository extends BaseRepository {
   async findByStatus(status: LeadStatus) {
     return this.prisma.lead.findMany({
       where: {
-        ...this.buildTenantFilter(),
         status
       },
       orderBy: { createdAt: 'desc' }

@@ -6,9 +6,12 @@ import { ValidationError } from '../types/exceptions';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { emailService } from '../services/email.service';
+import { PermissionService } from '../services/permission.service';
+
 export function createAuthRouter(prisma: PrismaClient): Router {
   const router = Router();
   const authService = new AuthService(prisma);
+  const permissionService = new PermissionService(prisma);
 
   // ─── POST /api/auth/signup ────────────────────────────────────────
   /** Public — register a new tenant and user */
@@ -50,20 +53,35 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         }
       });
 
-      // Ensure 'ADMIN' role exists for this tenant
+      // Fetch all global permissions
+      const allPermissions = await prisma.permission.findMany();
+
+      // Ensure 'Organization Admin' role exists for this tenant
       let adminRole = await prisma.role.findFirst({
-        where: { tenantId: tenant.id, name: 'ADMIN' }
+        where: { tenantId: tenant.id, name: 'Organization Admin' }
       });
       if (!adminRole) {
         adminRole = await prisma.role.create({
-          data: { tenantId: tenant.id, name: 'ADMIN' }
+          data: { tenantId: tenant.id, name: 'Organization Admin', isSystem: true }
         });
+
+        if (allPermissions.length > 0) {
+          await prisma.rolePermission.createMany({
+            data: allPermissions.map(p => ({
+              roleId: adminRole!.id,
+              permissionId: p.id
+            }))
+          });
+        }
       }
 
-      // Assign ADMIN role to the user
+      // Assign ADMIN role to the user with scopeType: 'ORGANIZATION'
       await prisma.userRole.create({
-        data: { userId: user.id, roleId: adminRole.id }
+        data: { userId: user.id, roleId: adminRole!.id, scopeType: 'ORGANIZATION' }
       });
+
+      // Call permissionService.invalidatePermissionCache(tenant.id) to ensure the cache is fresh
+      await permissionService.invalidatePermissionCache(tenant.id);
 
       // Generate verification token (32-char hex)
       const token = crypto.randomBytes(32).toString('hex');

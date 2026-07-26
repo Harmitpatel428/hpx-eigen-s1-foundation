@@ -197,7 +197,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:edit'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const userReq = req as AuthenticatedRequest;
+        const { userId, tenantId, decision } = userReq.user;
         const {
           firstName,
           lastName,
@@ -234,6 +235,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
         const lead = await leadService.updateLead(
           { tenantId, userId },
+          decision,
           req.params.id,
           {
             firstName,

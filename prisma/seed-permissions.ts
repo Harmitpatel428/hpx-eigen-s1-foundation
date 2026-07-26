@@ -69,86 +69,77 @@ async function main(): Promise<void> {
   }
   console.info(`✓ Seeded ${createdPermissions.length} permissions`);
 
-  // Step 2: Find the first Tenant in the database
-  const tenant = await prisma.tenant.findFirst({
+  // Step 2: Find ALL Users in the database
+  const users = await prisma.user.findMany({
     where: { deletedAt: null },
-    orderBy: { createdAt: 'asc' },
   });
 
-  if (!tenant) {
-    console.warn('⚠️ Warning: No tenant found in database. Exiting seed script.');
+  if (users.length === 0) {
+    console.warn('⚠️ Warning: No users found in database. Exiting seed script.');
     return;
   }
 
-  // Step 3: Upsert an "Organization Admin" Role for that tenant
-  const role = await prisma.role.upsert({
-    where: {
-      tenantId_name: {
-        tenantId: tenant.id,
-        name: 'Organization Admin',
+  // Step 3 & 4 & 5 & 6: For EACH user, upsert the role, map permissions, and assign to user
+  let updatedCount = 0;
+  for (const user of users) {
+    // Upsert an "Organization Admin" Role for the user's tenant
+    const role = await prisma.role.upsert({
+      where: {
+        tenantId_name: {
+          tenantId: user.tenantId,
+          name: 'Organization Admin',
+        },
       },
-    },
-    create: {
-      tenantId: tenant.id,
-      name: 'Organization Admin',
-      isSystem: true,
-    },
-    update: {
-      isSystem: true,
-      deletedAt: null,
-    },
-  });
-  console.info(`✓ Upserted "Organization Admin" Role (ID: ${role.id})`);
+      create: {
+        tenantId: user.tenantId,
+        name: 'Organization Admin',
+        isSystem: true,
+      },
+      update: {
+        isSystem: true,
+        deletedAt: null,
+      },
+    });
 
-  // Step 4: Delete all existing RolePermission records for this Role, then recreate them
-  await prisma.rolePermission.deleteMany({
-    where: { roleId: role.id },
-  });
+    // Delete all existing RolePermission records for this Role, then recreate them
+    await prisma.rolePermission.deleteMany({
+      where: { roleId: role.id },
+    });
 
-  await prisma.rolePermission.createMany({
-    data: createdPermissions.map((perm) => ({
-      roleId: role.id,
-      permissionId: perm.id,
-    })),
-    skipDuplicates: true,
-  });
-  console.info(`✓ Mapped ${createdPermissions.length} permissions to "Organization Admin" role`);
+    await prisma.rolePermission.createMany({
+      data: createdPermissions.map((perm) => ({
+        roleId: role.id,
+        permissionId: perm.id,
+      })),
+      skipDuplicates: true,
+    });
 
-  // Step 5: Find the first User in that tenant
-  const user = await prisma.user.findFirst({
-    where: { tenantId: tenant.id, deletedAt: null },
-    orderBy: { createdAt: 'asc' },
-  });
-
-  if (!user) {
-    console.warn('⚠️ Warning: No user found in tenant. Exiting seed script.');
-    return;
-  }
-
-  // Step 6: Upsert a UserRole record linking User to "Organization Admin" Role with scopeType: 'ORGANIZATION'
-  await prisma.userRole.upsert({
-    where: {
-      userId_roleId: {
+    // Upsert a UserRole record linking User to "Organization Admin" Role
+    await prisma.userRole.upsert({
+      where: {
+        userId_roleId: {
+          userId: user.id,
+          roleId: role.id,
+        },
+      },
+      create: {
         userId: user.id,
         roleId: role.id,
+        scopeType: ScopeType.ORGANIZATION,
       },
-    },
-    create: {
-      userId: user.id,
-      roleId: role.id,
-      scopeType: ScopeType.ORGANIZATION,
-    },
-    update: {
-      scopeType: ScopeType.ORGANIZATION,
-    },
-  });
+      update: {
+        scopeType: ScopeType.ORGANIZATION,
+      },
+    });
 
-  // Invalidate Redis permission version cache to clear stale empty manifest for this tenant
-  await permissionService.invalidatePermissionCache(tenant.id);
-  console.info(`✓ Invalidated Redis permission cache for tenant: ${tenant.id}`);
+    // Invalidate Redis permission version cache
+    await permissionService.invalidatePermissionCache(user.tenantId);
+    
+    updatedCount++;
+  }
 
   // Step 7: Log success message
-  console.info(`✓ Super Admin access restored for ${user.email}`);
+  console.info(`✓ Super Admin access restored for ${updatedCount} users.`);
 }
 
 main()

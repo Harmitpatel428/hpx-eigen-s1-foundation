@@ -9,6 +9,66 @@ import Redis from 'ioredis';
 let _client: Redis | null = null;
 let _unavailable = false;
 
+enum CircuitState {
+  CLOSED,
+  OPEN,
+  HALF_OPEN
+}
+
+let circuitState: CircuitState = CircuitState.CLOSED;
+let consecutiveFailureCount = 0;
+let lastFailureTime = 0;
+let halfOpenTestInProgress = false;
+
+const FAILURE_THRESHOLD = parseInt(process.env.REDIS_CIRCUIT_FAILURE_THRESHOLD || '5', 10);
+const RESET_MS = parseInt(process.env.REDIS_CIRCUIT_RESET_MS || '30000', 10);
+
+function checkCircuit(): boolean {
+  if (circuitState === CircuitState.CLOSED) return true;
+
+  if (circuitState === CircuitState.OPEN) {
+    if (Date.now() - lastFailureTime > RESET_MS) {
+      circuitState = CircuitState.HALF_OPEN;
+      process.stderr.write('[Redis:CIRCUIT_OPEN -> HALF_OPEN] Probing Redis availability...\n');
+      return true;
+    }
+    return false;
+  }
+
+  if (circuitState === CircuitState.HALF_OPEN) {
+    if (halfOpenTestInProgress) {
+      return false; // Only allow one test request through
+    }
+    halfOpenTestInProgress = true;
+    return true;
+  }
+
+  return false;
+}
+
+function recordSuccess() {
+  consecutiveFailureCount = 0;
+  if (circuitState === CircuitState.HALF_OPEN) {
+    circuitState = CircuitState.CLOSED;
+    halfOpenTestInProgress = false;
+    process.stderr.write('[Redis:HALF_OPEN -> CLOSED] Redis recovered.\n');
+  }
+}
+
+function recordFailure(err: unknown) {
+  consecutiveFailureCount++;
+  lastFailureTime = Date.now();
+  
+  if (circuitState === CircuitState.HALF_OPEN) {
+    circuitState = CircuitState.OPEN;
+    halfOpenTestInProgress = false;
+    process.stderr.write(`[Redis:HALF_OPEN -> OPEN] Probe failed: ${(err as Error).message}\n`);
+  } else if (circuitState === CircuitState.CLOSED && consecutiveFailureCount >= FAILURE_THRESHOLD) {
+    circuitState = CircuitState.OPEN;
+    process.stderr.write(`[Redis:CIRCUIT_OPEN] Threshold reached (${FAILURE_THRESHOLD} failures). Circuit tripped.\n`);
+  }
+}
+
 function getClient(): Redis | null {
   if (_unavailable) return null;
   if (_client) return _client;
@@ -41,17 +101,22 @@ function getClient(): Redis | null {
 
 /** Get a string value. Returns null on cache miss or unavailable Redis. */
 export async function redisGet(key: string): Promise<string | null> {
+  if (!checkCircuit()) return null;
   try {
     const client = getClient();
     if (!client) return null;
-    return await client.get(key);
-  } catch {
+    const result = await client.get(key);
+    recordSuccess();
+    return result;
+  } catch (err) {
+    recordFailure(err);
     return null;
   }
 }
 
 /** Set a string value with optional TTL in seconds. */
 export async function redisSet(key: string, value: string, ttlSeconds?: number): Promise<void> {
+  if (!checkCircuit()) return;
   try {
     const client = getClient();
     if (!client) return;
@@ -60,18 +125,23 @@ export async function redisSet(key: string, value: string, ttlSeconds?: number):
     } else {
       await client.set(key, value);
     }
-  } catch {
-    // Non-fatal — cache write failure degrades to DB
+    recordSuccess();
+  } catch (err) {
+    recordFailure(err);
   }
 }
 
 /** Atomically increment an integer key. Returns new value or null if unavailable. */
 export async function redisIncr(key: string): Promise<number | null> {
+  if (!checkCircuit()) return null;
   try {
     const client = getClient();
     if (!client) return null;
-    return await client.incr(key);
-  } catch {
+    const result = await client.incr(key);
+    recordSuccess();
+    return result;
+  } catch (err) {
+    recordFailure(err);
     return null;
   }
 }

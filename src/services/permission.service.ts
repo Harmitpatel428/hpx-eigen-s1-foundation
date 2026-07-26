@@ -12,14 +12,21 @@
 import { PrismaClient } from '@prisma/client';
 import { redisGet, redisSet, redisIncr, redisKeys } from '../redis';
 import { AppException, RetryTag } from '../types/exceptions';
+import { PolicyEngineService } from './policy-engine.service';
+import { AuthorizationDecision } from '../types/authorization';
+import { OutboxService } from './outbox.service';
 
 /** Compiled permission manifest: { [slug]: ScopeType } */
-export type PermissionManifest = Record<string, string>;
+export type PermissionManifest = Record<string, string | AuthorizationDecision>;
 
 const PERM_CACHE_TTL = 3600; // seconds
 
 export class PermissionService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly policyEngine: PolicyEngineService;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.policyEngine = new PolicyEngineService(prisma);
+  }
 
   /**
    * Fetch or build the permission manifest for a user.
@@ -34,6 +41,39 @@ export class PermissionService {
     userId: string,
     tenantId: string
   ): Promise<PermissionManifest> {
+    const useV2 = process.env.USE_POLICY_ENGINE === 'true';
+
+    if (useV2) {
+      const user = await this.prisma.user.findUnique({ where: { id: userId } });
+      if (!user?.v2MembershipId) return {};
+
+      const versionStr = await redisGet(`membership:${user.v2MembershipId}:perm_version`);
+      const version = versionStr ? parseInt(versionStr, 10) : 1;
+
+      const cacheKey = `membership:${user.v2MembershipId}:perms:v${version}`;
+      const cached = await redisGet(cacheKey);
+      if (cached) {
+        try {
+          return JSON.parse(cached) as PermissionManifest;
+        } catch {
+          // Corrupt cache — fall through to DB
+        }
+      }
+
+      const allPerms = await this.prisma.permission.findMany({ select: { slug: true } });
+      const slugs = allPerms.map(p => p.slug);
+      
+      const manifest = await this.policyEngine.authorizeMany(user.v2MembershipId, slugs);
+      
+      if (Object.keys(manifest).length > 0) {
+        await redisSet(cacheKey, JSON.stringify(manifest), PERM_CACHE_TTL);
+        if (!versionStr) {
+          await redisSet(`membership:${user.v2MembershipId}:perm_version`, String(version));
+        }
+      }
+      return manifest;
+    }
+
     // Fetch current version (fallback to 1 if Redis unavailable or key missing)
     const versionStr = await redisGet(redisKeys.permVersion(tenantId));
     const version = versionStr ? parseInt(versionStr, 10) : 1;
@@ -72,11 +112,17 @@ export class PermissionService {
    * All existing vN user-permission keys will be orphaned and expire via TTL.
    * Call this whenever a Role, RolePermission, or UserRole is mutated.
    */
-  async invalidatePermissionCache(tenantId: string): Promise<void> {
-    const result = await redisIncr(redisKeys.permVersion(tenantId));
+  async invalidatePermissionCache(id: string): Promise<void> {
+    const useV2 = process.env.USE_POLICY_ENGINE === 'true';
+    const key = useV2 ? `membership:${id}:perm_version` : redisKeys.permVersion(id);
+    const result = await redisIncr(key);
     if (result === null) {
-      throw new AppException('CACHE_INVALIDATION_FAILED', 'Failed to invalidate permission cache. Operation aborted to prevent stale permissions.', RetryTag.NON_RETRYABLE, 500);
+      process.stderr.write(`[PermissionService] Cache invalidation skipped for key ${key} — Redis unavailable.\n`);
     }
+
+    const outboxService = new OutboxService(this.prisma as any);
+    const eventPayload = useV2 ? { membershipId: id } : { tenantId: id };
+    await outboxService.publish('PermissionCacheInvalidated', eventPayload, useV2 ? undefined : id);
   }
 
   /**
@@ -126,7 +172,7 @@ export class PermissionService {
         const existing = manifest[slug];
         if (
           !existing ||
-          (scopeOrder[scope] ?? 0) > (scopeOrder[existing] ?? 0)
+          (scopeOrder[scope] ?? 0) > (scopeOrder[existing as string] ?? 0)
         ) {
           manifest[slug] = scope;
         }

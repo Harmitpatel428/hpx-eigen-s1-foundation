@@ -4,8 +4,10 @@ import { ContactRepository } from '../repositories/contact.repo';
 import { OpportunityRepository } from '../repositories/opportunity.repo';
 import { PipelineRepository } from '../repositories/pipeline.repo';
 import { AuditService } from './audit.service';
+import { OutboxService } from './outbox.service';
 import { TenantContext } from '../repositories/base.repo';
-import { ValidationError, BusinessRuleViolationError } from '../types/exceptions';
+import { ValidationError, BusinessRuleViolationError, AppException, RetryTag } from '../types/exceptions';
+import { AuthorizationDecision } from '../types/authorization';
 
 export interface ConvertLeadInput {
   /** Contact details created during conversion */
@@ -49,16 +51,24 @@ export class LeadService {
     }
 
     const repos = this.makeContext(ctx);
-    const lead = await repos.lead.create(input);
+    const lead = await this.prisma.$transaction(async (tx) => {
+      const txRepos = { lead: new LeadRepository(ctx, tx as any) };
+      const created = await txRepos.lead.create(input);
 
-    await this.audit.log({
-      tenantId: ctx.tenantId,
-      eventType: 'LEAD_CREATED',
-      entityType: 'Lead',
-      entityId: lead.id,
-      actorUserId: ctx.userId,
-      operation: 'CREATE',
-      payload: { firstName: input.firstName, lastName: input.lastName, source: input.source }
+      const txAudit = new AuditService(tx as any);
+      await txAudit.log({
+        tenantId: ctx.tenantId,
+        eventType: 'LEAD_CREATED',
+        entityType: 'Lead',
+        entityId: created.id,
+        actorUserId: ctx.userId,
+        operation: 'CREATE',
+        payload: { firstName: input.firstName, lastName: input.lastName, source: input.source },
+        beforeState: null,
+        afterState: created as unknown as Record<string, unknown>
+      });
+
+      return created;
     });
 
     return lead;
@@ -71,7 +81,8 @@ export class LeadService {
   }
 
   /** List leads with optional filters, search, and pagination */
-  async listLeads(ctx: TenantContext, options?: FindAllLeadsOptions) {
+  async listLeads(ctx: TenantContext, decision: AuthorizationDecision | undefined, options?: FindAllLeadsOptions) {
+    if (decision && !decision.allowed) throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
     const repos = this.makeContext(ctx);
     return repos.lead.findAll(options);
   }
@@ -82,19 +93,41 @@ export class LeadService {
     return repos.lead.findByStatus(status);
   }
 
-  /** Update a lead */
-  async updateLead(ctx: TenantContext, leadId: string, input: UpdateLeadInput) {
+  async updateLead(ctx: TenantContext, decision: AuthorizationDecision | undefined, leadId: string, input: UpdateLeadInput) {
+    if (decision && !decision.allowed) throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
+    
     const repos = this.makeContext(ctx);
-    const lead = await repos.lead.update(leadId, input);
+    const beforeLead = await repos.lead.findById(leadId);
 
-    await this.audit.log({
-      tenantId: ctx.tenantId,
-      eventType: 'LEAD_UPDATED',
-      entityType: 'Lead',
-      entityId: leadId,
-      actorUserId: ctx.userId,
-      operation: 'UPDATE',
-      payload: { changes: input }
+    const lead = await this.prisma.$transaction(async (tx) => {
+      const txRepos = {
+        lead: new LeadRepository(ctx, tx as any)
+      };
+      
+      const updated = await txRepos.lead.update(leadId, input);
+      
+      const outboxService = new OutboxService(tx as any);
+      await outboxService.publish('LeadUpdated', {
+        leadId,
+        before: beforeLead as Record<string, unknown>,
+        after: updated as Record<string, unknown>,
+        actorId: ctx.userId
+      }, ctx.tenantId);
+
+      const txAudit = new AuditService(tx as any);
+      await txAudit.log({
+        tenantId: ctx.tenantId,
+        eventType: 'LEAD_UPDATED',
+        entityType: 'Lead',
+        entityId: leadId,
+        actorUserId: ctx.userId,
+        operation: 'UPDATE',
+        payload: { changes: input },
+        beforeState: beforeLead as unknown as Record<string, unknown>,
+        afterState: updated as unknown as Record<string, unknown>
+      });
+
+      return updated;
     });
 
     return lead;

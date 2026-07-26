@@ -1,6 +1,7 @@
 import { PrismaClient, Prisma } from '@prisma/client';
 import crypto from 'crypto';
 import { AuditWriteFailureError } from '../types/exceptions';
+import { getRequestContext } from '../context/request-context';
 
 interface AuditLogInput {
   tenantId: string;
@@ -12,6 +13,8 @@ interface AuditLogInput {
   actorUserAgent?: string;
   operation: string;
   payload: Record<string, unknown>;
+  beforeState?: Record<string, unknown> | null;
+  afterState?: Record<string, unknown> | null;
 }
 
 export class AuditService {
@@ -26,20 +29,23 @@ export class AuditService {
         select: { currentHash: true }
       });
 
-      const previousHash = lastRecord?.currentHash ?? null;
+      let correlationId: string | null = null;
+      try {
+        const ctx = getRequestContext();
+        correlationId = ctx.correlationId;
+      } catch {
+        // Context unbound
+      }
 
-      // Build the payload string for hashing
-      const hashInput = JSON.stringify({
-        tenantId: input.tenantId,
-        eventType: input.eventType,
-        entityType: input.entityType,
-        entityId: input.entityId,
-        actorUserId: input.actorUserId,
-        operation: input.operation,
-        payload: input.payload,
-        previousHash,
-        timestamp: new Date().toISOString()
-      });
+      const previousHash = lastRecord?.currentHash ?? null;
+      const timestamp = new Date().toISOString();
+
+      // Build the payload string for hashing precisely as instructed
+      const hashInput = (previousHash || '') +
+                        JSON.stringify(input.payload) +
+                        JSON.stringify(input.beforeState || null) +
+                        JSON.stringify(input.afterState || null) +
+                        timestamp;
 
       const currentHash = crypto
         .createHash('sha256')
@@ -58,6 +64,9 @@ export class AuditService {
           actorUserAgent: input.actorUserAgent,
           operation: input.operation,
           payload: input.payload as Prisma.InputJsonValue,
+          beforeState: (input.beforeState || null) as Prisma.InputJsonValue,
+          afterState: (input.afterState || null) as Prisma.InputJsonValue,
+          correlationId,
           previousHash,
           currentHash
         }

@@ -2,11 +2,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient, ScopeType } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { PermissionService } from '../services/permission.service';
+import { AuditService } from '../services/audit.service';
 import { ValidationError, DuplicateResourceError, ResourceNotFoundError } from '../types/exceptions';
 
 export function createRolesRouter(prisma: PrismaClient): Router {
   const router = Router();
   const permissionService = new PermissionService(prisma);
+  const auditService = new AuditService(prisma);
 
   router.use(authMiddleware);
 
@@ -102,11 +104,29 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       const permission = await prisma.permission.findUnique({ where: { id: permissionId } });
       if (!permission) throw new ValidationError('permissionId references a non-existent permission.');
 
+      const beforeState = await prisma.role.findUnique({ where: { id: req.params.id }, include: { permissions: true } });
+
       // Upsert — idempotent
       await prisma.rolePermission.upsert({
         where: { roleId_permissionId: { roleId: req.params.id, permissionId } },
         create: { roleId: req.params.id, permissionId },
         update: {},
+      });
+
+      const afterState = await prisma.role.findUnique({ where: { id: req.params.id }, include: { permissions: true } });
+
+      await auditService.log({
+        tenantId,
+        eventType: 'RoleUpdated',
+        entityType: 'Role',
+        entityId: req.params.id,
+        actorUserId: (req as AuthenticatedRequest).user.userId,
+        actorIp: req.ip,
+        actorUserAgent: req.headers['user-agent'],
+        operation: 'GRANT_PERMISSION',
+        payload: { permissionId },
+        beforeState: beforeState as unknown as Record<string, unknown>,
+        afterState: afterState as unknown as Record<string, unknown>
       });
 
       // Invalidate permission cache for this tenant
@@ -129,8 +149,26 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       });
       if (!role) throw new ResourceNotFoundError();
 
+      const beforeState = await prisma.role.findUnique({ where: { id: req.params.id }, include: { permissions: true } });
+
       await prisma.rolePermission.deleteMany({
         where: { roleId: req.params.id, permissionId: req.params.permissionId },
+      });
+
+      const afterState = await prisma.role.findUnique({ where: { id: req.params.id }, include: { permissions: true } });
+
+      await auditService.log({
+        tenantId,
+        eventType: 'RoleUpdated',
+        entityType: 'Role',
+        entityId: req.params.id,
+        actorUserId: (req as AuthenticatedRequest).user.userId,
+        actorIp: req.ip,
+        actorUserAgent: req.headers['user-agent'],
+        operation: 'REVOKE_PERMISSION',
+        payload: { permissionId: req.params.permissionId },
+        beforeState: beforeState as unknown as Record<string, unknown>,
+        afterState: afterState as unknown as Record<string, unknown>
       });
 
       // Invalidate permission cache for this tenant

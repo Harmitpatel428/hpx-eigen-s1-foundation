@@ -1,6 +1,8 @@
 import { PrismaClient, SessionStatus } from '@prisma/client';
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
+import { requestContextStorage, RequestContext } from '../context/request-context';
 import { PermissionService, PermissionManifest } from '../services/permission.service';
 import {
   SessionExpiredError,
@@ -19,6 +21,8 @@ export interface AuthenticatedRequest extends Request {
     permissions: PermissionManifest;
     /** Injected by permissionMiddleware — the resolved ABAC scope for the current route */
     scope?: string;
+    /** Injected by permissionMiddleware in V2 mode — the full authorization decision */
+    decision?: import('../types/authorization').AuthorizationDecision;
   };
 }
 
@@ -120,7 +124,7 @@ export async function authMiddleware(
     // Fetch user's team/department context for ABAC scope resolution
     const userRecord = await prisma.user.findFirst({
       where: { id: userId, tenantId, deletedAt: null },
-      select: { teamId: true, departmentId: true },
+      select: { teamId: true, departmentId: true, v2MembershipId: true },
     });
 
     // Load permission manifest (Redis-backed with DB fallback)
@@ -135,7 +139,20 @@ export async function authMiddleware(
       permissions,
     };
 
-    next();
+    const requestContext: RequestContext = {
+      identityId: userId,
+      membershipId: userRecord?.v2MembershipId ?? '',
+      tenantId,
+      sessionId,
+      correlationId: (req.headers['x-correlation-id'] as string) || crypto.randomUUID(),
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      requestedAt: new Date(),
+    };
+
+    requestContextStorage.run(requestContext, () => {
+      next();
+    });
   } catch (err: unknown) {
     if (
       err instanceof AuthenticationFailedError ||
@@ -163,15 +180,26 @@ export async function authMiddleware(
 export function permissionMiddleware(slug: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const authedReq = req as AuthenticatedRequest;
-    const scope = authedReq.user?.permissions[slug];
+    const scopeOrDecision = authedReq.user?.permissions[slug];
 
-    if (!scope) {
+    if (!scopeOrDecision) {
       const err = new AuthorizationError();
       res.status(err.httpStatus).json({ code: err.code, message: err.message });
       return;
     }
 
-    authedReq.user.scope = scope;
+    if (typeof scopeOrDecision === 'string') {
+      authedReq.user.scope = scopeOrDecision;
+    } else {
+      if (!scopeOrDecision.allowed) {
+        const err = new AuthorizationError();
+        res.status(err.httpStatus).json({ code: err.code, message: err.message });
+        return;
+      }
+      authedReq.user.scope = scopeOrDecision.effectiveScope;
+      authedReq.user.decision = scopeOrDecision;
+    }
+
     next();
   };
 }
