@@ -1,25 +1,47 @@
 /**
- * PermissionService — RBAC+ABAC permission resolution with Redis version caching.
+ * PermissionService — RBAC+ABAC permission resolution with Redis caching.
  *
- * Cache strategy (thundering-herd safe):
- *   Redis key: tenant:{tenantId}:perm_version  (integer, no TTL)
- *   Redis key: tenant:{tenantId}:user:{userId}:perms:v{version}  (JSON, TTL = 3600s)
+ * Cache strategy (per-user direct key, synchronous invalidation):
  *
- * On any role/assignment change: INCR perm_version.
- * Stale vN keys are orphaned and expire via TTL.
- * Next request misses vN+1, rebuilds from DB, caches vN+1.
+ *   Key:  perm:manifest:{userId}
+ *   TTL:  PERM_CACHE_TTL (3600s) — safety net only; NOT the primary invalidation mechanism.
+ *
+ * Invalidation:
+ *   On any UserRole, RolePermission, or Role mutation, call invalidatePermissionCache(userId).
+ *   This issues a synchronous DEL on perm:manifest:{userId}, guaranteeing the stale entry
+ *   is removed *immediately* — not after TTL expiry. The next request for that user triggers
+ *   a single cache-miss DB query and re-populates the key.
+ *
+ * Zero-DB-Query Cache Hit:
+ *   authMiddleware calls getPermissionManifest(userId, tenantId).
+ *   If the Redis key exists and deserializes cleanly → return without any Prisma call.
+ *   The ONLY DB I/O on the hot path is the first request after a cold start or invalidation.
+ *
+ * Fail-Secure Policy:
+ *   - Redis unavailable → fall through to DB (degraded, not broken).
+ *   - Corrupt JSON in Redis → log warning, DEL the corrupt key, fall through to DB.
+ *   - DB returns zero roles for a user → cache the empty manifest and return deny-all.
+ *     (An empty manifest is a valid state — the user has no permissions assigned.)
  */
 import { PrismaClient } from '@prisma/client';
-import { redisGet, redisSet, redisIncr, redisKeys } from '../redis';
-import { AppException, RetryTag } from '../types/exceptions';
+import { redisGet, redisSet, redisDel, redisKeys } from '../redis';
+import { AuthorizationError } from '../types/exceptions';
 import { PolicyEngineService } from './policy-engine.service';
 import { AuthorizationDecision } from '../types/authorization';
 import { OutboxService } from './outbox.service';
+import { logger } from '../utils/logger';
 
-/** Compiled permission manifest: { [slug]: ScopeType } */
+/** Compiled permission manifest: { [slug]: ScopeType | AuthorizationDecision } */
 export type PermissionManifest = Record<string, string | AuthorizationDecision>;
 
-const PERM_CACHE_TTL = 3600; // seconds
+const PERM_CACHE_TTL = 3600; // seconds — safety-net TTL only
+
+const SCOPE_ORDER: Record<string, number> = {
+  OWN: 1,
+  TEAM: 2,
+  DEPARTMENT: 3,
+  ORGANIZATION: 4,
+};
 
 export class PermissionService {
   private readonly policyEngine: PolicyEngineService;
@@ -30,12 +52,16 @@ export class PermissionService {
 
   /**
    * Fetch or build the permission manifest for a user.
-   * Returns a flat object: { "lead:create": "TEAM", "contact:view": "OWN" }
    *
-   * Cache miss path:
-   *   1. Read perm_version from Redis (default 1 if missing)
-   *   2. Check user perms key for that version
-   *   3. On miss, build from DB and cache
+   * Hot path (cache hit):
+   *   1. GET perm:manifest:{userId} from Redis
+   *   2. JSON.parse and return → ZERO DB queries
+   *
+   * Cold path (cache miss):
+   *   1. Run single optimized Prisma query: UserRole → Role → RolePermission → Permission
+   *   2. Compile most-permissive scope per slug
+   *   3. SET perm:manifest:{userId} with TTL
+   *   4. Return manifest
    */
   async getPermissionManifest(
     userId: string,
@@ -44,106 +70,44 @@ export class PermissionService {
     const useV2 = process.env.USE_POLICY_ENGINE === 'true';
 
     if (useV2) {
-      const user = await this.prisma.user.findUnique({ where: { id: userId } });
-      if (!user?.v2MembershipId) return {};
-
-      const versionStr = await redisGet(`membership:${user.v2MembershipId}:perm_version`);
-      const version = versionStr ? parseInt(versionStr, 10) : 1;
-
-      const cacheKey = `membership:${user.v2MembershipId}:perms:v${version}`;
-      const cached = await redisGet(cacheKey);
-      if (cached) {
-        try {
-          return JSON.parse(cached) as PermissionManifest;
-        } catch {
-          // Corrupt cache — fall through to DB
-        }
-      }
-
-      const allPerms = await this.prisma.permission.findMany({ select: { slug: true } });
-      const slugs = allPerms.map(p => p.slug);
-      
-      const manifest = await this.policyEngine.authorizeMany(user.v2MembershipId, slugs);
-      
-      if (Object.keys(manifest).length > 0) {
-        await redisSet(cacheKey, JSON.stringify(manifest), PERM_CACHE_TTL);
-        if (!versionStr) {
-          await redisSet(`membership:${user.v2MembershipId}:perm_version`, String(version));
-        }
-      }
-      return manifest;
+      return this._getManifestV2(userId);
     }
 
-    // Fetch current version (fallback to 1 if Redis unavailable or key missing)
-    const versionStr = await redisGet(redisKeys.permVersion(tenantId));
-    const version = versionStr ? parseInt(versionStr, 10) : 1;
+    return this._getManifestV1(userId, tenantId);
+  }
 
-    // Attempt cache hit
-    const cacheKey = redisKeys.userPerms(tenantId, userId, version);
+  // ─── V1: RBAC path ──────────────────────────────────────────────────────────
+
+  private async _getManifestV1(userId: string, tenantId: string): Promise<PermissionManifest> {
+    const cacheKey = redisKeys.userManifest(userId);
+
+    // 1. Attempt O(1) Redis hit
     const cached = await redisGet(cacheKey);
-    if (cached) {
+    if (cached !== null) {
       try {
         return JSON.parse(cached) as PermissionManifest;
       } catch {
-        // Corrupt cache — fall through to DB
+        // Corrupt payload — log, evict immediately, and fall through to DB
+        logger.warn({ userId, cacheKey }, '[PermissionService] Corrupt manifest in Redis. Evicting and rebuilding.');
+        await redisDel(cacheKey);
       }
     }
 
-    // Cache miss — build from DB
-    const manifest = await this.buildManifestFromDB(userId, tenantId);
+    // 2. Cache miss — single optimized query
+    const manifest = await this._buildV1ManifestFromDB(userId, tenantId);
 
-    if (Object.keys(manifest).length === 0) {
-      return manifest;
-    }
-
-    // Write to Redis (non-blocking — failure is non-fatal)
+    // 3. Cache result (even empty manifests are cached — empty = deny-all, which is valid)
     await redisSet(cacheKey, JSON.stringify(manifest), PERM_CACHE_TTL);
-
-    // Ensure perm_version key exists in Redis for future invalidations
-    if (!versionStr) {
-      await redisSet(redisKeys.permVersion(tenantId), String(version));
-    }
 
     return manifest;
   }
 
   /**
-   * Invalidate all cached permissions for a tenant by incrementing perm_version.
-   * All existing vN user-permission keys will be orphaned and expire via TTL.
-   * Call this whenever a Role, RolePermission, or UserRole is mutated.
+   * Single Prisma query joining all 4 tables in one traversal.
+   * UserRole → Role → RolePermission → Permission
+   * No N+1. No separate permission.findMany().
    */
-  async invalidatePermissionCache(id: string): Promise<void> {
-    const useV2 = process.env.USE_POLICY_ENGINE === 'true';
-    const key = useV2 ? `membership:${id}:perm_version` : redisKeys.permVersion(id);
-    const result = await redisIncr(key);
-    if (result === null) {
-      process.stderr.write(`[PermissionService] Cache invalidation skipped for key ${key} — Redis unavailable.\n`);
-    }
-
-    const outboxService = new OutboxService(this.prisma as any);
-    const eventPayload = useV2 ? { membershipId: id } : { tenantId: id };
-    await outboxService.publish('PermissionCacheInvalidated', eventPayload, useV2 ? undefined : id);
-  }
-
-  /**
-   * Build permission manifest directly from DB.
-   * Joins: UserRole → Role → RolePermission → Permission
-   *
-   * The effective scope for a permission slug is the MOST PERMISSIVE scope
-   * across all roles assigned to the user (ORGANIZATION > DEPARTMENT > TEAM > OWN).
-   */
-  async buildManifestFromDB(
-    userId: string,
-    tenantId: string
-  ): Promise<PermissionManifest> {
-    const scopeOrder: Record<string, number> = {
-      OWN: 1,
-      TEAM: 2,
-      DEPARTMENT: 3,
-      ORGANIZATION: 4,
-    };
-
-    // Fetch user's active role assignments for this tenant
+  private async _buildV1ManifestFromDB(userId: string, tenantId: string): Promise<PermissionManifest> {
     const userRoles = await this.prisma.userRole.findMany({
       where: {
         userId,
@@ -154,7 +118,9 @@ export class PermissionService {
         role: {
           select: {
             permissions: {
-              select: { permission: { select: { slug: true } } },
+              select: {
+                permission: { select: { slug: true } },
+              },
             },
           },
         },
@@ -168,17 +134,92 @@ export class PermissionService {
         const slug = rp.permission.slug;
         const scope = userRole.scopeType;
 
-        // Keep the most permissive scope if this slug appears in multiple roles
         const existing = manifest[slug];
-        if (
-          !existing ||
-          (scopeOrder[scope] ?? 0) > (scopeOrder[existing as string] ?? 0)
-        ) {
+        if (!existing || (SCOPE_ORDER[scope] ?? 0) > (SCOPE_ORDER[existing as string] ?? 0)) {
           manifest[slug] = scope;
         }
       }
     }
 
     return manifest;
+  }
+
+  // ─── V2: Policy Engine path ──────────────────────────────────────────────────
+
+  private async _getManifestV2(userId: string): Promise<PermissionManifest> {
+    const cacheKey = redisKeys.userManifest(userId);
+
+    // 1. Attempt O(1) Redis hit — no DB call for v2MembershipId lookup
+    const cached = await redisGet(cacheKey);
+    if (cached !== null) {
+      try {
+        return JSON.parse(cached) as PermissionManifest;
+      } catch {
+        logger.warn({ userId, cacheKey }, '[PermissionService] Corrupt V2 manifest in Redis. Evicting and rebuilding.');
+        await redisDel(cacheKey);
+      }
+    }
+
+    // 2. Cache miss — must fetch membership ID from DB (single lookup, unavoidable)
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { v2MembershipId: true },
+    });
+
+    if (!user?.v2MembershipId) {
+      // No membership → empty deny-all manifest, cached to prevent thundering herd
+      await redisSet(cacheKey, JSON.stringify({}), PERM_CACHE_TTL);
+      return {};
+    }
+
+    const allPerms = await this.prisma.permission.findMany({ select: { slug: true } });
+    const slugs = allPerms.map(p => p.slug);
+    const manifest = await this.policyEngine.authorizeMany(user.v2MembershipId, slugs);
+
+    await redisSet(cacheKey, JSON.stringify(manifest), PERM_CACHE_TTL);
+    return manifest;
+  }
+
+  // ─── Invalidation ─────────────────────────────────────────────────────────
+
+  /**
+   * Synchronously invalidate a single user's permission manifest.
+   *
+   * Uses DEL — NOT INCR — guaranteeing the stale key is removed immediately.
+   * The next request for this user will trigger a fresh DB build.
+   *
+   * Call this whenever a UserRole, RolePermission, or Role is mutated for this user.
+   */
+  async invalidatePermissionCache(userId: string): Promise<void> {
+    const cacheKey = redisKeys.userManifest(userId);
+    const result = await redisDel(cacheKey);
+
+    if (result === null) {
+      // Redis unavailable — log as a security warning; next request will hit DB
+      logger.warn(
+        { userId, cacheKey },
+        '[PermissionService] SECURITY WARNING: Cache invalidation could not be confirmed — Redis unavailable. User will receive fresh permissions on next DB-fallback request.'
+      );
+    }
+  }
+
+  /**
+   * Bulk invalidation — evict manifests for all members of a tenant.
+   * Required when a Tenant-scoped Role or RolePermission is mutated.
+   * Fetches all affected userIds and issues individual DEL operations.
+   */
+  async invalidateTenantPermissionCache(tenantId: string): Promise<void> {
+    const users = await this.prisma.userRole.findMany({
+      where: { role: { tenantId, deletedAt: null } },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+
+    await Promise.all(
+      users.map(u => this.invalidatePermissionCache(u.userId))
+    );
+
+    const outboxService = new OutboxService(this.prisma as any);
+    await outboxService.publish('PermissionCacheInvalidated', { tenantId }, tenantId);
   }
 }

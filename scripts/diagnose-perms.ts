@@ -44,8 +44,8 @@ async function diagnose() {
   console.log(JSON.stringify(rolePermissions, null, 2));
   console.log(`Total RolePermissions mapped: ${rolePermissions.length}\n`);
 
-  // c) Compiled manifest by calling PermissionService.buildManifestFromDB directly (bypassing Redis)
-  const dbManifest = await permissionService.buildManifestFromDB(user.id, user.tenantId);
+  // c) Compiled manifest by calling PermissionService._buildV1ManifestFromDB directly (bypassing Redis)
+  const dbManifest = await (permissionService as any)._buildV1ManifestFromDB(user.id, user.tenantId);
   console.log('--- [c] COMPILED MANIFEST FROM DB (Bypassing Redis) ---');
   console.log(JSON.stringify(dbManifest, null, 2));
   console.log(`Total permissions in DB manifest: ${Object.keys(dbManifest).length}\n`);

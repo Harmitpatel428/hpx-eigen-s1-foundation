@@ -129,8 +129,8 @@ export function createRolesRouter(prisma: PrismaClient): Router {
         afterState: afterState as unknown as Record<string, unknown>
       });
 
-      // Invalidate permission cache for this tenant
-      await permissionService.invalidatePermissionCache(tenantId);
+      // Invalidate all users in this tenant — Role permission change affects everyone assigned to this role
+      await permissionService.invalidateTenantPermissionCache(tenantId);
 
       res.status(201).json({ message: 'Permission added.' });
     } catch (err) {
@@ -171,8 +171,8 @@ export function createRolesRouter(prisma: PrismaClient): Router {
         afterState: afterState as unknown as Record<string, unknown>
       });
 
-      // Invalidate permission cache for this tenant
-      await permissionService.invalidatePermissionCache(tenantId);
+      // Invalidate all users in this tenant — Role permission change affects everyone assigned to this role
+      await permissionService.invalidateTenantPermissionCache(tenantId);
 
       res.status(204).send();
     } catch (err) {
@@ -255,8 +255,8 @@ export function createRolesRouter(prisma: PrismaClient): Router {
         update: { scopeType: scopeType ?? ScopeType.OWN },
       });
 
-      // Invalidate permission cache for this tenant
-      await permissionService.invalidatePermissionCache(tenantId);
+      // Invalidate the specific user's manifest — only their permissions changed
+      await permissionService.invalidatePermissionCache(userId);
 
       res.status(201).json({ message: 'Role assigned.' });
     } catch (err) {
@@ -279,8 +279,8 @@ export function createRolesRouter(prisma: PrismaClient): Router {
         where: { roleId: req.params.id, userId: req.params.userId },
       });
 
-      // Invalidate permission cache for this tenant
-      await permissionService.invalidatePermissionCache(tenantId);
+      // Invalidate the specific user's manifest — only their permissions changed
+      await permissionService.invalidatePermissionCache(req.params.userId);
 
       res.status(204).send();
     } catch (err) {

@@ -25,10 +25,15 @@ async function processOutbox() {
         if (event.eventType === 'RoleGranted' || event.eventType === 'PermissionRevoked' || event.eventType === 'PermissionCacheInvalidated') {
           // If the payload contains membershipId or tenantId, invalidate appropriately
           const payload = event.payload as Record<string, any>;
-          const targetId = payload.membershipId || payload.tenantId || event.tenantId;
-          
-          if (targetId) {
-            await permissionService.invalidatePermissionCache(targetId);
+          const userId = payload.userId as string | undefined;
+          const tenantId = (payload.tenantId || event.tenantId) as string | undefined;
+
+          if (userId) {
+            // Specific user's manifest was invalidated (e.g., UserRole assignment)
+            await permissionService.invalidatePermissionCache(userId);
+          } else if (tenantId) {
+            // Tenant-wide invalidation (e.g., RolePermission change)
+            await permissionService.invalidateTenantPermissionCache(tenantId);
           }
         }
 
