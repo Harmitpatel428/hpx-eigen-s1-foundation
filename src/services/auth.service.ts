@@ -12,6 +12,8 @@ import {
   AppException,
   RetryTag
 } from '../types/exceptions';
+import { redisSet, redisDel, redisKeys } from '../redis';
+import { TokenService } from './token.service';
 import { AuditService } from './audit.service';
 
 export interface LoginResult {
@@ -25,6 +27,7 @@ export interface LoginResult {
 
 export interface RefreshResult {
   accessToken: string;
+  refreshToken: string;
 }
 
 const BCRYPT_COST = parseInt(process.env.BCRYPT_COST ?? '12', 10);
@@ -91,12 +94,11 @@ export class AuthService {
       }
     });
 
-    const secret = process.env.JWT_SECRET!;
-    const accessToken = jwt.sign(
-      { sessionId: session.id, userId: user.id, tenantId: actualTenantId },
-      secret,
-      { expiresIn: `${SESSION_LIFETIME_DAYS}d` }
-    );
+    // Issue Token via TokenService (RS256)
+    const accessToken = TokenService.generateAccessToken(user.id, actualTenantId, session.id);
+
+    // Seed Redis with session validity (15 minutes = 900 seconds)
+    await redisSet(redisKeys.sessionActive(session.id), "1", 900);
 
     await this.auditService.log({
       tenantId: actualTenantId,
@@ -110,7 +112,14 @@ export class AuthService {
       payload: { sessionId: session.id, email }
     });
 
-    return { accessToken, sessionId: session.id, expiresAt, userId: user.id, tenantId: actualTenantId };
+    return { 
+      accessToken, 
+      refreshToken: `${session.id}.${refreshToken}`,
+      sessionId: session.id, 
+      expiresAt, 
+      userId: user.id, 
+      tenantId: actualTenantId 
+    };
   }
 
   /**
@@ -138,6 +147,9 @@ export class AuthService {
       }
     });
 
+    // Evict from Redis to immediately invalidate access tokens
+    await redisDel(redisKeys.sessionActive(sessionId));
+
     await this.auditService.log({
       tenantId,
       eventType: 'USER_LOGOUT',
@@ -159,6 +171,16 @@ export class AuthService {
     reason: string,
     actorUserId?: string
   ): Promise<number> {
+    const activeSessions = await this.prisma.session.findMany({
+      where: {
+        userId,
+        tenantId,
+        status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
+        deletedAt: null
+      },
+      select: { id: true }
+    });
+
     const result = await this.prisma.session.updateMany({
       where: {
         userId,
@@ -171,6 +193,11 @@ export class AuthService {
         invalidatedAt: new Date()
       }
     });
+
+    // Evict all invalidated sessions from Redis
+    for (const session of activeSessions) {
+      await redisDel(redisKeys.sessionActive(session.id));
+    }
 
     await this.auditService.log({
       tenantId,
@@ -187,24 +214,27 @@ export class AuthService {
 
   /**
    * Refresh — validates the raw refresh token against the stored bcrypt hash.
-   * Issues a new accessToken without creating a new session.
+   * Issues a new accessToken and rotates the refreshToken.
    *
    * Security notes:
-   * - Session must be ACTIVE and not expired
+   * - Session must be ACTIVE or CREATED and not expired
    * - refreshToken is validated via constant-time bcrypt compare
-   * - Replay attacks detected: if token hash doesn't match, throw AuthenticationFailedError
+   * - Replay attacks detected: if token hash doesn't match, revoke session
    */
   async refresh(
-    sessionId: string,
-    refreshToken: string,
-    tenantId: string
+    providedRefreshToken: string
   ): Promise<RefreshResult> {
-    if (!refreshToken) throw new ValidationError('refreshToken is required.');
+    if (!providedRefreshToken) throw new ValidationError('refreshToken is required.');
+
+    const [sessionId, randomToken] = providedRefreshToken.split('.');
+    
+    if (!sessionId || !randomToken) {
+      throw new ValidationError('Invalid refresh token format.');
+    }
 
     const session = await this.prisma.session.findFirst({
       where: {
         id: sessionId,
-        tenantId,
         status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
         expiresAt: { gt: new Date() },
         deletedAt: null
@@ -215,23 +245,38 @@ export class AuthService {
     if (!session) throw new SessionExpiredError();
 
     // Constant-time comparison to prevent timing attacks
-    const tokenValid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
-    if (!tokenValid) throw new AuthenticationFailedError();
+    const tokenValid = await bcrypt.compare(randomToken, session.refreshTokenHash);
+    
+    if (!tokenValid) {
+      // CRITICAL SECURITY: If an invalid token is presented for a valid session, 
+      // it might mean the token was stolen. Revoke the entire session immediately.
+      await this.logout(sessionId, session.tenantId, session.userId);
+      throw new AuthenticationFailedError('Invalid refresh token. Session revoked for security.');
+    }
 
-    const secret = process.env.JWT_SECRET!;
-    const accessToken = jwt.sign(
-      { sessionId: session.id, userId: session.userId, tenantId },
-      secret,
-      { expiresIn: '15m' }
-    );
+    // Token Rotation: Generate new token and hash
+    const newRandomToken = crypto.randomBytes(64).toString('hex');
+    const newRefreshTokenHash = await bcrypt.hash(newRandomToken, BCRYPT_COST);
 
-    // Touch lastActivityAt
+    // Issue new Token via TokenService (RS256)
+    const accessToken = TokenService.generateAccessToken(session.userId, session.tenantId, session.id);
+
+    // Refresh Redis validity TTL
+    await redisSet(redisKeys.sessionActive(session.id), "1", 900);
+
+    // Update session with new hash and touch lastActivityAt
     await this.prisma.session.update({
       where: { id: sessionId },
-      data: { lastActivityAt: new Date() }
+      data: { 
+        refreshTokenHash: newRefreshTokenHash,
+        lastActivityAt: new Date() 
+      }
     });
 
-    return { accessToken };
+    return { 
+      accessToken, 
+      refreshToken: `${sessionId}.${newRandomToken}` 
+    };
   }
 
   /**

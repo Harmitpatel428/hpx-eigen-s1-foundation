@@ -1,15 +1,15 @@
-import { PrismaClient, SessionStatus } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import * as crypto from 'crypto';
-import { requestContextStorage, RequestContext } from '../context/request-context';
+import { TokenService } from '../services/token.service';
+import { redisGet, redisSet, redisKeys } from '../redis';
 import { PermissionService, PermissionManifest } from '../services/permission.service';
 import {
-  SessionExpiredError,
   SessionRevokedError,
   AuthenticationFailedError,
   AuthorizationError,
+  SessionExpiredError,
 } from '../types/exceptions';
+import { logger } from '../utils/logger';
 
 export interface AuthenticatedRequest extends Request {
   user: {
@@ -29,16 +29,61 @@ export interface AuthenticatedRequest extends Request {
 const prisma = new PrismaClient();
 const permissionService = new PermissionService(prisma);
 
+/** Redis TTL for user context cache (teamId, departmentId). Match session lifetime. */
+const USER_CONTEXT_TTL = 3600; // 1 hour
+
+function userContextKey(userId: string): string {
+  return `user:context:${userId}`;
+}
+
+interface UserContext {
+  teamId: string | null;
+  departmentId: string | null;
+}
+
+/**
+ * Fetch user's ABAC context (teamId, departmentId) from Redis.
+ * Falls back to a single Prisma query on miss, then caches the result.
+ * Eliminates the DB call from the hot path on all subsequent requests.
+ */
+async function getUserContext(userId: string, tenantId: string): Promise<UserContext> {
+  const cacheKey = userContextKey(userId);
+  const cached = await redisGet(cacheKey);
+
+  if (cached !== null) {
+    try {
+      return JSON.parse(cached) as UserContext;
+    } catch {
+      // Corrupt — fall through to DB
+    }
+  }
+
+  const userRecord = await prisma.user.findFirst({
+    where: { id: userId, tenantId, deletedAt: null },
+    select: { teamId: true, departmentId: true },
+  });
+
+  const context: UserContext = {
+    teamId: userRecord?.teamId ?? null,
+    departmentId: userRecord?.departmentId ?? null,
+  };
+
+  // Cache even null values — null is a valid state
+  await redisSet(cacheKey, JSON.stringify(context), USER_CONTEXT_TTL);
+
+  return context;
+}
+
 /**
  * Core auth middleware — validates JWT + session per S1.8a Session State Machine spec.
  *
- * On success, attaches to req.user:
- *   - userId, tenantId, sessionId   (from JWT)
- *   - teamId, departmentId          (from User record — needed by buildOwnerFilter)
- *   - permissions                   (compiled manifest from Redis/DB)
+ * Hot path (all Redis cached):
+ *   1. Verify RS256 JWT signature locally (CPU-bound, zero network)
+ *   2. GET session:active:{sessionId}       → sub-millisecond Redis EXISTS check
+ *   3. GET perm:manifest:{userId}           → O(1) permission manifest lookup
+ *   4. GET user:context:{userId}            → O(1) teamId/departmentId lookup
  *
- * JWT payload is STATELESS: contains ONLY userId, tenantId, sessionId.
- * Permissions are NEVER embedded in the JWT.
+ * Zero Prisma queries on a fully warm cache.
  */
 export async function authMiddleware(
   req: Request,
@@ -53,106 +98,39 @@ export async function authMiddleware(
     }
 
     const token = authHeader.slice(7);
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      throw new Error('JWT_SECRET not configured');
-    }
 
-    // Verify and decode JWT (stateless: userId, tenantId, sessionId only)
+    // 1. Verify JWT locally (CPU-bound, no network call)
     let payload: { sessionId: string; userId: string; tenantId: string };
     try {
-      payload = jwt.verify(token, secret) as typeof payload;
+      payload = TokenService.verifyAccessToken(token);
     } catch {
       throw new AuthenticationFailedError();
     }
 
     const { sessionId, userId, tenantId } = payload;
 
-    // Validate session per state machine spec:
-    // Must be ACTIVE/CREATED, not expired, not soft-deleted, tenant-scoped
-    const session = await prisma.session.findFirst({
-      where: {
-        id: sessionId,
-        tenantId,
-        userId,
-        status: { in: [SessionStatus.ACTIVE, SessionStatus.CREATED] },
-        expiresAt: { gt: new Date() },
-        deletedAt: null,
-      },
-    });
-
-    if (!session) {
-      // Distinguish expired vs revoked for better error messages
-      const anySession = await prisma.session.findFirst({
-        where: { id: sessionId, deletedAt: null },
-        select: { status: true, expiresAt: true },
-      });
-
-      if (!anySession) throw new AuthenticationFailedError();
-
-      if (
-        anySession.status === SessionStatus.EXPIRED ||
-        anySession.expiresAt <= new Date()
-      ) {
-        throw new SessionExpiredError();
-      }
-
-      if (
-        anySession.status === SessionStatus.REVOKED ||
-        anySession.status === SessionStatus.INVALIDATED
-      ) {
-        throw new SessionRevokedError();
-      }
-
-      throw new AuthenticationFailedError();
+    // 2. Validate session state in Redis (sub-millisecond)
+    const isActive = await redisGet(redisKeys.sessionActive(sessionId));
+    if (!isActive) {
+      throw new SessionRevokedError();
     }
 
-    // Touch lastActivityAt on every authenticated request
-    await prisma.session.update({
-      where: { id: sessionId },
-      data: { lastActivityAt: new Date() },
-    });
-
-    // Promote CREATED → ACTIVE on first authenticated request
-    if (session.status === SessionStatus.CREATED) {
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { status: SessionStatus.ACTIVE },
-      });
-    }
-
-    // Fetch user's team/department context for ABAC scope resolution
-    const userRecord = await prisma.user.findFirst({
-      where: { id: userId, tenantId, deletedAt: null },
-      select: { teamId: true, departmentId: true, v2MembershipId: true },
-    });
-
-    // Load permission manifest (Redis-backed with DB fallback)
-    const permissions = await permissionService.getPermissionManifest(userId, tenantId);
+    // 3. Fetch permission manifest and user context in parallel (both Redis-backed)
+    const [permissions, userContext] = await Promise.all([
+      permissionService.getPermissionManifest(userId, tenantId),
+      getUserContext(userId, tenantId),
+    ]);
 
     (req as AuthenticatedRequest).user = {
       userId,
       tenantId,
       sessionId,
-      teamId: userRecord?.teamId ?? null,
-      departmentId: userRecord?.departmentId ?? null,
+      teamId: userContext.teamId,
+      departmentId: userContext.departmentId,
       permissions,
     };
 
-    const requestContext: RequestContext = {
-      identityId: userId,
-      membershipId: userRecord?.v2MembershipId ?? '',
-      tenantId,
-      sessionId,
-      correlationId: (req.headers['x-correlation-id'] as string) || crypto.randomUUID(),
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-      requestedAt: new Date(),
-    };
-
-    requestContextStorage.run(requestContext, () => {
-      next();
-    });
+    next();
   } catch (err: unknown) {
     if (
       err instanceof AuthenticationFailedError ||
@@ -163,7 +141,8 @@ export async function authMiddleware(
       res.status(e.httpStatus).json({ code: e.code, message: e.message });
       return;
     }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Internal server error.' });
+    logger.error({ err }, '[authMiddleware] Unhandled error');
+    next(err);
   }
 }
 
@@ -172,19 +151,17 @@ export async function authMiddleware(
  *
  * Usage: router.get('/', authMiddleware, permissionMiddleware('lead:view'), handler)
  *
- * Checks that the authenticated user has the required permission slug.
- * If present, injects req.user.scope (the ScopeType value) for use in
- * the controller's dynamic where-clause building.
- * Returns 403 if the permission is absent.
+ * Reads the manifest already loaded by authMiddleware (no additional I/O).
+ * Injects req.user.scope for use in the controller's dynamic where-clause.
+ * Calls next(err) on 403 so the Global Error Handler emits structured logs.
  */
 export function permissionMiddleware(slug: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return (req: Request, _res: Response, next: NextFunction): void => {
     const authedReq = req as AuthenticatedRequest;
     const scopeOrDecision = authedReq.user?.permissions[slug];
 
     if (!scopeOrDecision) {
-      const err = new AuthorizationError();
-      res.status(err.httpStatus).json({ code: err.code, message: err.message });
+      next(new AuthorizationError());
       return;
     }
 
@@ -192,8 +169,7 @@ export function permissionMiddleware(slug: string) {
       authedReq.user.scope = scopeOrDecision;
     } else {
       if (!scopeOrDecision.allowed) {
-        const err = new AuthorizationError();
-        res.status(err.httpStatus).json({ code: err.code, message: err.message });
+        next(new AuthorizationError());
         return;
       }
       authedReq.user.scope = scopeOrDecision.effectiveScope;

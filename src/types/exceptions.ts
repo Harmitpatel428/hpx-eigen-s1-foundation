@@ -23,8 +23,8 @@ export class ValidationError extends AppException {
 }
 
 export class AuthenticationFailedError extends AppException {
-  constructor() {
-    super('AUTHENTICATION_FAILED', 'Email or password is incorrect.', RetryTag.USER_ACTION_REQUIRED, 401);
+  constructor(message = 'Email or password is incorrect.') {
+    super('AUTHENTICATION_FAILED', message, RetryTag.USER_ACTION_REQUIRED, 401);
   }
 }
 
@@ -125,8 +125,8 @@ export class ConflictError extends AppException {
 }
 
 export class BusinessRuleViolationError extends AppException {
-  constructor() {
-    super('BUSINESS_RULE_VIOLATION', 'Operation is not allowed.', RetryTag.NON_RETRYABLE, 422);
+  constructor(message = 'Operation is not allowed.') {
+    super('BUSINESS_RULE_VIOLATION', message, RetryTag.NON_RETRYABLE, 422);
   }
 }
 

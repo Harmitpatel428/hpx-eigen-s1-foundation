@@ -2,11 +2,14 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { AuthService } from '../services/auth.service';
-import { ValidationError } from '../types/exceptions';
+import { PermissionService } from '../services/permission.service';
+import { emailService } from '../services/email.service';
+import { logger } from '../utils/logger';
+import { validate } from '../middleware/validate.middleware';
+import { authLimiter } from '../middleware/rateLimiter.middleware';
+import { signupSchema, verifySchema, loginSchema, refreshSchema } from '../schemas/auth.schema';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { emailService } from '../services/email.service';
-import { PermissionService } from '../services/permission.service';
 
 export function createAuthRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -14,100 +17,82 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   const permissionService = new PermissionService(prisma);
 
   // ─── POST /api/auth/signup ────────────────────────────────────────
-  /** Public — register a new tenant and user */
-  router.post('/signup', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/signup', authLimiter, validate(signupSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { email, password, companyName } = req.body;
 
-      if (!email || !password || !companyName) {
-        throw new ValidationError('Email, password, and companyName are required.');
-      }
-      if (password.length < 8 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-        throw new ValidationError('Password must be at least 8 chars, with 1 uppercase and 1 number.');
-      }
-
-      // Check if user already exists across any tenant (based on prompt, email must be unique or handled per tenant)
-      // Since email is unique per tenant, we should probably just check if email exists globally or assume they want one account per email.
-      // We will create a tenant, user, and role.
-      
       const existingUser = await prisma.user.findFirst({ where: { email } });
       if (existingUser) {
-        return res.status(409).json({ error: 'USER_EXISTS', message: 'Email already registered' });
+        return res.status(409).json({ code: 'USER_EXISTS', message: 'Email already registered' });
       }
 
-      // Hash password
       const hashedPassword = await bcrypt.hash(password, 12);
+      const token = crypto.randomBytes(32).toString('hex');
 
-      // Create Tenant
-      const tenant = await prisma.tenant.create({
-        data: { name: companyName }
-      });
+      // CRITICAL FIX: Wrap interdependent DB mutations in a transaction
+      const result = await prisma.$transaction(async (tx) => {
+        const tenant = await tx.tenant.create({ data: { name: companyName } });
 
-      // Create User (status NEW)
-      const user = await prisma.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-          tenantId: tenant.id,
-          emailVerified: null
-        }
-      });
-
-      // Fetch all global permissions
-      const allPermissions = await prisma.permission.findMany();
-
-      // Ensure 'Organization Admin' role exists for this tenant
-      let adminRole = await prisma.role.findFirst({
-        where: { tenantId: tenant.id, name: 'Organization Admin' }
-      });
-      if (!adminRole) {
-        adminRole = await prisma.role.create({
-          data: { tenantId: tenant.id, name: 'Organization Admin', isSystem: true }
+        const user = await tx.user.create({
+          data: {
+            email,
+            password: hashedPassword,
+            tenantId: tenant.id,
+            emailVerified: null
+          }
         });
 
-        if (allPermissions.length > 0) {
-          await prisma.rolePermission.createMany({
-            data: allPermissions.map(p => ({
-              roleId: adminRole!.id,
-              permissionId: p.id
-            }))
+        const allPermissions = await tx.permission.findMany();
+
+        let adminRole = await tx.role.findFirst({
+          where: { tenantId: tenant.id, name: 'Organization Admin' }
+        });
+
+        if (!adminRole) {
+          adminRole = await tx.role.create({
+            data: { tenantId: tenant.id, name: 'Organization Admin', isSystem: true }
           });
-        }
-      }
 
-      // Assign ADMIN role to the user with scopeType: 'ORGANIZATION'
-      await prisma.userRole.create({
-        data: { userId: user.id, roleId: adminRole!.id, scopeType: 'ORGANIZATION' }
+          if (allPermissions.length > 0) {
+            await tx.rolePermission.createMany({
+              data: allPermissions.map(p => ({
+                roleId: adminRole!.id,
+                permissionId: p.id
+              }))
+            });
+          }
+        }
+
+        await tx.userRole.create({
+          data: { userId: user.id, roleId: adminRole!.id, scopeType: 'ORGANIZATION' }
+        });
+
+        await tx.verificationToken.deleteMany({ where: { email } });
+        await tx.verificationToken.create({
+          data: {
+            email,
+            token,
+            expiresAt: new Date(Date.now() + 15 * 60 * 1000)
+          }
+        });
+
+        return { userId: user.id, tenantId: tenant.id };
       });
 
-      // Call permissionService.invalidatePermissionCache(tenant.id) to ensure the cache is fresh
-      await permissionService.invalidatePermissionCache(tenant.id);
+      // Invalidate tenant-wide cache for newly provisioned tenant
+      await permissionService.invalidateTenantPermissionCache(result.tenantId);
 
-      // Generate verification token (32-char hex)
-      const token = crypto.randomBytes(32).toString('hex');
-      
-      // Delete old tokens for this email and create a new one
-      await prisma.verificationToken.deleteMany({ where: { email } });
-      await prisma.verificationToken.create({
-        data: {
-          email,
-          token,
-          expiresAt: new Date(Date.now() + 15 * 60 * 1000) // 15 min
-        }
-      });
-
-      // Attempt to send email, but don't crash the signup if it fails
       const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
       try {
         await emailService.sendVerificationEmail(email, token);
       } catch (emailError) {
-        console.error('Resend Email Failed. Verification URL for manual testing:', verifyUrl);
+        logger.error({ err: emailError, verifyUrl }, 'Signup Email Failed. Verification URL for manual testing');
       }
 
       res.status(201).json({
         message: 'Signup successful. Check your email to verify account.',
-        userId: user.id,
-        tenantId: tenant.id
+        userId: result.userId,
+        tenantId: result.tenantId
       });
     } catch (err) {
       next(err);
@@ -115,67 +100,44 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   });
 
   // ─── GET /api/auth/verify ─────────────────────────────────────────
-  /** Public — verify email via token */
-  router.get('/verify', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/verify', authLimiter, validate(verifySchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
+      // req.query.token is strictly typed and guaranteed to be a 64-char string by Zod
       const { token } = req.query as { token: string };
-
-      if (!token) {
-        throw new ValidationError('Verification token required.');
-      }
 
       const verificationToken = await prisma.verificationToken.findUnique({ where: { token } });
 
       if (!verificationToken) {
-        return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Token not found or already used' });
+        return res.status(400).json({ code: 'INVALID_TOKEN', message: 'Token not found or already used' });
       }
 
       if (verificationToken.expiresAt < new Date()) {
         await prisma.verificationToken.deleteMany({ where: { email: verificationToken.email } });
-        return res.status(400).json({ error: 'TOKEN_EXPIRED', message: 'Link has expired. Request new verification email.' });
+        return res.status(400).json({ code: 'TOKEN_EXPIRED', message: 'Link has expired. Request new verification email.' });
       }
 
-      const user = await prisma.user.findFirst({
-        where: { email: verificationToken.email }
-      });
-
+      const user = await prisma.user.findFirst({ where: { email: verificationToken.email } });
       if (!user) {
-        return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User account not found' });
+        return res.status(404).json({ code: 'USER_NOT_FOUND', message: 'User account not found' });
       }
 
-      // Update user
       await prisma.user.update({
         where: { id: user.id },
         data: { emailVerified: new Date() }
       });
 
-      // Clear tokens
-      await prisma.verificationToken.deleteMany({
-        where: { email: verificationToken.email }
-      });
+      await prisma.verificationToken.deleteMany({ where: { email: verificationToken.email } });
 
-      res.status(200).json({
-        message: 'Email verified successfully! You can now login.',
-        email: user.email
-      });
+      res.status(200).json({ message: 'Email verified successfully! You can now login.', email: user.email });
     } catch (err) {
       next(err);
     }
   });
 
   // ─── POST /api/auth/login ─────────────────────────────────────────
-  /** Public — authenticate with email + password, returns accessToken + sessionId */
-  router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/login', authLimiter, validate(loginSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { email, password, deviceName } = req.body as {
-        email: string;
-        password: string;
-        deviceName?: string;
-      };
-
-      if (!email || !password) {
-        throw new ValidationError('email and password are required.');
-      }
+      const { email, password, deviceName } = req.body;
 
       const result = await authService.login(email, password, {
         ip: req.ip,
@@ -190,7 +152,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   });
 
   // ─── POST /api/auth/logout ────────────────────────────────────────
-  /** Protected — revokes the current session */
   router.post('/logout', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId, sessionId } = (req as AuthenticatedRequest).user;
@@ -202,7 +163,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   });
 
   // ─── GET /api/auth/me ─────────────────────────────────────────────
-  /** Protected — returns the authenticated user's profile */
   router.get('/me', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
@@ -210,16 +170,8 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       const user = await prisma.user.findFirst({
         where: { id: userId, tenantId, deletedAt: null },
         select: {
-          id: true,
-          email: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-          userRoles: {
-            select: {
-              role: { select: { id: true, name: true } }
-            }
-          }
+          id: true, email: true, status: true, createdAt: true, updatedAt: true,
+          userRoles: { select: { role: { select: { id: true, name: true } } } }
         }
       });
 
@@ -235,36 +187,21 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   });
 
   // ─── POST /api/auth/refresh ───────────────────────────────────────
-  /**
-   * Protected — issues a new short-lived accessToken (15m) from a valid refresh token.
-   * Body: { refreshToken: string }
-   */
-  router.post('/refresh', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  // CRITICAL FIX: Removed authMiddleware. The refresh token is the credential.
+  router.post('/refresh', authLimiter, validate(refreshSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { sessionId, tenantId } = (req as AuthenticatedRequest).user;
-      const { refreshToken } = req.body as { refreshToken: string };
+      const { refreshToken } = req.body;
 
-      if (!refreshToken) {
-        throw new ValidationError('refreshToken is required.');
-      }
-
-      const result = await authService.refresh(sessionId, refreshToken, tenantId);
+      // AuthService extracts the sessionId and performs rotation
+      const result = await authService.refresh(refreshToken);
       res.json(result);
     } catch (err) {
       next(err);
     }
   });
 
-  // ─── GET /api/v1/auth/manifest ────────────────────────────────────
-  /**
-   * Protected — returns the authenticated user's compiled permission manifest.
-   * Frontend uses this to populate the AuthContext and gate UI elements.
-   *
-   * Response shape: { "lead:create": "TEAM", "contact:view": "DEPARTMENT", ... }
-   * The ScopeType value tells the frontend which scope the user has for each action.
-   */
+  // ─── GET /api/auth/manifest ───────────────────────────────────────
   router.get('/manifest', authMiddleware, (req: Request, res: Response) => {
-    // permissions are already loaded by authMiddleware via Redis/DB
     const { permissions } = (req as AuthenticatedRequest).user;
     res.json(permissions);
   });
