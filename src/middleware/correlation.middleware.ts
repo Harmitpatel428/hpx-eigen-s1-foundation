@@ -1,21 +1,24 @@
 import { Request, Response, NextFunction } from 'express';
-import * as crypto from 'crypto';
+import { randomUUID } from 'node:crypto';
+import { requestContext } from '../utils/requestContext';
 
-/**
- * Correlation Middleware
- * Ensures every incoming request has an X-Correlation-ID header.
- * This ID is later bound to the RequestContext in auth.middleware.ts.
- */
+const CORRELATION_ID_HEADER = 'x-correlation-id';
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function correlationMiddleware(req: Request, res: Response, next: NextFunction): void {
-  let correlationId = req.headers['x-correlation-id'] as string;
+  const incomingId = req.headers[CORRELATION_ID_HEADER] as string | undefined;
+  let correlationId: string;
   
-  if (!correlationId) {
-    correlationId = crypto.randomUUID();
-    req.headers['x-correlation-id'] = correlationId;
+  if (incomingId && UUID_V4_REGEX.test(incomingId)) {
+    correlationId = incomingId;
+  } else {
+    correlationId = randomUUID();
+    req.headers[CORRELATION_ID_HEADER] = correlationId;
   }
   
-  // Attach it to the response as well so clients can track the request
-  res.setHeader('X-Correlation-ID', correlationId);
+  res.setHeader(CORRELATION_ID_HEADER, correlationId);
   
-  next();
+  requestContext.run({ correlationId }, () => {
+    next();
+  });
 }

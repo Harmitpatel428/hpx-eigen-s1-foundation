@@ -3,7 +3,9 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { prisma } from './db';
 import { AppException } from './types/exceptions';
-
+import { correlationMiddleware } from './middleware/correlation.middleware';
+import { logger } from './utils/logger';
+import { getCorrelationId } from './utils/requestContext';
 // ─── Route Factories (S1) ─────────────────────────────────────────────────────
 import { createAuthRouter } from './routes/auth.router';
 import { createUsersRouter } from './routes/users.router';
@@ -32,6 +34,9 @@ import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middlewa
 import { InvitationService } from './services/invitation.service';
 
 const app = express();
+
+// ─── Correlation Context (MUST BE FIRST) ──────────────────────────────────────
+app.use(correlationMiddleware);
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 // Strict whitelist for allowed origins
@@ -122,17 +127,28 @@ app.post('/api/invitations/accept', authMiddleware, async (req: Request, res: Re
 
 // ─── Global Error Handler ─────────────────────────────────────────────────────
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const correlationId = getCorrelationId() ?? 'unknown';
+
   if (err instanceof AppException) {
+    // Use logger.warn for expected business errors, not logger.error
+    logger.warn({ err, correlationId, path: _req.path }, 'Application exception thrown');
     res.status(err.httpStatus).json({
       code: err.code,
       message: err.message,
-      retryTag: err.retryTag
+      retryTag: err.retryTag,
+      correlationId
     });
     return;
   }
 
-  console.error('[Unhandled Error]', err);
-  res.status(500).json({ code: 'INTERNAL_ERROR', message: 'An unexpected error occurred.' });
+  // logger.error for unexpected system failures
+  logger.error({ err, correlationId, path: _req.path }, 'Unhandled application error');
+  
+  res.status(500).json({ 
+    code: 'INTERNAL_ERROR', 
+    message: 'An unexpected error occurred.',
+    correlationId
+  });
 });
 
 export default app;

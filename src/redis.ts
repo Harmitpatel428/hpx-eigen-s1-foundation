@@ -158,3 +158,10 @@ export const redisKeys = {
   userPerms: (tenantId: string, userId: string, version: number): string =>
     `tenant:${tenantId}:user:${userId}:perms:v${version}`,
 };
+
+export async function redisClose(): Promise<void> {
+  if (_client) {
+    await _client.quit();
+    _client = null;
+  }
+}
