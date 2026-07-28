@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { logger } from '../utils/logger';
 
 // We'll initialize it with an empty string if undefined to avoid runtime errors before it's set
 const resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder');
@@ -8,7 +9,7 @@ export class EmailService {
     const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
 
     if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY.includes('placeholder')) {
-      console.log(`\n[DEV MODE] Verification URL: ${verifyUrl}\n`);
+      logger.info({ verifyUrl }, '[DEV MODE] Verification URL generated');
     }
 
     try {
@@ -30,7 +31,7 @@ export class EmailService {
         `
       });
     } catch (error) {
-      console.error('Failed to send verification email:', error);
+      logger.error({ err: error }, 'Failed to send verification email');
       throw error;
     }
   }

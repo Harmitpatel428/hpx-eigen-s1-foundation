@@ -3,6 +3,7 @@ import { PrismaClient, InvoiceStatus } from '@prisma/client';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { InvoiceService } from '../services/invoice.service';
 import { ValidationError } from '../types/exceptions';
+import { logger } from '../utils/logger';
 
 export function createInvoicesRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -33,7 +34,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
 
       res.json({ data: invoices, total: invoices.length });
     } catch (err: any) {
-      console.error('Error fetching invoices:', err);
+      logger.error({ err }, 'Error fetching invoices');
       res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
   });
@@ -104,7 +105,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
 
       res.status(201).json(invoice);
     } catch (err: any) {
-      console.error('Error creating invoice:', err);
+      logger.error({ err }, 'Error creating invoice');
       res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
   });
