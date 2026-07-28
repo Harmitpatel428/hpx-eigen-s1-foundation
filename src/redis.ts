@@ -131,6 +131,21 @@ export async function redisSet(key: string, value: string, ttlSeconds?: number):
   }
 }
 
+/** Delete a key. Returns number of keys deleted or null on failure. */
+export async function redisDel(key: string): Promise<number | null> {
+  if (!checkCircuit()) return null;
+  try {
+    const client = getClient();
+    if (!client) return null;
+    const result = await client.del(key);
+    recordSuccess();
+    return result;
+  } catch (err) {
+    recordFailure(err);
+    return null;
+  }
+}
+
 /** Atomically increment an integer key. Returns new value or null if unavailable. */
 export async function redisIncr(key: string): Promise<number | null> {
   if (!checkCircuit()) return null;
@@ -149,14 +164,21 @@ export async function redisIncr(key: string): Promise<number | null> {
 /**
  * Key helpers — canonical Redis key schema.
  *
- * tenant:{tenantId}:perm_version                      → Integer counter
- * tenant:{tenantId}:user:{userId}:perms:v{version}    → JSON permission manifest
+ * perm:manifest:{userId}                              → JSON permission manifest (direct, no version indirection)
+ * tenant:{tenantId}:perm_version                      → Integer counter (legacy v1 path)
+ * tenant:{tenantId}:user:{userId}:perms:v{version}    → JSON permission manifest (legacy v1 path)
+ * session:active:{sessionId}                          → Active session tracker (15m TTL)
  */
 export const redisKeys = {
+  /** Direct per-user manifest key — invalidated synchronously via DEL on role changes. */
+  userManifest: (userId: string): string =>
+    `perm:manifest:${userId}`,
   permVersion: (tenantId: string): string =>
     `tenant:${tenantId}:perm_version`,
   userPerms: (tenantId: string, userId: string, version: number): string =>
     `tenant:${tenantId}:user:${userId}:perms:v${version}`,
+  sessionActive: (sessionId: string): string =>
+    `session:active:${sessionId}`,
 };
 
 export async function redisClose(): Promise<void> {
