@@ -7,7 +7,7 @@ import { emailService } from '../services/email.service';
 import { logger } from '../utils/logger';
 import { validate } from '../middleware/validate.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
-import { signupSchema, verifySchema, loginSchema, refreshSchema } from '../schemas/auth.schema';
+import { signupSchema, verifySchema, loginSchema, refreshSchema } from 'contracts';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
@@ -17,7 +17,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   const permissionService = new PermissionService(prisma);
 
   // ─── POST /api/auth/signup ────────────────────────────────────────
-  router.post('/signup', authLimiter, validate(signupSchema), async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/signup', authLimiter as any, validate(signupSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { email, password, companyName } = req.body;
 
@@ -100,7 +100,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   });
 
   // ─── GET /api/auth/verify ─────────────────────────────────────────
-  router.get('/verify', authLimiter, validate(verifySchema), async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/verify', authLimiter as any, validate(verifySchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
       // req.query.token is strictly typed and guaranteed to be a 64-char string by Zod
       const { token } = req.query as { token: string };
@@ -135,7 +135,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   });
 
   // ─── POST /api/auth/login ─────────────────────────────────────────
-  router.post('/login', authLimiter, validate(loginSchema), async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/login', authLimiter as any, validate(loginSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { email, password, deviceName } = req.body;
 
@@ -188,7 +188,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/auth/refresh ───────────────────────────────────────
   // CRITICAL FIX: Removed authMiddleware. The refresh token is the credential.
-  router.post('/refresh', authLimiter, validate(refreshSchema), async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/refresh', authLimiter as any, validate(refreshSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { refreshToken } = req.body;
 
