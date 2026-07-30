@@ -1,7 +1,7 @@
 /**
  * Unit tests for ActivityService
  */
-import { ActivityService } from '../../../src/services/activity.service';
+import { ActivityService } from '../../src/services/activity.service';
 import { ActivityType } from '@prisma/client';
 
 function makePrismaMock() {

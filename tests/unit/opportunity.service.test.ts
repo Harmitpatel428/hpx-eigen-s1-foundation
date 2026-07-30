@@ -1,7 +1,7 @@
 /**
  * Unit tests for OpportunityService
  */
-import { OpportunityService } from '../../../src/services/opportunity.service';
+import { OpportunityService } from '../../src/services/opportunity.service';
 import { OpportunityStage, OpportunityCurrency } from '@prisma/client';
 
 function makePrismaMock() {
@@ -10,6 +10,8 @@ function makePrismaMock() {
       create: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
+      findUnique: jest.fn(),
+      count: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn()
     },

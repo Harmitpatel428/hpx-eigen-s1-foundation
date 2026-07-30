@@ -7,7 +7,7 @@ import { emailService } from '../services/email.service';
 import { logger } from '../utils/logger';
 import { validate } from '../middleware/validate.middleware';
 import { authLimiter } from '../middleware/rateLimiter.middleware';
-import { signupSchema, verifySchema, loginSchema, refreshSchema } from 'contracts';
+import { signupSchema, verifySchema, loginSchema, refreshSchema } from '@hpxeigen/contracts';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
@@ -83,11 +83,9 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       await permissionService.invalidateTenantPermissionCache(result.tenantId);
 
       const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
-      try {
-        await emailService.sendVerificationEmail(email, token);
-      } catch (emailError) {
+      emailService.sendVerificationEmail(email, token).catch((emailError) => {
         logger.error({ err: emailError, verifyUrl }, 'Signup Email Failed. Verification URL for manual testing');
-      }
+      });
 
       res.status(201).json({
         message: 'Signup successful. Check your email to verify account.',
@@ -157,6 +155,25 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       const { userId, tenantId, sessionId } = (req as AuthenticatedRequest).user;
       await authService.logout(sessionId, tenantId, userId);
       res.json({ message: 'Logged out successfully.' });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─── POST /api/auth/logout-all ────────────────────────────────────
+  router.post('/logout-all', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      
+      const activeSessions = await prisma.session.findMany({
+        where: { userId, tenantId, status: { in: ['ACTIVE', 'CREATED'] }, deletedAt: null }
+      });
+      
+      await Promise.all(activeSessions.map(session => 
+        authService.logout(session.id, tenantId, userId)
+      ));
+      
+      res.json({ message: 'Logged out from all devices.' });
     } catch (err) {
       next(err);
     }

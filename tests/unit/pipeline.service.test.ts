@@ -1,7 +1,7 @@
 /**
  * Unit tests for PipelineService
  */
-import { PipelineService } from '../../../src/services/pipeline.service';
+import { PipelineService } from '../../src/services/pipeline.service';
 import { OpportunityStage } from '@prisma/client';
 
 function makePrismaMock() {

@@ -3,7 +3,7 @@
  * 
  * Strategy: mock PrismaClient, verify business logic in isolation.
  */
-import { LeadService } from '../../../src/services/lead.service';
+import { LeadService } from '../../src/services/lead.service';
 import { LeadStatus, LeadSource, OpportunityStage, OpportunityCurrency } from '@prisma/client';
 
 // ─── Prisma mock factory ───────────────────────────────────────────────────────
@@ -13,6 +13,8 @@ function makePrismaMock() {
       create: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
+      findUnique: jest.fn(),
+      count: jest.fn(),
       update: jest.fn()
     },
     contact: {

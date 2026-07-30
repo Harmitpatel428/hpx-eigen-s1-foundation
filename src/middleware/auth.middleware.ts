@@ -109,10 +109,27 @@ export async function authMiddleware(
 
     const { sessionId, userId, tenantId } = payload;
 
-    // 2. Validate session state in Redis (sub-millisecond)
-    const isActive = await redisGet(redisKeys.sessionActive(sessionId));
-    if (!isActive) {
-      throw new SessionRevokedError();
+    // Validate Session via Redis (O(1) permission cache)
+    const isSessionActive = await redisGet(redisKeys.sessionActive(payload.sessionId));
+
+    if (!isSessionActive) {
+      // CRITICAL FIX: DB Fallback
+      logger.warn({ sessionId: payload.sessionId }, 'Redis cache miss for session. Falling back to DB.');
+      const dbSession = await prisma.session.findUnique({
+        where: { id: payload.sessionId }
+      });
+      
+      if (!dbSession || dbSession.deletedAt !== null) {
+        throw new SessionRevokedError();
+      }
+      
+      const terminalStates = ['EXPIRED', 'REVOKED', 'INVALIDATED'];
+      if (terminalStates.includes(dbSession.status)) {
+        throw new SessionRevokedError();
+      }
+      
+      // Repopulate Redis
+      await redisSet(redisKeys.sessionActive(payload.sessionId), "1", 900);
     }
 
     // 3. Fetch permission manifest and user context in parallel (both Redis-backed)
