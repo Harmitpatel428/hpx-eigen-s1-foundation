@@ -165,15 +165,14 @@ export function createAuthRouter(prisma: PrismaClient): Router {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       
-      const activeSessions = await prisma.session.findMany({
-        where: { userId, tenantId, status: { in: ['ACTIVE', 'CREATED'] }, deletedAt: null }
-      });
+      const count = await authService.invalidateAllSessions(
+        userId, 
+        tenantId, 
+        'User-initiated logout from all devices',
+        userId
+      );
       
-      await Promise.all(activeSessions.map(session => 
-        authService.logout(session.id, tenantId, userId)
-      ));
-      
-      res.json({ message: 'Logged out from all devices.' });
+      res.json({ message: 'Logged out from all devices.', revokedCount: count });
     } catch (err) {
       next(err);
     }
