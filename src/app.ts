@@ -48,11 +48,18 @@ const allowedOrigins = [
   'https://www.hpxeigen.com'                // Custom production domain (www)
 ];
 
-app.use(cors({
-  origin: true, // Reflects the request origin, bypassing the Vercel block
+const corsOptions = {
+  origin: true, // Reflects the request origin, allowing Vercel
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-department-context'],
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-department-context']
-}));
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+
+// Explicitly handle OPTIONS preflight requests for all routes
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
