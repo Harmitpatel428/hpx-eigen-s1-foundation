@@ -90,6 +90,10 @@ app.use('/api/v1/settings/opportunity-types', createOpportunityTypesRouter(prism
 app.use('/api/v1/departments', createDepartmentsRouter(prisma));
 app.use('/api/v1/teams', createTeamsRouter(prisma));
 
+// ─── Dashboard Router ─────────────────────────────────────────────────────────
+import { createDashboardRouter } from './routes/dashboard.router';
+app.use('/api/v1/dashboard', authMiddleware, createDashboardRouter(prisma));
+
 // ─── Legacy Invitation Routes (backward compat) ───────────────────────────────
 // These paths existed in S1 and may be relied on by existing tests.
 // New canonical path is POST /api/users/invite (in users.router.ts).
