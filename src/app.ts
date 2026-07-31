@@ -49,17 +49,9 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like curl, postman, or server-to-server)
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true, // Required for cookies/auth headers
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id']
+  origin: true, // Reflects the request origin, bypassing the Vercel block
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-department-context']
 }));
 
 app.use(express.json());

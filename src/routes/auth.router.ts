@@ -234,6 +234,23 @@ export function createAuthRouter(prisma: PrismaClient): Router {
     }
   });
 
+  // ─── GET /api/auth/me/departments ─────────────────────────────────
+  /** Protected — returns the authenticated user's departments */
+  router.get('/me/departments', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { tenantId } = (req as AuthenticatedRequest).user;
+      
+      const departments = await prisma.department.findMany({
+        where: { tenantId },
+        orderBy: { name: 'asc' }
+      });
+
+      res.json(departments);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ─── POST /api/auth/refresh ───────────────────────────────────────
   /**
    * Protected — issues a new short-lived accessToken (15m) from a valid refresh token.
