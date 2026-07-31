@@ -183,7 +183,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         deviceName
       });
 
-      res.json(result);
+      res.json({ success: true, data: result });
     } catch (err) {
       next(err);
     }
@@ -238,16 +238,82 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   /** Protected — returns the authenticated user's departments */
   router.get('/me/departments', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { tenantId } = (req as AuthenticatedRequest).user;
-      
-      const departments = await prisma.department.findMany({
-        where: { tenantId },
-        orderBy: { name: 'asc' }
+      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+
+      if (!userId || !tenantId) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Valid authentication required.' }
+        });
+      }
+
+      // Fetch user's department (V1 schema — single departmentId)
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { department: true }
       });
 
-      res.json(departments);
-    } catch (err) {
-      next(err);
+      let departments: Array<{ id: string; type: string; name: string }> = [];
+
+      if (user?.department) {
+        // Map name to type for frontend compatibility
+        const nameToType = (name: string): string => {
+          const normalized = name.toLowerCase().trim();
+          if (normalized.includes('sales')) return 'SALES';
+          if (normalized.includes('process')) return 'PROCESS';
+          if (normalized.includes('documentation') || normalized.includes('doc')) return 'DOCUMENTATION';
+          return 'SALES'; // Default fallback
+        };
+
+        departments.push({
+          id: user.department.id,
+          type: nameToType(user.department.name),
+          name: user.department.name,
+        });
+      }
+
+      // Safety net: If user has no department, auto-assign to first available
+      if (departments.length === 0) {
+        const firstDept = await prisma.department.findFirst({
+          where: { tenantId },
+          orderBy: { createdAt: 'asc' }
+        });
+
+        if (firstDept) {
+          // Update user with this department
+          await prisma.user.update({
+            where: { id: userId },
+            data: { departmentId: firstDept.id }
+          });
+
+          const nameToType = (name: string): string => {
+            const normalized = name.toLowerCase().trim();
+            if (normalized.includes('sales')) return 'SALES';
+            if (normalized.includes('process')) return 'PROCESS';
+            if (normalized.includes('documentation') || normalized.includes('doc')) return 'DOCUMENTATION';
+            return 'SALES';
+          };
+
+          departments.push({
+            id: firstDept.id,
+            type: nameToType(firstDept.name),
+            name: firstDept.name,
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        data: departments,
+        meta: { count: departments.length }
+      });
+
+    } catch (error) {
+      console.error('[AuthRouter] GET /me/departments failed:', error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch user departments.' }
+      });
     }
   });
 
