@@ -1,11 +1,12 @@
 import { Resend } from 'resend';
 import { logger } from '../utils/logger';
+import { PrismaClient, Prisma } from "@prisma/client";
 
 // We'll initialize it with an empty string if undefined to avoid runtime errors before it's set
 const resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder');
 
 export class EmailService {
-  async sendVerificationEmail(email: string, token: string): Promise<void> {
+  async sendVerificationEmail(tx: PrismaClient, email: string, token: string): Promise<void> {
     const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
 
     if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY.includes('placeholder')) {

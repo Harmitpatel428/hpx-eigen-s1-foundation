@@ -1,4 +1,4 @@
-import { PrismaClient, UserStatus, SessionStatus } from '@prisma/client';
+import { PrismaClient, UserStatus, SessionStatus, Prisma } from '@prisma/client';
 import { AuditService } from './audit.service';
 import {
   ResourceNotFoundError,
@@ -21,12 +21,12 @@ export class UserService {
    * - Audit log written per AUDIT-001
    */
   async suspendUser(
-    userId: string,
+    tx: PrismaClient, userId: string,
     tenantId: string,
     reason: string,
     actorUserId: string
   ): Promise<{ success: boolean; sessionsRevoked: number }> {
-    const user = await this.prisma.user.findFirst({
+    const user = await tx.user.findFirst({
       where: { id: userId, tenantId, deletedAt: null }
     });
 
@@ -39,7 +39,7 @@ export class UserService {
     }
 
     // Invalidate all active sessions
-    const sessionResult = await this.prisma.session.updateMany({
+    const sessionResult = await tx.session.updateMany({
       where: {
         userId,
         tenantId,
@@ -53,7 +53,7 @@ export class UserService {
     });
 
     // Update user status
-    await this.prisma.user.update({
+    await tx.user.update({
       where: { id: userId },
       data: {
         status: UserStatus.SUSPENDED,
@@ -62,7 +62,7 @@ export class UserService {
       }
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'USER_SUSPENDED',
       entityType: 'User',
@@ -88,12 +88,12 @@ export class UserService {
    * - Audit log written per AUDIT-001
    */
   async terminateUser(
-    userId: string,
+    tx: PrismaClient, userId: string,
     tenantId: string,
     reason: string,
     actorUserId: string
   ): Promise<{ success: boolean; sessionsRevoked: number }> {
-    const user = await this.prisma.user.findFirst({
+    const user = await tx.user.findFirst({
       where: { id: userId, tenantId, deletedAt: null }
     });
 
@@ -105,7 +105,7 @@ export class UserService {
     }
 
     // Invalidate all active sessions
-    const sessionResult = await this.prisma.session.updateMany({
+    const sessionResult = await tx.session.updateMany({
       where: {
         userId,
         tenantId,
@@ -119,7 +119,7 @@ export class UserService {
     });
 
     // Update user status
-    await this.prisma.user.update({
+    await tx.user.update({
       where: { id: userId },
       data: {
         status: UserStatus.TERMINATED,
@@ -128,7 +128,7 @@ export class UserService {
       }
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'USER_TERMINATED',
       entityType: 'User',
@@ -148,12 +148,11 @@ export class UserService {
   /**
    * Get a single user by ID — tenant-scoped.
    */
-  async getUser(userId: string, tenantId: string) {
-    const user = await this.prisma.user.findFirst({
+  async getUser(tx: PrismaClient, userId: string, tenantId: string) {
+    const user = await tx.user.findFirst({
       where: { id: userId, tenantId, deletedAt: null },
       select: {
         id: true,
-        email: true,
         status: true,
         suspendedAt: true,
         suspensionReason: true,
@@ -176,12 +175,11 @@ export class UserService {
   /**
    * List all non-deleted users in a tenant.
    */
-  async listUsers(tenantId: string) {
-    return this.prisma.user.findMany({
+  async listUsers(tx: PrismaClient, tenantId: string) {
+    return tx.user.findMany({
       where: { tenantId, deletedAt: null },
       select: {
         id: true,
-        email: true,
         status: true,
         createdAt: true
       },

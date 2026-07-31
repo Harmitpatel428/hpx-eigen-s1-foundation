@@ -56,7 +56,7 @@ export function createSessionsRouter(prisma: PrismaClient): Router {
    */
   router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
       const sessionId = req.params['id'] as string;
 
       const session = await prisma.session.findFirst({

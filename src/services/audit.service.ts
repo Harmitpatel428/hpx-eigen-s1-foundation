@@ -20,10 +20,10 @@ interface AuditLogInput {
 export class AuditService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async log(input: AuditLogInput): Promise<void> {
+  async log(tx: PrismaClient, input: AuditLogInput): Promise<void> {
     try {
       // Fetch the last audit record to chain hashes
-      const lastRecord = await this.prisma.auditLog.findFirst({
+      const lastRecord = await tx.auditLog.findFirst({
         where: { tenantId: input.tenantId },
         orderBy: { createdAt: 'desc' },
         select: { currentHash: true }
@@ -53,7 +53,7 @@ export class AuditService {
         .digest('hex');
 
       // Append-only: no update, no delete — ever
-      await this.prisma.auditLog.create({
+      await tx.auditLog.create({
         data: {
           tenantId: input.tenantId,
           eventType: input.eventType,
@@ -81,8 +81,8 @@ export class AuditService {
    * Verify the hash chain integrity for a tenant's audit log.
    * Returns true if the chain is intact, false if tampered.
    */
-  async verifyChain(tenantId: string): Promise<boolean> {
-    const records = await this.prisma.auditLog.findMany({
+  async verifyChain(tx: PrismaClient, tenantId: string): Promise<boolean> {
+    const records = await tx.auditLog.findMany({
       where: { tenantId },
       orderBy: { createdAt: 'asc' }
     });

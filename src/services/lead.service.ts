@@ -1,4 +1,4 @@
-import { PrismaClient, LeadStatus, LeadSource, OpportunityCurrency } from '@prisma/client';
+import { PrismaClient, LeadStatus, LeadSource, OpportunityCurrency, Prisma } from '@prisma/client';
 import { LeadRepository, CreateLeadInput, UpdateLeadInput, FindAllLeadsOptions } from '../repositories/lead.repo';
 import { ContactRepository } from '../repositories/contact.repo';
 import { OpportunityRepository } from '../repositories/opportunity.repo';
@@ -35,28 +35,28 @@ export class LeadService {
     this.audit = new AuditService(prisma);
   }
 
-  private makeContext(ctx: TenantContext) {
+  private makeContext(tx: PrismaClient, ctx: TenantContext) {
     return {
-      lead: new LeadRepository(ctx, this.prisma),
-      contact: new ContactRepository(ctx, this.prisma),
-      opportunity: new OpportunityRepository(ctx, this.prisma),
-      pipeline: new PipelineRepository(ctx, this.prisma)
+      lead: new LeadRepository(ctx, tx),
+      contact: new ContactRepository(ctx, tx),
+      opportunity: new OpportunityRepository(ctx, tx),
+      pipeline: new PipelineRepository(ctx, tx)
     };
   }
 
   /** Create a new lead */
-  async createLead(ctx: TenantContext, input: CreateLeadInput) {
+  async createLead(tx: PrismaClient, ctx: TenantContext, input: CreateLeadInput) {
     if (!input.firstName?.trim() || !input.lastName?.trim()) {
       throw new ValidationError('firstName and lastName are required.');
     }
 
-    const repos = this.makeContext(ctx);
-    const lead = await this.prisma.$transaction(async (tx) => {
+    const repos = this.makeContext(tx, ctx);
+    const lead = await tx.$transaction(async (tx) => {
       const txRepos = { lead: new LeadRepository(ctx, tx as any) };
-      const created = await txRepos.lead.create(input);
+      const created = await txRepos.lead.create(tx as any, input);
 
       const txAudit = new AuditService(tx as any);
-      await txAudit.log({
+      await txAudit.log(tx as any, {
         tenantId: ctx.tenantId,
         eventType: 'LEAD_CREATED',
         entityType: 'Lead',
@@ -75,39 +75,39 @@ export class LeadService {
   }
 
   /** Get a single lead by ID */
-  async getLeadById(ctx: TenantContext, leadId: string) {
-    const repos = this.makeContext(ctx);
-    return repos.lead.findById(leadId);
+  async getLeadById(tx: PrismaClient, ctx: TenantContext, leadId: string) {
+    const repos = this.makeContext(tx, ctx);
+    return repos.lead.findById(tx, leadId);
   }
 
   /** List leads with optional filters, search, and pagination */
-  async listLeads(ctx: TenantContext, decision: AuthorizationDecision | undefined, options?: FindAllLeadsOptions) {
+  async listLeads(tx: PrismaClient, ctx: TenantContext, decision: AuthorizationDecision | undefined, options?: FindAllLeadsOptions) {
     if (decision && !decision.allowed) throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
-    const repos = this.makeContext(ctx);
-    return repos.lead.findAll(options);
+    const repos = this.makeContext(tx, ctx);
+    return repos.lead.findAll(tx, options);
   }
 
   /** List leads by status */
-  async listLeadsByStatus(ctx: TenantContext, status: LeadStatus) {
-    const repos = this.makeContext(ctx);
-    return repos.lead.findByStatus(status);
+  async listLeadsByStatus(tx: PrismaClient, ctx: TenantContext, status: LeadStatus) {
+    const repos = this.makeContext(tx, ctx);
+    return repos.lead.findByStatus(tx, status);
   }
 
-  async updateLead(ctx: TenantContext, decision: AuthorizationDecision | undefined, leadId: string, input: UpdateLeadInput) {
+  async updateLead(tx: PrismaClient, ctx: TenantContext, decision: AuthorizationDecision | undefined, leadId: string, input: UpdateLeadInput) {
     if (decision && !decision.allowed) throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
     
-    const repos = this.makeContext(ctx);
-    const beforeLead = await repos.lead.findById(leadId);
+    const repos = this.makeContext(tx, ctx);
+    const beforeLead = await repos.lead.findById(tx, leadId);
 
-    const lead = await this.prisma.$transaction(async (tx) => {
+    const lead = await tx.$transaction(async (tx) => {
       const txRepos = {
         lead: new LeadRepository(ctx, tx as any)
       };
       
-      const updated = await txRepos.lead.update(leadId, input);
+      const updated = await txRepos.lead.update(tx as any, leadId, input);
       
       const outboxService = new OutboxService(tx as any);
-      await outboxService.publish('LeadUpdated', {
+      await outboxService.publish(tx as any, 'LeadUpdated', {
         leadId,
         before: beforeLead as Record<string, unknown>,
         after: updated as Record<string, unknown>,
@@ -115,7 +115,7 @@ export class LeadService {
       }, ctx.tenantId);
 
       const txAudit = new AuditService(tx as any);
-      await txAudit.log({
+      await txAudit.log(tx as any, {
         tenantId: ctx.tenantId,
         eventType: 'LEAD_UPDATED',
         entityType: 'Lead',
@@ -137,24 +137,26 @@ export class LeadService {
    * Convert a lead to a Contact + Opportunity in a single transaction.
    * Sets lead status = CONVERTED and creates a Pipeline entry for the opportunity.
    */
-  async convertLead(ctx: TenantContext, leadId: string, input: ConvertLeadInput) {
-    const repos = this.makeContext(ctx);
+  async convertLead(tx: PrismaClient, ctx: TenantContext, leadId: string, input: ConvertLeadInput) {
+    const repos = this.makeContext(tx, ctx);
 
     // Ensure lead exists and is not already converted
-    const lead = await repos.lead.findById(leadId);
+    const lead = await repos.lead.findById(tx, leadId);
     if (lead.status === LeadStatus.CONVERTED) {
       throw new BusinessRuleViolationError();
     }
 
     // Execute conversion atomically
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await tx.$transaction(async (tx) => {
       // 1. Create contact linked to the lead
       const contact = await tx.contact.create({
         data: {
           tenantId: ctx.tenantId,
           leadId,
+          departmentId: lead.departmentId,
           firstName: input.contact.firstName,
           lastName: input.contact.lastName,
+          ownerId: lead.ownerId,
           email: input.contact.email ?? null,
           phone: input.contact.phone ?? null,
           title: input.contact.title ?? null,
@@ -168,6 +170,7 @@ export class LeadService {
           tenantId: ctx.tenantId,
           leadId,
           contactId: contact.id,
+          departmentId: lead.departmentId,
           ownerId: lead.ownerId ?? ctx.userId,
           title: input.opportunity.title,
           value: input.opportunity.value,
@@ -195,7 +198,7 @@ export class LeadService {
       return { contact, opportunity };
     });
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'LEAD_CONVERTED',
       entityType: 'Lead',
@@ -213,11 +216,11 @@ export class LeadService {
   }
 
   /** Soft-delete a lead */
-  async deleteLead(ctx: TenantContext, leadId: string) {
-    const repos = this.makeContext(ctx);
-    await repos.lead.softDelete(leadId);
+  async deleteLead(tx: PrismaClient, ctx: TenantContext, leadId: string) {
+    const repos = this.makeContext(tx, ctx);
+    await repos.lead.softDelete(tx, leadId);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'LEAD_DELETED',
       entityType: 'Lead',

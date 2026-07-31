@@ -17,7 +17,8 @@ export interface AuthenticatedRequest extends Request {
     tenantId: string;
     sessionId: string;
     teamId: string | null;
-    departmentId: string | null;
+    activeDepartmentId: string | null;
+    isSuperAdmin: boolean;
     permissions: PermissionManifest;
     /** Injected by permissionMiddleware — the resolved ABAC scope for the current route */
     scope?: string;
@@ -38,7 +39,8 @@ function userContextKey(userId: string): string {
 
 interface UserContext {
   teamId: string | null;
-  departmentId: string | null;
+  activeDepartmentId: string | null;
+  isSuperAdmin: boolean;
 }
 
 /**
@@ -60,12 +62,31 @@ async function getUserContext(userId: string, tenantId: string): Promise<UserCon
 
   const userRecord = await prisma.user.findFirst({
     where: { id: userId, tenantId, deletedAt: null },
-    select: { teamId: true, departmentId: true },
+    select: { teamId: true, identityId: true },
+  });
+
+  let activeDepartmentId = null;
+  if (userRecord?.identityId) {
+    const membership = await prisma.organizationMembership.findFirst({
+      where: { identityId: userRecord.identityId, tenantId },
+      select: { id: true }
+    });
+    if (membership) {
+      const assignment = await prisma.departmentAssignment.findFirst({
+        where: { membershipId: membership.id, isPrimary: true }
+      });
+      activeDepartmentId = assignment?.departmentId ?? null;
+    }
+  }
+
+  const superAdminRole = await prisma.userRole.findFirst({
+    where: { userId, scopeType: 'ORGANIZATION' }
   });
 
   const context: UserContext = {
     teamId: userRecord?.teamId ?? null,
-    departmentId: userRecord?.departmentId ?? null,
+    activeDepartmentId,
+    isSuperAdmin: !!superAdminRole,
   };
 
   // Cache even null values — null is a valid state
@@ -134,7 +155,7 @@ export async function authMiddleware(
 
     // 3. Fetch permission manifest and user context in parallel (both Redis-backed)
     const [permissions, userContext] = await Promise.all([
-      permissionService.getPermissionManifest(userId, tenantId),
+      permissionService.getPermissionManifest(prisma, userId, tenantId),
       getUserContext(userId, tenantId),
     ]);
 
@@ -143,7 +164,8 @@ export async function authMiddleware(
       tenantId,
       sessionId,
       teamId: userContext.teamId,
-      departmentId: userContext.departmentId,
+      activeDepartmentId: userContext.activeDepartmentId,
+      isSuperAdmin: userContext.isSuperAdmin,
       permissions,
     };
 

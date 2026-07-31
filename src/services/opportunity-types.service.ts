@@ -1,4 +1,4 @@
-import { PrismaClient, OpportunityType } from '@prisma/client';
+import { PrismaClient, OpportunityType, Prisma } from '@prisma/client';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 
 export interface UserContext {
@@ -24,8 +24,8 @@ export const DEFAULT_OPPORTUNITY_TYPES = [
 export class OpportunityTypesService {
   constructor(private prisma: PrismaClient) {}
 
-  async ensureDefaultTypes(ctx: UserContext): Promise<void> {
-    const count = await this.prisma.opportunityType.count({
+  async ensureDefaultTypes(tx: PrismaClient, ctx: UserContext): Promise<void> {
+    const count = await tx.opportunityType.count({
       where: { tenantId: ctx.tenantId, deletedAt: null }
     });
 
@@ -39,18 +39,18 @@ export class OpportunityTypesService {
       isDefault: name === 'Other'
     }));
 
-    await this.prisma.opportunityType.createMany({ data });
+    await tx.opportunityType.createMany({ data });
   }
 
-  async listTypes(ctx: UserContext): Promise<OpportunityType[]> {
-    await this.ensureDefaultTypes(ctx);
-    return this.prisma.opportunityType.findMany({
+  async listTypes(tx: PrismaClient, ctx: UserContext): Promise<OpportunityType[]> {
+    await this.ensureDefaultTypes(tx, ctx);
+    return tx.opportunityType.findMany({
       where: { tenantId: ctx.tenantId, deletedAt: null },
       orderBy: { displayOrder: 'asc' }
     });
   }
 
-  async createType(ctx: UserContext, name: string): Promise<OpportunityType> {
+  async createType(tx: PrismaClient, ctx: UserContext, name: string): Promise<OpportunityType> {
     const cleanName = name?.trim() || '';
     if (!cleanName || cleanName.length > 100) {
       throw new ValidationError('Name must be between 1 and 100 characters.');
@@ -60,7 +60,7 @@ export class OpportunityTypesService {
       throw new ValidationError('"Other" is a reserved opportunity type name.');
     }
 
-    const existing = await this.prisma.opportunityType.findFirst({
+    const existing = await tx.opportunityType.findFirst({
       where: { tenantId: ctx.tenantId, name: { equals: cleanName, mode: 'insensitive' }, deletedAt: null }
     });
 
@@ -68,14 +68,14 @@ export class OpportunityTypesService {
       throw new ValidationError('An opportunity type with this name already exists.');
     }
 
-    const maxOrderType = await this.prisma.opportunityType.findFirst({
+    const maxOrderType = await tx.opportunityType.findFirst({
       where: { tenantId: ctx.tenantId, deletedAt: null, isDefault: false },
       orderBy: { displayOrder: 'desc' }
     });
     
     let displayOrder = maxOrderType ? maxOrderType.displayOrder + 1 : 0;
 
-    const newType = await this.prisma.opportunityType.create({
+    const newType = await tx.opportunityType.create({
       data: {
         tenantId: ctx.tenantId,
         name: cleanName,
@@ -84,11 +84,11 @@ export class OpportunityTypesService {
     });
 
     // Make sure "Other" is pushed to the bottom
-    const otherType = await this.prisma.opportunityType.findFirst({
+    const otherType = await tx.opportunityType.findFirst({
       where: { tenantId: ctx.tenantId, isDefault: true, name: 'Other', deletedAt: null }
     });
     if (otherType && otherType.displayOrder <= displayOrder) {
-      await this.prisma.opportunityType.update({
+      await tx.opportunityType.update({
         where: { id: otherType.id },
         data: { displayOrder: displayOrder + 1 }
       });
@@ -97,8 +97,8 @@ export class OpportunityTypesService {
     return newType;
   }
 
-  async updateType(ctx: UserContext, id: string, data: { name?: string; isActive?: boolean }): Promise<OpportunityType> {
-    const type = await this.prisma.opportunityType.findFirst({
+  async updateType(tx: PrismaClient, ctx: UserContext, id: string, data: { name?: string; isActive?: boolean }): Promise<OpportunityType> {
+    const type = await tx.opportunityType.findFirst({
       where: { id, tenantId: ctx.tenantId, deletedAt: null }
     });
 
@@ -118,7 +118,7 @@ export class OpportunityTypesService {
        if (cleanName.toLowerCase() === 'other' && !type.isDefault) {
           throw new ValidationError('"Other" is a reserved opportunity type name.');
        }
-       const existing = await this.prisma.opportunityType.findFirst({
+       const existing = await tx.opportunityType.findFirst({
          where: { tenantId: ctx.tenantId, name: { equals: cleanName, mode: 'insensitive' }, id: { not: id }, deletedAt: null }
        });
        if (existing) {
@@ -126,7 +126,7 @@ export class OpportunityTypesService {
        }
     }
 
-    return this.prisma.opportunityType.update({
+    return tx.opportunityType.update({
       where: { id },
       data: {
         ...(cleanName !== undefined && { name: cleanName }),
@@ -135,8 +135,8 @@ export class OpportunityTypesService {
     });
   }
 
-  async reorderTypes(ctx: UserContext, typeIds: string[]): Promise<void> {
-    const types = await this.prisma.opportunityType.findMany({
+  async reorderTypes(tx: PrismaClient, ctx: UserContext, typeIds: string[]): Promise<void> {
+    const types = await tx.opportunityType.findMany({
       where: { tenantId: ctx.tenantId, deletedAt: null }
     });
 
@@ -147,7 +147,7 @@ export class OpportunityTypesService {
     for (const id of typeIds) {
       if (otherType && id === otherType.id) continue;
       updates.push(
-        this.prisma.opportunityType.update({
+        tx.opportunityType.update({
           where: { id },
           data: { displayOrder: order++ }
         })
@@ -156,18 +156,18 @@ export class OpportunityTypesService {
     
     if (otherType) {
       updates.push(
-        this.prisma.opportunityType.update({
+        tx.opportunityType.update({
           where: { id: otherType.id },
           data: { displayOrder: order }
         })
       );
     }
 
-    await this.prisma.$transaction(updates);
+    await tx.$transaction(updates);
   }
 
-  async deleteType(ctx: UserContext, id: string): Promise<void> {
-    const type = await this.prisma.opportunityType.findFirst({
+  async deleteType(tx: PrismaClient, ctx: UserContext, id: string): Promise<void> {
+    const type = await tx.opportunityType.findFirst({
       where: { id, tenantId: ctx.tenantId, deletedAt: null }
     });
 
@@ -179,7 +179,7 @@ export class OpportunityTypesService {
       throw new ValidationError('Cannot delete the default "Other" type.');
     }
 
-    const inUse = await this.prisma.opportunity.count({
+    const inUse = await tx.opportunity.count({
       where: { opportunityTypeId: id, tenantId: ctx.tenantId, deletedAt: null }
     });
 
@@ -187,7 +187,7 @@ export class OpportunityTypesService {
       throw new ValidationError('Cannot delete an opportunity type that is currently in use.');
     }
 
-    await this.prisma.opportunityType.update({
+    await tx.opportunityType.update({
       where: { id },
       data: { deletedAt: new Date() }
     });

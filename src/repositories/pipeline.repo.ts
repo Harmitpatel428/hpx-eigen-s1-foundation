@@ -1,4 +1,4 @@
-import { PrismaClient, OpportunityStage } from '@prisma/client';
+import { PrismaClient, OpportunityStage, Prisma } from '@prisma/client';
 import { BaseRepository, TenantContext } from './base.repo';
 import { ResourceNotFoundError } from '../types/exceptions';
 
@@ -11,8 +11,8 @@ export class PipelineRepository extends BaseRepository {
    * Get the full stage history for an opportunity, ordered chronologically.
    * Used to reconstruct deal velocity and stage durations.
    */
-  async findByOpportunity(opportunityId: string) {
-    return this.prisma.pipeline.findMany({
+  async findByOpportunity(tx: PrismaClient, opportunityId: string) {
+    return tx.pipeline.findMany({
       where: {
         tenantId: this.ctx.tenantId,
         opportunityId
@@ -25,8 +25,8 @@ export class PipelineRepository extends BaseRepository {
    * Get the current (open) pipeline stage record for an opportunity.
    * Returns null if the deal is closed (exitedAt is set on all records).
    */
-  async findCurrentStage(opportunityId: string) {
-    return this.prisma.pipeline.findFirst({
+  async findCurrentStage(tx: PrismaClient, opportunityId: string) {
+    return tx.pipeline.findFirst({
       where: {
         tenantId: this.ctx.tenantId,
         opportunityId,
@@ -39,8 +39,8 @@ export class PipelineRepository extends BaseRepository {
    * Get all opportunities currently in a specific stage.
    * Used for pipeline board views.
    */
-  async findByStage(stage: OpportunityStage) {
-    return this.prisma.pipeline.findMany({
+  async findByStage(tx: PrismaClient, stage: OpportunityStage) {
+    return tx.pipeline.findMany({
       where: {
         tenantId: this.ctx.tenantId,
         stage,
@@ -67,8 +67,8 @@ export class PipelineRepository extends BaseRepository {
    * Note: OpportunityRepository.advanceStage() calls this within a transaction.
    * This method is also usable standalone for back-fills.
    */
-  async recordTransition(opportunityId: string, fromStage: OpportunityStage | null, toStage: OpportunityStage) {
-    return this.prisma.$transaction(async (tx) => {
+  async recordTransition(tx: PrismaClient, opportunityId: string, fromStage: OpportunityStage | null, toStage: OpportunityStage) {
+    return tx.$transaction(async (tx) => {
       // Close any open stage record
       if (fromStage !== null) {
         await tx.pipeline.updateMany({
@@ -98,8 +98,8 @@ export class PipelineRepository extends BaseRepository {
    * Compute average days spent in each stage across all tenant opportunities.
    * Useful for pipeline velocity analytics.
    */
-  async stageVelocity() {
-    const records = await this.prisma.pipeline.findMany({
+  async stageVelocity(tx: PrismaClient) {
+    const records = await tx.pipeline.findMany({
       where: {
         tenantId: this.ctx.tenantId,
         exitedAt: { not: null }

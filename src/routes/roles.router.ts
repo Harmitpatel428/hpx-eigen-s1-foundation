@@ -115,7 +115,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
 
       const afterState = await prisma.role.findUnique({ where: { id: req.params.id }, include: { permissions: true } });
 
-      await auditService.log({
+      await auditService.log((req as any).db || prisma, {
         tenantId,
         eventType: 'RoleUpdated',
         entityType: 'Role',
@@ -130,7 +130,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       });
 
       // Invalidate all users in this tenant — Role permission change affects everyone assigned to this role
-      await permissionService.invalidateTenantPermissionCache(tenantId);
+      await permissionService.invalidateTenantPermissionCache((req as any).db || prisma, tenantId);
 
       res.status(201).json({ message: 'Permission added.' });
     } catch (err) {
@@ -157,7 +157,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
 
       const afterState = await prisma.role.findUnique({ where: { id: req.params.id }, include: { permissions: true } });
 
-      await auditService.log({
+      await auditService.log((req as any).db || prisma, {
         tenantId,
         eventType: 'RoleUpdated',
         entityType: 'Role',
@@ -172,7 +172,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       });
 
       // Invalidate all users in this tenant — Role permission change affects everyone assigned to this role
-      await permissionService.invalidateTenantPermissionCache(tenantId);
+      await permissionService.invalidateTenantPermissionCache((req as any).db || prisma, tenantId);
 
       res.status(204).send();
     } catch (err) {
@@ -197,7 +197,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
           user: {
             select: {
               id: true,
-              email: true,
+              
               status: true,
               teamId: true,
               departmentId: true,
@@ -256,7 +256,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       });
 
       // Invalidate the specific user's manifest — only their permissions changed
-      await permissionService.invalidatePermissionCache(userId);
+      await permissionService.invalidatePermissionCache((req as any).db || prisma, userId);
 
       res.status(201).json({ message: 'Role assigned.' });
     } catch (err) {
@@ -280,7 +280,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       });
 
       // Invalidate the specific user's manifest — only their permissions changed
-      await permissionService.invalidatePermissionCache(req.params.userId);
+      await permissionService.invalidatePermissionCache((req as any).db || prisma, req.params.userId);
 
       res.status(204).send();
     } catch (err) {

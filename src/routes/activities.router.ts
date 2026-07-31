@@ -12,7 +12,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
   /** Log a new activity against an opportunity */
   router.post('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
       const { opportunityId, type, subject, notes, scheduledAt } = req.body as {
         opportunityId: string;
         type: ActivityType;
@@ -26,7 +26,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
       }
 
       const activity = await activityService.createActivity(
-        { tenantId, userId },
+        (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
         {
           opportunityId,
           userId,
@@ -47,7 +47,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
   /** List activities filtered by opportunityId, type, or userId */
   router.get('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
       const opportunityId = req.query.opportunityId as string | undefined;
       const type = req.query.type as ActivityType | undefined;
       const actorUserId = req.query.actorUserId as string | undefined;
@@ -55,17 +55,17 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
       let activities;
 
       if (opportunityId) {
-        activities = await activityService.listByOpportunity({ tenantId, userId }, opportunityId);
+        activities = await activityService.listByOpportunity((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, opportunityId);
       } else if (type) {
         if (!Object.values(ActivityType).includes(type)) {
           throw new ValidationError(`type must be one of: ${Object.values(ActivityType).join(', ')}`);
         }
-        activities = await activityService.listByType({ tenantId, userId }, type);
+        activities = await activityService.listByType((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, type);
       } else if (actorUserId) {
-        activities = await activityService.listByUser({ tenantId, userId }, actorUserId);
+        activities = await activityService.listByUser((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, actorUserId);
       } else {
         // Default: activities for the current user
-        activities = await activityService.listByUser({ tenantId, userId }, userId);
+        activities = await activityService.listByUser((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, userId);
       }
 
       res.json({ data: activities, total: activities.length });
@@ -78,8 +78,8 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
   /** Get a single activity by ID */
   router.get('/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      const activity = await activityService.getActivityById({ tenantId, userId }, req.params.id);
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+      const activity = await activityService.getActivityById((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
       res.json(activity);
     } catch (err) {
       next(err);
@@ -90,7 +90,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
   /** Update activity details */
   router.put('/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
       const { subject, notes, scheduledAt, completedAt } = req.body as {
         subject?: string;
         notes?: string;
@@ -99,7 +99,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
       };
 
       const activity = await activityService.updateActivity(
-        { tenantId, userId },
+        (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
         req.params.id,
         {
           subject,
@@ -119,8 +119,8 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
   /** Mark an activity as complete */
   router.post('/:id/complete', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      const activity = await activityService.markActivityComplete({ tenantId, userId }, req.params.id);
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+      const activity = await activityService.markActivityComplete((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
       res.json(activity);
     } catch (err) {
       next(err);
@@ -131,8 +131,8 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
   /** Soft-delete an activity */
   router.delete('/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      await activityService.deleteActivity({ tenantId, userId }, req.params.id);
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+      await activityService.deleteActivity((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
       res.status(204).send();
     } catch (err) {
       next(err);

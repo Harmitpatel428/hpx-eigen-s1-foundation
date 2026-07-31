@@ -1,4 +1,4 @@
-import { PrismaClient, ActivityType } from '@prisma/client';
+import { PrismaClient, ActivityType, Prisma } from '@prisma/client';
 import { BaseRepository, TenantContext } from './base.repo';
 import { ResourceNotFoundError } from '../types/exceptions';
 
@@ -24,8 +24,8 @@ export class ActivityRepository extends BaseRepository {
   }
 
   /** Log a new activity against an opportunity */
-  async create(input: CreateActivityInput) {
-    return this.prisma.activity.create({
+  async create(tx: PrismaClient, input: CreateActivityInput) {
+    return tx.activity.create({
       data: {
         tenantId: this.ctx.tenantId,
         opportunityId: input.opportunityId,
@@ -39,10 +39,10 @@ export class ActivityRepository extends BaseRepository {
   }
 
   /** Find activity by ID — tenant-scoped, throws if not found */
-  async findById(activityId: string) {
-    const activity = await this.prisma.activity.findFirst({
+  async findById(tx: PrismaClient, activityId: string) {
+    const activity = await tx.activity.findFirst({
       where: {
-        ...this.buildTenantFilter(),
+        ...this.buildTenantFilter(tx),
         id: activityId
       }
     });
@@ -51,10 +51,10 @@ export class ActivityRepository extends BaseRepository {
   }
 
   /** List all activities for a specific opportunity */
-  async findByOpportunity(opportunityId: string) {
-    return this.prisma.activity.findMany({
+  async findByOpportunity(tx: PrismaClient, opportunityId: string) {
+    return tx.activity.findMany({
       where: {
-        ...this.buildTenantFilter(),
+        ...this.buildTenantFilter(tx),
         opportunityId
       },
       orderBy: { createdAt: 'desc' }
@@ -62,10 +62,10 @@ export class ActivityRepository extends BaseRepository {
   }
 
   /** List all activities of a specific type in the tenant */
-  async findByType(type: ActivityType) {
-    return this.prisma.activity.findMany({
+  async findByType(tx: PrismaClient, type: ActivityType) {
+    return tx.activity.findMany({
       where: {
-        ...this.buildTenantFilter(),
+        ...this.buildTenantFilter(tx),
         type
       },
       orderBy: { scheduledAt: 'asc' }
@@ -73,10 +73,10 @@ export class ActivityRepository extends BaseRepository {
   }
 
   /** List all activities assigned to a specific user */
-  async findByUser(userId: string) {
-    return this.prisma.activity.findMany({
+  async findByUser(tx: PrismaClient, userId: string) {
+    return tx.activity.findMany({
       where: {
-        ...this.buildTenantFilter(),
+        ...this.buildTenantFilter(tx),
         userId
       },
       orderBy: { scheduledAt: 'asc' }
@@ -84,10 +84,10 @@ export class ActivityRepository extends BaseRepository {
   }
 
   /** Update activity details or mark as completed */
-  async update(activityId: string, input: UpdateActivityInput) {
-    await this.findById(activityId);
+  async update(tx: PrismaClient, activityId: string, input: UpdateActivityInput) {
+    await this.findById(tx, activityId);
 
-    return this.prisma.activity.update({
+    return tx.activity.update({
       where: { id: activityId },
       data: {
         ...(input.subject !== undefined ? { subject: input.subject } : {}),
@@ -99,18 +99,18 @@ export class ActivityRepository extends BaseRepository {
   }
 
   /** Mark an activity as completed (sets completedAt to now) */
-  async markComplete(activityId: string) {
-    await this.findById(activityId);
-    return this.prisma.activity.update({
+  async markComplete(tx: PrismaClient, activityId: string) {
+    await this.findById(tx, activityId);
+    return tx.activity.update({
       where: { id: activityId },
       data: { completedAt: new Date() }
     });
   }
 
   /** Soft-delete an activity */
-  async softDelete(activityId: string) {
-    await this.findById(activityId);
-    return this.prisma.activity.update({
+  async softDelete(tx: PrismaClient, activityId: string) {
+    await this.findById(tx, activityId);
+    return tx.activity.update({
       where: { id: activityId },
       data: { deletedAt: new Date() }
     });

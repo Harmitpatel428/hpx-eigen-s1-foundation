@@ -1,4 +1,4 @@
-import { PrismaClient, OpportunityStage } from '@prisma/client';
+import { PrismaClient, OpportunityStage, Prisma } from '@prisma/client';
 import { PipelineRepository } from '../repositories/pipeline.repo';
 import { TenantContext } from '../repositories/base.repo';
 
@@ -22,39 +22,39 @@ export interface PipelineAnalytics {
 export class PipelineService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  private makeRepo(ctx: TenantContext) {
-    return new PipelineRepository(ctx, this.prisma);
+  private makeRepo(tx: PrismaClient, ctx: TenantContext) {
+    return new PipelineRepository(ctx, tx);
   }
 
   /** Get full stage transition history for an opportunity */
-  async getOpportunityHistory(ctx: TenantContext, opportunityId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByOpportunity(opportunityId);
+  async getOpportunityHistory(tx: PrismaClient, ctx: TenantContext, opportunityId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findByOpportunity(tx, opportunityId);
   }
 
   /** Get the current active pipeline stage for an opportunity */
-  async getCurrentStage(ctx: TenantContext, opportunityId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findCurrentStage(opportunityId);
+  async getCurrentStage(tx: PrismaClient, ctx: TenantContext, opportunityId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findCurrentStage(tx, opportunityId);
   }
 
   /** Get all opportunities currently in a specific pipeline stage */
-  async getOpportunitiesByStage(ctx: TenantContext, stage: OpportunityStage) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByStage(stage);
+  async getOpportunitiesByStage(tx: PrismaClient, ctx: TenantContext, stage: OpportunityStage) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findByStage(tx, stage);
   }
 
   /** Compute stage velocity metrics — average days per stage */
-  async getStageVelocity(ctx: TenantContext) {
-    const repo = this.makeRepo(ctx);
-    return repo.stageVelocity();
+  async getStageVelocity(tx: PrismaClient, ctx: TenantContext) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.stageVelocity(tx);
   }
 
   /**
    * Compute comprehensive pipeline analytics for the tenant's dashboard.
    * Aggregates opportunity counts, values, closure rates, and velocity.
    */
-  async getPipelineAnalytics(ctx: TenantContext): Promise<PipelineAnalytics> {
+  async getPipelineAnalytics(tx: PrismaClient, ctx: TenantContext): Promise<PipelineAnalytics> {
     const activeStages: OpportunityStage[] = [
       OpportunityStage.PROSPECTING,
       OpportunityStage.QUALIFICATION,
@@ -63,7 +63,7 @@ export class PipelineService {
     ];
 
     // Fetch all non-deleted opportunities for the tenant
-    const opportunities = await this.prisma.opportunity.findMany({
+    const opportunities = await tx.opportunity.findMany({
       where: { tenantId: ctx.tenantId, deletedAt: null },
       select: { stage: true, value: true }
     });
@@ -96,8 +96,8 @@ export class PipelineService {
     const winRate = totalClosed > 0 ? Math.round((won / totalClosed) * 100) : 0;
 
     // Stage velocity
-    const repo = this.makeRepo(ctx);
-    const stageVelocity = await repo.stageVelocity();
+    const repo = this.makeRepo(tx, ctx);
+    const stageVelocity = await repo.stageVelocity(tx);
 
     return {
       totalActiveOpportunities,
@@ -112,10 +112,10 @@ export class PipelineService {
    * Predict expected closure date for an opportunity based on average
    * stage velocity and current stage entry time.
    */
-  async predictClosureDate(ctx: TenantContext, opportunityId: string): Promise<Date | null> {
-    const repo = this.makeRepo(ctx);
-    const history = await repo.findByOpportunity(opportunityId);
-    const velocity = await repo.stageVelocity();
+  async predictClosureDate(tx: PrismaClient, ctx: TenantContext, opportunityId: string): Promise<Date | null> {
+    const repo = this.makeRepo(tx, ctx);
+    const history = await repo.findByOpportunity(tx, opportunityId);
+    const velocity = await repo.stageVelocity(tx);
 
     if (history.length === 0) return null;
 

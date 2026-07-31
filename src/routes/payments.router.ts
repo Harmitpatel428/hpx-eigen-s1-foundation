@@ -19,11 +19,11 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   // ─── GET /api/v1/payments ───────────────────────────────────────────
   router.get('/', validate(listPaymentsSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
       const { method, invoiceId } = req.query as { method?: any; invoiceId?: string };
 
       const payments = await paymentService.listPayments(
-        { tenantId, userId },
+        (req as any).db || prisma, { tenantId, userId, },
         { method, invoiceId }
       );
 
@@ -36,8 +36,8 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   // ─── GET /api/v1/payments/:id ───────────────────────────────────────
   router.get('/:id', validate(paymentIdSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      const payment = await paymentService.getPaymentById({ tenantId, userId }, req.params.id);
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
+      const payment = await paymentService.getPaymentById((req as any).db || prisma, { tenantId, userId, }, req.params.id);
       res.json(payment);
     } catch (err) {
       next(err);
@@ -47,8 +47,8 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   // ─── POST /api/v1/payments ──────────────────────────────────────────
   router.post('/', validate(createPaymentSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      const payment = await paymentService.createPayment({ tenantId, userId }, req.body);
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
+      const payment = await paymentService.createPayment((req as any).db || prisma, { tenantId, userId, }, req.body);
       res.status(201).json(payment);
     } catch (err) {
       next(err);
@@ -58,9 +58,9 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   // ─── PATCH /api/v1/payments/:id ─────────────────────────────────────
   router.patch('/:id', validate(updatePaymentSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
       const payment = await paymentService.updatePayment(
-        { tenantId, userId },
+        (req as any).db || prisma, { tenantId, userId, },
         req.params.id,
         req.body
       );
@@ -73,8 +73,8 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   // ─── DELETE /api/v1/payments/:id ────────────────────────────────────
   router.delete('/:id', validate(paymentIdSchema), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      await paymentService.deletePayment({ tenantId, userId }, req.params.id);
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
+      await paymentService.deletePayment((req as any).db || prisma, { tenantId, userId, }, req.params.id);
       res.status(204).send();
     } catch (err) {
       next(err);

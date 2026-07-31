@@ -2,6 +2,9 @@
 CREATE TYPE "IdentityStatus" AS ENUM ('ACTIVE', 'SUSPENDED', 'PENDING_VERIFICATION', 'DELETED');
 
 -- CreateEnum
+CREATE TYPE "ScopeType" AS ENUM ('OWN', 'TEAM', 'DEPARTMENT', 'ORGANIZATION');
+
+-- CreateEnum
 CREATE TYPE "MembershipStatus" AS ENUM ('ACTIVE', 'SUSPENDED', 'PENDING', 'ARCHIVED');
 
 -- CreateEnum

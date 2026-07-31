@@ -12,13 +12,13 @@ export class PaymentService {
   }
 
   async createPayment(
-    ctx: UserContext,
+    tx: PrismaClient, ctx: UserContext,
     data: CreatePaymentInput
   ): Promise<Payment> {
     const { tenantId, userId } = ctx;
 
     // Verify invoice belongs to tenant and fetch all active payments
-    const invoice = await this.prisma.invoice.findFirst({
+    const invoice = await tx.invoice.findFirst({
       where: { id: data.invoiceId, tenantId, deletedAt: null },
       include: {
         payments: {
@@ -63,7 +63,7 @@ export class PaymentService {
     }
 
     // ─── Atomic transaction: create payment + conditionally update invoice ────
-    const payment = await this.prisma.$transaction(async (tx) => {
+    const payment = await tx.$transaction(async (tx) => {
       const p = await tx.payment.create({
         data: {
           tenantId,
@@ -92,7 +92,7 @@ export class PaymentService {
       return p;
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'PAYMENT_CREATED',
       entityType: 'PAYMENT',
@@ -106,7 +106,7 @@ export class PaymentService {
   }
 
   async listPayments(
-    ctx: UserContext,
+    tx: PrismaClient, ctx: UserContext,
     filters?: { invoiceId?: string; method?: PaymentMethod }
   ): Promise<Payment[]> {
     const { tenantId } = ctx;
@@ -119,20 +119,20 @@ export class PaymentService {
     if (filters?.invoiceId) where.invoiceId = filters.invoiceId;
     if (filters?.method) where.method = filters.method;
 
-    return this.prisma.payment.findMany({
+    return tx.payment.findMany({
       where,
       orderBy: { createdAt: 'desc' },
     });
   }
 
   async updatePayment(
-    ctx: UserContext,
+    tx: PrismaClient, ctx: UserContext,
     id: string,
     data: UpdatePaymentInput
   ): Promise<Payment> {
     const { tenantId, userId } = ctx;
 
-    const existing = await this.prisma.payment.findFirst({
+    const existing = await tx.payment.findFirst({
       where: { id, tenantId, deletedAt: null },
     });
 
@@ -140,7 +140,7 @@ export class PaymentService {
 
     // If amount is being updated, re-validate the balance constraint
     if (data.amount !== undefined) {
-      const invoice = await this.prisma.invoice.findFirst({
+      const invoice = await tx.invoice.findFirst({
         where: { id: existing.invoiceId, tenantId, deletedAt: null },
         include: {
           payments: {
@@ -171,7 +171,7 @@ export class PaymentService {
       }
     }
 
-    const updated = await this.prisma.payment.update({
+    const updated = await tx.payment.update({
       where: { id },
       data: {
         ...(data.amount !== undefined && { amount: new Prisma.Decimal(data.amount) }),
@@ -187,7 +187,7 @@ export class PaymentService {
       },
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'PAYMENT_UPDATED',
       entityType: 'PAYMENT',
@@ -200,8 +200,8 @@ export class PaymentService {
     return updated;
   }
 
-  async getPaymentById(ctx: UserContext, id: string): Promise<Payment> {
-    const payment = await this.prisma.payment.findFirst({
+  async getPaymentById(tx: PrismaClient, ctx: UserContext, id: string): Promise<Payment> {
+    const payment = await tx.payment.findFirst({
       where: { id, tenantId: ctx.tenantId, deletedAt: null },
     });
 
@@ -209,16 +209,16 @@ export class PaymentService {
     return payment;
   }
 
-  async deletePayment(ctx: UserContext, id: string): Promise<void> {
+  async deletePayment(tx: PrismaClient, ctx: UserContext, id: string): Promise<void> {
     const { tenantId, userId } = ctx;
-    await this.getPaymentById(ctx, id); // validates ownership
+    await this.getPaymentById(tx, ctx, id); // validates ownership
 
-    await this.prisma.payment.update({
+    await tx.payment.update({
       where: { id },
       data: { deletedAt: new Date() },
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'PAYMENT_DELETED',
       entityType: 'PAYMENT',

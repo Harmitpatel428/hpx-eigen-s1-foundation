@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { logger } from '../utils/logger';
+import { PrismaClient, Prisma } from "@prisma/client";
 
 // Load RSA keys from environment variables
 const PRIVATE_KEY = process.env.JWT_PRIVATE_KEY?.replace(/\\n/g, '\n');

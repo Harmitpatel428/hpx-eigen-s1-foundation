@@ -24,7 +24,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:create'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const {
           firstName,
           lastName,
@@ -62,7 +62,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         }
 
         const lead = await leadService.createLead(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           {
             firstName,
             lastName,
@@ -105,7 +105,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           userId,
           tenantId,
           teamId,
-          departmentId,
+          activeDepartmentId,
           scope,
         } = (req as AuthenticatedRequest).user;
 
@@ -134,7 +134,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           (scope ?? 'OWN') as ScopeType,
           userId,
           teamId,
-          departmentId,
+          activeDepartmentId,
           prisma
         );
 
@@ -180,8 +180,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        const lead = await leadService.getLeadById({ tenantId, userId }, req.params.id);
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+        const lead = await leadService.getLeadById((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
         res.json(lead);
       } catch (err) {
         next(err);
@@ -198,7 +198,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const userReq = req as AuthenticatedRequest;
-        const { userId, tenantId, decision } = userReq.user;
+        const { userId, tenantId, activeDepartmentId, decision } = userReq.user;
         const {
           firstName,
           lastName,
@@ -234,7 +234,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         }
 
         const lead = await leadService.updateLead(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           decision,
           req.params.id,
           {
@@ -268,7 +268,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:edit'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const { contact, opportunity } = req.body as {
           contact: {
             firstName: string;
@@ -297,7 +297,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         }
 
         const result = await leadService.convertLead(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           req.params.id,
           {
             contact,
@@ -325,8 +325,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:delete'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        await leadService.deleteLead({ tenantId, userId }, req.params.id);
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+        await leadService.deleteLead((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
         res.status(204).send();
       } catch (err) {
         next(err);

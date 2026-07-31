@@ -1,6 +1,9 @@
+import { PrismaClient, Prisma } from "@prisma/client";
+
 export interface TenantContext {
   tenantId: string;
   userId: string;
+  activeDepartmentId?: string | null;
 }
 
 export class BaseRepository {
@@ -10,7 +13,7 @@ export class BaseRepository {
     this.ctx = ctx;
   }
 
-  protected buildTenantFilter() {
+  protected buildTenantFilter(tx: PrismaClient) {
     return {
       tenantId: this.ctx.tenantId,
       deletedAt: null

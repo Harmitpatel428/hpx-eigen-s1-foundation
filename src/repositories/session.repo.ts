@@ -1,4 +1,4 @@
-import { PrismaClient, SessionStatus } from '@prisma/client';
+import { PrismaClient, SessionStatus, Prisma } from '@prisma/client';
 import { BaseRepository, TenantContext } from './base.repo';
 import { ResourceNotFoundError } from '../types/exceptions';
 
@@ -8,10 +8,10 @@ export class SessionRepository extends BaseRepository {
   }
 
   /** Find an active, non-expired, non-deleted session */
-  async findActive(sessionId: string) {
-    return this.prisma.session.findFirst({
+  async findActive(tx: PrismaClient, sessionId: string) {
+    return tx.session.findFirst({
       where: {
-        ...this.buildTenantFilter(),
+        ...this.buildTenantFilter(tx),
         id: sessionId,
         status: SessionStatus.ACTIVE,
         expiresAt: { gt: new Date() }
@@ -20,10 +20,10 @@ export class SessionRepository extends BaseRepository {
   }
 
   /** Find all active sessions for a user */
-  async findActiveByUser(userId: string) {
-    return this.prisma.session.findMany({
+  async findActiveByUser(tx: PrismaClient, userId: string) {
+    return tx.session.findMany({
       where: {
-        ...this.buildTenantFilter(),
+        ...this.buildTenantFilter(tx),
         userId,
         status: SessionStatus.ACTIVE,
         expiresAt: { gt: new Date() }
@@ -33,23 +33,23 @@ export class SessionRepository extends BaseRepository {
   }
 
   /** Revoke a single session (user logout) */
-  async revoke(sessionId: string) {
-    const session = await this.prisma.session.findFirst({
-      where: { ...this.buildTenantFilter(), id: sessionId }
+  async revoke(tx: PrismaClient, sessionId: string) {
+    const session = await tx.session.findFirst({
+      where: { ...this.buildTenantFilter(tx), id: sessionId }
     });
     if (!session) throw new ResourceNotFoundError();
 
-    return this.prisma.session.update({
+    return tx.session.update({
       where: { id: sessionId },
       data: { status: SessionStatus.REVOKED, revokedAt: new Date() }
     });
   }
 
   /** Invalidate all active sessions for a user */
-  async invalidateAllForUser(userId: string) {
-    return this.prisma.session.updateMany({
+  async invalidateAllForUser(tx: PrismaClient, userId: string) {
+    return tx.session.updateMany({
       where: {
-        ...this.buildTenantFilter(),
+        ...this.buildTenantFilter(tx),
         userId,
         status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] }
       },
@@ -58,8 +58,8 @@ export class SessionRepository extends BaseRepository {
   }
 
   /** Mark expired sessions (run by background job) */
-  async expireStale() {
-    return this.prisma.session.updateMany({
+  async expireStale(tx: PrismaClient) {
+    return tx.session.updateMany({
       where: {
         status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
         expiresAt: { lte: new Date() },

@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { ContactRepository, CreateContactInput, UpdateContactInput } from '../repositories/contact.repo';
 import { AuditService } from './audit.service';
 import { TenantContext } from '../repositories/base.repo';
@@ -11,20 +11,20 @@ export class ContactService {
     this.audit = new AuditService(prisma);
   }
 
-  private makeRepo(ctx: TenantContext) {
-    return new ContactRepository(ctx, this.prisma);
+  private makeRepo(tx: PrismaClient, ctx: TenantContext) {
+    return new ContactRepository(ctx, tx);
   }
 
   /** Create a new contact */
-  async createContact(ctx: TenantContext, input: CreateContactInput) {
+  async createContact(tx: PrismaClient, ctx: TenantContext, input: CreateContactInput) {
     if (!input.firstName?.trim() || !input.lastName?.trim()) {
       throw new ValidationError('firstName and lastName are required.');
     }
 
-    const repo = this.makeRepo(ctx);
-    const contact = await repo.create(input);
+    const repo = this.makeRepo(tx, ctx);
+    const contact = await repo.create(tx, input);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'CONTACT_CREATED',
       entityType: 'Contact',
@@ -38,29 +38,29 @@ export class ContactService {
   }
 
   /** Get a single contact by ID */
-  async getContactById(ctx: TenantContext, contactId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findById(contactId);
+  async getContactById(tx: PrismaClient, ctx: TenantContext, contactId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findById(tx, contactId);
   }
 
   /** List all contacts in the tenant */
-  async listContacts(ctx: TenantContext) {
-    const repo = this.makeRepo(ctx);
-    return repo.findAll();
+  async listContacts(tx: PrismaClient, ctx: TenantContext) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findAll(tx);
   }
 
   /** List contacts linked to a specific lead */
-  async listContactsByLead(ctx: TenantContext, leadId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByLead(leadId);
+  async listContactsByLead(tx: PrismaClient, ctx: TenantContext, leadId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findByLead(tx, leadId);
   }
 
   /** Update a contact */
-  async updateContact(ctx: TenantContext, contactId: string, input: UpdateContactInput) {
-    const repo = this.makeRepo(ctx);
-    const contact = await repo.update(contactId, input);
+  async updateContact(tx: PrismaClient, ctx: TenantContext, contactId: string, input: UpdateContactInput) {
+    const repo = this.makeRepo(tx, ctx);
+    const contact = await repo.update(tx, contactId, input);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'CONTACT_UPDATED',
       entityType: 'Contact',
@@ -74,11 +74,11 @@ export class ContactService {
   }
 
   /** Soft-delete a contact */
-  async deleteContact(ctx: TenantContext, contactId: string) {
-    const repo = this.makeRepo(ctx);
-    await repo.softDelete(contactId);
+  async deleteContact(tx: PrismaClient, ctx: TenantContext, contactId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    await repo.softDelete(tx, contactId);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'CONTACT_DELETED',
       entityType: 'Contact',

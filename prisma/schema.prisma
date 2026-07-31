@@ -1,6 +1,7 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 generator client {
@@ -120,6 +121,8 @@ model Tenant {
   memberships     OrganizationMembership[]
   settings        TenantSettings?
   outboxEvents    OutboxEvent[]
+  projects        Project[]
+  documents       Document[]
 
   @@index([status])
   @@index([deletedAt])
@@ -138,6 +141,13 @@ model Department {
   tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   users   User[]
 
+  departmentAssignments DepartmentAssignment[]
+  leads                 Lead[]
+  contacts              Contact[]
+  opportunities         Opportunity[]
+  projects              Project[]
+  documents             Document[]
+
   @@index([tenantId])
 }
 
@@ -149,6 +159,8 @@ model Team {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   users  User[]
+
+  teamAssignments TeamAssignment[]
 
   @@index([tenantId, departmentId])
 }
@@ -216,9 +228,6 @@ model UserRole {
 model User {
   id                String     @id @default(uuid()) @db.Uuid
   tenantId          String     @db.Uuid
-  email             String
-  emailVerified     DateTime?
-  password          String
   status            UserStatus @default(NEW)
   teamId            String?    @db.Uuid
   departmentId      String?    @db.Uuid
@@ -237,12 +246,13 @@ model User {
   userRoles           UserRole[]
   invitedUsers        UserInvitation[] @relation("InvitedBy")
   acceptedInvitations UserInvitation[] @relation("AcceptedBy")
+  ownedProjects       Project[]        @relation("ProjectOwner")
+  ownedDocuments      Document[]       @relation("DocumentOwner")
 
-  v2IdentityId        String?          @db.Uuid
-  v2MembershipId      String?          @db.Uuid
-  v2MigrationStatus   String?
+  identityId          String          @db.Uuid
+  identity            Identity        @relation(fields: [identityId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, email])
+  @@unique([tenantId, identityId])
   @@index([tenantId])
   @@index([status])
   @@index([deletedAt])
@@ -403,16 +413,19 @@ model Lead {
   stage         LeadStage  @default(NEW)
   score         Int        @default(0)
   expectedValue Decimal    @default(0) @db.Decimal(18, 2)
-  ownerId       String?    @db.Uuid
+  ownerId       String    @db.Uuid
+  departmentId  String    @db.Uuid
   notes         String?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   deletedAt     DateTime?
 
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
   contacts      Contact[]
   opportunities Opportunity[]
 
   @@index([tenantId])
+  @@index([tenantId, departmentId])
   @@index([tenantId, status])
   @@index([tenantId, ownerId])
   @@index([deletedAt])
@@ -420,24 +433,27 @@ model Lead {
 
 // ─── Contact ──────────────────────────────────────────────────────
 model Contact {
-  id        String   @id @default(uuid()) @db.Uuid
-  tenantId  String   @db.Uuid
-  leadId    String?  @db.Uuid
-  firstName String
-  lastName  String
-  email     String?
-  phone     String?
-  title     String?
-  company   String?
-  ownerId   String?  @db.Uuid
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  deletedAt DateTime?
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @db.Uuid
+  leadId        String?  @db.Uuid
+  firstName     String
+  lastName      String
+  email         String?
+  phone         String?
+  title         String?
+  company       String?
+  ownerId       String  @db.Uuid
+  departmentId  String  @db.Uuid
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
 
+  department    Department   @relation(fields: [departmentId], references: [id], onDelete: Restrict)
   lead          Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
   opportunities Opportunity[]
 
   @@index([tenantId])
+  @@index([tenantId, departmentId])
   @@index([tenantId, leadId])
   @@index([tenantId, ownerId])
   @@index([deletedAt])
@@ -470,6 +486,7 @@ model Opportunity {
   leadId                String              @db.Uuid
   contactId             String?             @db.Uuid
   ownerId               String              @db.Uuid
+  departmentId          String             @db.Uuid
   opportunityTypeId     String?             @db.Uuid
   customOpportunityType String?
   title                 String
@@ -483,6 +500,7 @@ model Opportunity {
   updatedAt             DateTime            @updatedAt
   deletedAt             DateTime?
 
+  department      Department      @relation(fields: [departmentId], references: [id], onDelete: Restrict)
   lead            Lead             @relation(fields: [leadId], references: [id], onDelete: Restrict)
   contact         Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
   opportunityType OpportunityType? @relation(fields: [opportunityTypeId], references: [id], onDelete: Restrict)
@@ -491,6 +509,7 @@ model Opportunity {
   invoices        Invoice[]
 
   @@index([tenantId])
+  @@index([tenantId, departmentId])
   @@index([tenantId, stage])
   @@index([tenantId, ownerId])
   @@index([tenantId, opportunityTypeId])
@@ -661,6 +680,7 @@ model Identity {
   updatedAt          DateTime        @updatedAt
   deletedAt          DateTime?
 
+  users              User[]
   memberships        OrganizationMembership[]
   sessions           Session[]
   verificationTokens VerificationToken[]
@@ -683,7 +703,8 @@ model OrganizationMembership {
 
   identity         Identity         @relation(fields: [identityId], references: [id], onDelete: Cascade)
   tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  assignments      Assignment[]
+  departmentAssignments DepartmentAssignment[]
+  teamAssignments       TeamAssignment[]
   membershipRoles  MembershipRole[]
   overrides        PermissionOverride[]
 
@@ -692,21 +713,32 @@ model OrganizationMembership {
   @@index([identityId])
 }
 
-model Assignment {
-  id             String         @id @default(uuid()) @db.Uuid
-  membershipId   String         @db.Uuid
-  assignmentType AssignmentType
-  targetId       String         @db.Uuid
-  isPrimary      Boolean        @default(false)
-  assignedAt     DateTime       @default(now())
-  assignedBy     String?        @db.Uuid
-  version        Int            @default(1)
+model DepartmentAssignment {
+  id           String   @id @default(uuid()) @db.Uuid
+  membershipId String   @db.Uuid
+  departmentId String   @db.Uuid
+  isPrimary    Boolean  @default(false)
+  assignedAt   DateTime @default(now())
 
-  membership     OrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  membership   OrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  department   Department             @relation(fields: [departmentId], references: [id], onDelete: Cascade)
 
-  @@index([membershipId, assignmentType])
-  @@index([targetId, assignmentType])
-  @@index([assignmentType, targetId])
+  @@unique([membershipId, departmentId])
+  @@index([departmentId])
+}
+
+model TeamAssignment {
+  id           String   @id @default(uuid()) @db.Uuid
+  membershipId String   @db.Uuid
+  teamId       String   @db.Uuid
+  isPrimary    Boolean  @default(false)
+  assignedAt   DateTime @default(now())
+
+  membership   OrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  team         Team                   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([membershipId, teamId])
+  @@index([teamId])
 }
 
 model MembershipRole {
@@ -775,3 +807,80 @@ model TenantSettings {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// S5 PROCESS DOMAIN
+// ═══════════════════════════════════════════════════════════════════
+
+enum ProjectStatus {
+  ONBOARDING
+  IN_PROGRESS
+  REVIEW
+  COMPLETED
+}
+
+enum ProjectPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model Project {
+  id           String          @id @default(uuid()) @db.Uuid
+  tenantId     String          @db.Uuid
+  departmentId String          @db.Uuid
+  ownerId      String          @db.Uuid
+  title        String
+  description  String?
+  status       ProjectStatus   @default(ONBOARDING)
+  priority     ProjectPriority @default(MEDIUM)
+  dueDate      DateTime?
+  tag          String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  deletedAt    DateTime?
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  owner      User       @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, departmentId])
+  @@index([tenantId, ownerId])
+  @@index([tenantId, status])
+  @@index([deletedAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// S6 DOCUMENTATION DOMAIN
+// ═══════════════════════════════════════════════════════════════════
+
+enum DocumentStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  ARCHIVED
+}
+
+model Document {
+  id           String         @id @default(uuid()) @db.Uuid
+  tenantId     String         @db.Uuid
+  departmentId String         @db.Uuid
+  ownerId      String         @db.Uuid
+  title        String
+  status       DocumentStatus @default(DRAFT)
+  version      Int            @default(1)
+  category     String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  deletedAt    DateTime?
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  owner      User       @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, departmentId])
+  @@index([tenantId, ownerId])
+  @@index([tenantId, status])
+  @@index([deletedAt])
+}
+

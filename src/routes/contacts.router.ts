@@ -17,7 +17,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('contact:create'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const { firstName, lastName, email, phone, title, company, leadId } = req.body as {
           firstName: string;
           lastName: string;
@@ -33,7 +33,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
         }
 
         const contact = await contactService.createContact(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           { firstName, lastName, email, phone, title, company, leadId }
         );
 
@@ -59,7 +59,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
           userId,
           tenantId,
           teamId,
-          departmentId,
+          activeDepartmentId,
           scope,
         } = (req as AuthenticatedRequest).user;
 
@@ -72,7 +72,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
           (scope ?? 'OWN') as ScopeType,
           userId,
           teamId,
-          departmentId,
+          activeDepartmentId,
           prisma
         );
 
@@ -113,8 +113,8 @@ export function createContactsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('contact:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        const contact = await contactService.getContactById({ tenantId, userId }, req.params.id);
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+        const contact = await contactService.getContactById((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
         res.json(contact);
       } catch (err) {
         next(err);
@@ -130,7 +130,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('contact:edit'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const { firstName, lastName, email, phone, title, company, leadId } = req.body as {
           firstName?: string;
           lastName?: string;
@@ -142,7 +142,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
         };
 
         const contact = await contactService.updateContact(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           req.params.id,
           { firstName, lastName, email, phone, title, company, leadId }
         );
@@ -162,8 +162,8 @@ export function createContactsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('contact:delete'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        await contactService.deleteContact({ tenantId, userId }, req.params.id);
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+        await contactService.deleteContact((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
         res.status(204).send();
       } catch (err) {
         next(err);

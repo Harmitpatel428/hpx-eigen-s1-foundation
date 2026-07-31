@@ -1,4 +1,4 @@
-import { PrismaClient, OpportunityStage } from '@prisma/client';
+import { PrismaClient, OpportunityStage, Prisma } from '@prisma/client';
 import { OpportunityRepository, CreateOpportunityInput, UpdateOpportunityInput } from '../repositories/opportunity.repo';
 import { PipelineRepository } from '../repositories/pipeline.repo';
 import { AuditService } from './audit.service';
@@ -17,15 +17,15 @@ export class OpportunityService {
     this.audit = new AuditService(prisma);
   }
 
-  private makeRepos(ctx: TenantContext) {
+  private makeRepos(tx: PrismaClient, ctx: TenantContext) {
     return {
-      opportunity: new OpportunityRepository(ctx, this.prisma),
-      pipeline: new PipelineRepository(ctx, this.prisma)
+      opportunity: new OpportunityRepository(ctx, tx),
+      pipeline: new PipelineRepository(ctx, tx)
     };
   }
 
   /** Create a new opportunity (must be linked to an existing lead) */
-  async createOpportunity(ctx: TenantContext, input: CreateOpportunityInput) {
+  async createOpportunity(tx: PrismaClient, ctx: TenantContext, input: CreateOpportunityInput) {
     if (!input.title?.trim()) {
       throw new ValidationError('title is required.');
     }
@@ -37,7 +37,7 @@ export class OpportunityService {
     }
 
     if (input.opportunityTypeId) {
-      const type = await this.prisma.opportunityType.findFirst({
+      const type = await tx.opportunityType.findFirst({
         where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: null }
       });
       if (!type) {
@@ -51,16 +51,17 @@ export class OpportunityService {
       }
     }
 
-    const repos = this.makeRepos(ctx);
+    const repos = this.makeRepos(tx, ctx);
 
     // Create opportunity and open its first pipeline stage atomically
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await tx.$transaction(async (tx) => {
       const opportunity = await tx.opportunity.create({
         data: {
           tenantId: ctx.tenantId,
           leadId: input.leadId,
           contactId: input.contactId ?? null,
           ownerId: input.ownerId,
+          departmentId: (ctx as any).activeDepartmentId ?? "",
           title: input.title,
           value: input.value,
           currency: input.currency,
@@ -81,7 +82,7 @@ export class OpportunityService {
       return opportunity;
     });
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'OPPORTUNITY_CREATED',
       entityType: 'Opportunity',
@@ -95,33 +96,33 @@ export class OpportunityService {
   }
 
   /** Get a single opportunity by ID (includes lead + contact summary) */
-  async getOpportunityById(ctx: TenantContext, opportunityId: string) {
-    const repos = this.makeRepos(ctx);
-    return repos.opportunity.findById(opportunityId);
+  async getOpportunityById(tx: PrismaClient, ctx: TenantContext, opportunityId: string) {
+    const repos = this.makeRepos(tx, ctx);
+    return repos.opportunity.findById(tx, opportunityId);
   }
 
   /** List opportunities with optional filters */
-  async listOpportunities(ctx: TenantContext, options?: { stage?: OpportunityStage; ownerId?: string }) {
-    const repos = this.makeRepos(ctx);
-    return repos.opportunity.findAll(options);
+  async listOpportunities(tx: PrismaClient, ctx: TenantContext, options?: { stage?: OpportunityStage; ownerId?: string }) {
+    const repos = this.makeRepos(tx, ctx);
+    return repos.opportunity.findAll(tx, options);
   }
 
   /** List opportunities by pipeline stage */
-  async listByStage(ctx: TenantContext, stage: OpportunityStage) {
-    const repos = this.makeRepos(ctx);
-    return repos.opportunity.findByStage(stage);
+  async listByStage(tx: PrismaClient, ctx: TenantContext, stage: OpportunityStage) {
+    const repos = this.makeRepos(tx, ctx);
+    return repos.opportunity.findByStage(tx, stage);
   }
 
   /** List opportunities owned by a user */
-  async listByOwner(ctx: TenantContext, ownerId: string) {
-    const repos = this.makeRepos(ctx);
-    return repos.opportunity.findByOwner(ownerId);
+  async listByOwner(tx: PrismaClient, ctx: TenantContext, ownerId: string) {
+    const repos = this.makeRepos(tx, ctx);
+    return repos.opportunity.findByOwner(tx, ownerId);
   }
 
   /** Update opportunity metadata (title, value, dates, owner) */
-  async updateOpportunity(ctx: TenantContext, opportunityId: string, input: UpdateOpportunityInput) {
+  async updateOpportunity(tx: PrismaClient, ctx: TenantContext, opportunityId: string, input: UpdateOpportunityInput) {
     if (input.opportunityTypeId) {
-      const type = await this.prisma.opportunityType.findFirst({
+      const type = await tx.opportunityType.findFirst({
         where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: null }
       });
       if (!type) {
@@ -135,10 +136,10 @@ export class OpportunityService {
       }
     }
     
-    const repos = this.makeRepos(ctx);
-    const opportunity = await repos.opportunity.update(opportunityId, input);
+    const repos = this.makeRepos(tx, ctx);
+    const opportunity = await repos.opportunity.update(tx, opportunityId, input);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'OPPORTUNITY_UPDATED',
       entityType: 'Opportunity',
@@ -155,8 +156,8 @@ export class OpportunityService {
    * Advance an opportunity to a new pipeline stage.
    * Records a Pipeline transition entry and updates stage atomically.
    */
-  async advanceStage(ctx: TenantContext, opportunityId: string, newStage: OpportunityStage, lostReason?: string) {
-    const repos = this.makeRepos(ctx);
+  async advanceStage(tx: PrismaClient, ctx: TenantContext, opportunityId: string, newStage: OpportunityStage, lostReason?: string) {
+    const repos = this.makeRepos(tx, ctx);
 
     // Validate the stage value
     const validStages = Object.values(OpportunityStage);
@@ -164,9 +165,9 @@ export class OpportunityService {
       throw new ValidationError(`Invalid stage. Must be one of: ${validStages.join(', ')}`);
     }
 
-    const opportunity = await repos.opportunity.advanceStage(opportunityId, newStage, lostReason);
+    const opportunity = await repos.opportunity.advanceStage(tx, opportunityId, newStage, lostReason);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'OPPORTUNITY_STAGE_ADVANCED',
       entityType: 'Opportunity',
@@ -183,7 +184,7 @@ export class OpportunityService {
    * Close an opportunity as WON or LOST.
    * Convenience wrapper around advanceStage for the terminal states.
    */
-  async closeOpportunity(ctx: TenantContext, opportunityId: string, input: CloseOpportunityInput) {
+  async closeOpportunity(tx: PrismaClient, ctx: TenantContext, opportunityId: string, input: CloseOpportunityInput) {
     const stage = input.outcome === 'WON'
       ? OpportunityStage.CLOSED_WON
       : OpportunityStage.CLOSED_LOST;
@@ -192,15 +193,15 @@ export class OpportunityService {
       throw new ValidationError('lostReason is required when closing as LOST.');
     }
 
-    return this.advanceStage(ctx, opportunityId, stage, input.lostReason);
+    return this.advanceStage(tx, ctx, opportunityId, stage, input.lostReason);
   }
 
   /** Soft-delete an opportunity */
-  async deleteOpportunity(ctx: TenantContext, opportunityId: string) {
-    const repos = this.makeRepos(ctx);
-    await repos.opportunity.softDelete(opportunityId);
+  async deleteOpportunity(tx: PrismaClient, ctx: TenantContext, opportunityId: string) {
+    const repos = this.makeRepos(tx, ctx);
+    await repos.opportunity.softDelete(tx, opportunityId);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'OPPORTUNITY_DELETED',
       entityType: 'Opportunity',

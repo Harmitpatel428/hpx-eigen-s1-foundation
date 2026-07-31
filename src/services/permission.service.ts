@@ -23,7 +23,7 @@
  *   - DB returns zero roles for a user → cache the empty manifest and return deny-all.
  *     (An empty manifest is a valid state — the user has no permissions assigned.)
  */
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { redisGet, redisSet, redisDel, redisKeys } from '../redis';
 import { AuthorizationError } from '../types/exceptions';
 import { PolicyEngineService } from './policy-engine.service';
@@ -64,21 +64,21 @@ export class PermissionService {
    *   4. Return manifest
    */
   async getPermissionManifest(
-    userId: string,
+    tx: PrismaClient, userId: string,
     tenantId: string
   ): Promise<PermissionManifest> {
     const useV2 = process.env.USE_POLICY_ENGINE === 'true';
 
     if (useV2) {
-      return this._getManifestV2(userId);
+      return this._getManifestV2(tx, userId);
     }
 
-    return this._getManifestV1(userId, tenantId);
+    return this._getManifestV1(tx, userId, tenantId);
   }
 
   // ─── V1: RBAC path ──────────────────────────────────────────────────────────
 
-  private async _getManifestV1(userId: string, tenantId: string): Promise<PermissionManifest> {
+  private async _getManifestV1(tx: PrismaClient, userId: string, tenantId: string): Promise<PermissionManifest> {
     const cacheKey = redisKeys.userManifest(userId);
 
     // 1. Attempt O(1) Redis hit
@@ -94,7 +94,7 @@ export class PermissionService {
     }
 
     // 2. Cache miss — single optimized query
-    const manifest = await this._buildV1ManifestFromDB(userId, tenantId);
+    const manifest = await this._buildV1ManifestFromDB(tx, userId, tenantId);
 
     // 3. Cache result (even empty manifests are cached — empty = deny-all, which is valid)
     await redisSet(cacheKey, JSON.stringify(manifest), PERM_CACHE_TTL);
@@ -107,8 +107,8 @@ export class PermissionService {
    * UserRole → Role → RolePermission → Permission
    * No N+1. No separate permission.findMany().
    */
-  private async _buildV1ManifestFromDB(userId: string, tenantId: string): Promise<PermissionManifest> {
-    const userRoles = await this.prisma.userRole.findMany({
+  private async _buildV1ManifestFromDB(tx: PrismaClient, userId: string, tenantId: string): Promise<PermissionManifest> {
+    const userRoles = await tx.userRole.findMany({
       where: {
         userId,
         role: { tenantId, deletedAt: null },
@@ -146,10 +146,10 @@ export class PermissionService {
 
   // ─── V2: Policy Engine path ──────────────────────────────────────────────────
 
-  private async _getManifestV2(userId: string): Promise<PermissionManifest> {
+  private async _getManifestV2(tx: PrismaClient, userId: string): Promise<PermissionManifest> {
     const cacheKey = redisKeys.userManifest(userId);
 
-    // 1. Attempt O(1) Redis hit — no DB call for v2MembershipId lookup
+    // 1. Attempt O(1) Redis hit — no DB call for "" lookup
     const cached = await redisGet(cacheKey);
     if (cached !== null) {
       try {
@@ -161,20 +161,19 @@ export class PermissionService {
     }
 
     // 2. Cache miss — must fetch membership ID from DB (single lookup, unavoidable)
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { v2MembershipId: true },
+    const user = await tx.user.findUnique({
+      where: { id: userId }
     });
 
-    if (!user?.v2MembershipId) {
+    if (!user) {
       // No membership → empty deny-all manifest, cached to prevent thundering herd
       await redisSet(cacheKey, JSON.stringify({}), PERM_CACHE_TTL);
       return {};
     }
 
-    const allPerms = await this.prisma.permission.findMany({ select: { slug: true } });
+    const allPerms = await tx.permission.findMany({ select: { slug: true } });
     const slugs = allPerms.map(p => p.slug);
-    const manifest = await this.policyEngine.authorizeMany(user.v2MembershipId, slugs);
+    const manifest = await this.policyEngine.authorizeMany(tx, userId, slugs);
 
     await redisSet(cacheKey, JSON.stringify(manifest), PERM_CACHE_TTL);
     return manifest;
@@ -190,7 +189,7 @@ export class PermissionService {
    *
    * Call this whenever a UserRole, RolePermission, or Role is mutated for this user.
    */
-  async invalidatePermissionCache(userId: string): Promise<void> {
+  async invalidatePermissionCache(tx: PrismaClient, userId: string): Promise<void> {
     const cacheKey = redisKeys.userManifest(userId);
     const result = await redisDel(cacheKey);
 
@@ -208,18 +207,18 @@ export class PermissionService {
    * Required when a Tenant-scoped Role or RolePermission is mutated.
    * Fetches all affected userIds and issues individual DEL operations.
    */
-  async invalidateTenantPermissionCache(tenantId: string): Promise<void> {
-    const users = await this.prisma.userRole.findMany({
+  async invalidateTenantPermissionCache(tx: PrismaClient, tenantId: string): Promise<void> {
+    const users = await tx.userRole.findMany({
       where: { role: { tenantId, deletedAt: null } },
       select: { userId: true },
       distinct: ['userId'],
     });
 
     await Promise.all(
-      users.map(u => this.invalidatePermissionCache(u.userId))
+      users.map(u => this.invalidatePermissionCache(tx, u.userId))
     );
 
-    const outboxService = new OutboxService(this.prisma as any);
-    await outboxService.publish('PermissionCacheInvalidated', { tenantId }, tenantId);
+    const outboxService = new OutboxService(tx as any);
+    await outboxService.publish(tx as any, 'PermissionCacheInvalidated', { tenantId }, tenantId);
   }
 }

@@ -19,7 +19,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
         res.status(401).json({ message: 'Tenant ID missing from token' });
         return;
       }
-      const { userId, tenantId } = user;
+      const { userId, tenantId, } = user;
       const status = req.query.status as InvoiceStatus | undefined;
       const opportunityId = req.query.opportunityId as string | undefined;
 
@@ -28,7 +28,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
       }
 
       const invoices = await invoiceService.listInvoices(
-        { tenantId, userId },
+        (req as any).db || prisma, { tenantId, userId, },
         { status, opportunityId }
       );
 
@@ -42,8 +42,8 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   // ─── GET /api/v1/invoices/:id ───────────────────────────────────────
   router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      const invoice = await invoiceService.getInvoiceById({ tenantId, userId }, req.params.id);
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
+      const invoice = await invoiceService.getInvoiceById((req as any).db || prisma, { tenantId, userId, }, req.params.id);
       res.json(invoice);
     } catch (err) {
       next(err);
@@ -58,7 +58,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
         res.status(401).json({ message: 'Tenant ID missing from token' });
         return;
       }
-      const { userId, tenantId } = user;
+      const { userId, tenantId, } = user;
       const {
         opportunityId, invoiceNumber, invoiceDate, amount, taxPercentage, discount, otherCharges,
         paymentTerms, internalNotes, invoiceNotes, termsConditions, attachments, status, dueDate
@@ -84,7 +84,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
       }
 
       const invoice = await invoiceService.createInvoice(
-        { tenantId, userId },
+        (req as any).db || prisma, { tenantId, userId, },
         {
           opportunityId,
           invoiceNumber,
@@ -113,7 +113,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   // ─── PATCH /api/v1/invoices/:id ─────────────────────────────────────
   router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
       const {
         invoiceNumber, invoiceDate, amount, taxPercentage, discount, otherCharges,
         paymentTerms, internalNotes, invoiceNotes, termsConditions, attachments, status, dueDate
@@ -124,7 +124,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
       }
 
       const invoice = await invoiceService.updateInvoice(
-        { tenantId, userId },
+        (req as any).db || prisma, { tenantId, userId, },
         req.params.id,
         {
           invoiceNumber,
@@ -152,8 +152,8 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   // ─── DELETE /api/v1/invoices/:id ────────────────────────────────────
   router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      await invoiceService.deleteInvoice({ tenantId, userId }, req.params.id);
+      const { userId, tenantId, } = (req as AuthenticatedRequest).user;
+      await invoiceService.deleteInvoice((req as any).db || prisma, { tenantId, userId, }, req.params.id);
       res.status(204).send();
     } catch (err) {
       next(err);

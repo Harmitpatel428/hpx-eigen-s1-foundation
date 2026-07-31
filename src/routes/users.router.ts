@@ -18,7 +18,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
   router.get('/', permissionMiddleware('user:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
-      const users = await userService.listUsers(tenantId);
+      const users = await userService.listUsers((req as any).db || prisma, tenantId);
       res.json(users);
     } catch (err) {
       next(err);
@@ -33,14 +33,14 @@ export function createUsersRouter(prisma: PrismaClient): Router {
    */
   router.post('/invite', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
       const { email, roleId } = req.body as { email: string; roleId: string };
 
       if (!email || !roleId) {
         throw new ValidationError('email and roleId are required.');
       }
 
-      const invitation = await invitationService.createInvitation(tenantId, email, roleId, userId);
+      const invitation = await invitationService.createInvitation((req as any).db || prisma, tenantId, email, roleId, userId);
 
       res.status(201).json({
         invitationId: invitation.id,
@@ -68,7 +68,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         throw new ValidationError('reason is required for suspension.');
       }
 
-      const result = await userService.suspendUser(targetUserId, tenantId, reason, actorUserId);
+      const result = await userService.suspendUser((req as any).db || prisma, targetUserId, tenantId, reason, actorUserId);
       res.json(result);
     } catch (err) {
       next(err);
@@ -91,7 +91,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         throw new ValidationError('reason is required for termination.');
       }
 
-      const result = await userService.terminateUser(targetUserId, tenantId, reason, actorUserId);
+      const result = await userService.terminateUser((req as any).db || prisma, targetUserId, tenantId, reason, actorUserId);
       res.json(result);
     } catch (err) {
       next(err);

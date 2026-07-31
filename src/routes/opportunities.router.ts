@@ -17,7 +17,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     permissionMiddleware('opportunity:create'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const {
           leadId,
           contactId,
@@ -45,7 +45,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
         }
 
         const opportunity = await opportunityService.createOpportunity(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           {
             leadId,
             contactId,
@@ -81,7 +81,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
           userId,
           tenantId,
           teamId,
-          departmentId,
+          activeDepartmentId,
           scope,
         } = (req as AuthenticatedRequest).user;
 
@@ -99,7 +99,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
           (scope ?? 'OWN') as ScopeType,
           userId,
           teamId,
-          departmentId,
+          activeDepartmentId,
           prisma
         );
 
@@ -141,9 +141,9 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     permissionMiddleware('opportunity:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const opportunity = await opportunityService.getOpportunityById(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           req.params.id
         );
         res.json(opportunity);
@@ -161,7 +161,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     permissionMiddleware('opportunity:edit'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const {
           contactId,
           ownerId,
@@ -183,7 +183,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
         };
 
         const opportunity = await opportunityService.updateOpportunity(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           req.params.id,
           {
             contactId,
@@ -212,7 +212,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     permissionMiddleware('opportunity:edit'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const { stage, lostReason } = req.body as {
           stage: OpportunityStage;
           lostReason?: string;
@@ -221,7 +221,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
         if (!stage) throw new ValidationError('stage is required.');
 
         const opportunity = await opportunityService.advanceStage(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           req.params.id,
           stage,
           lostReason
@@ -242,7 +242,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     permissionMiddleware('opportunity:edit'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
         const { outcome, lostReason } = req.body as {
           outcome: 'WON' | 'LOST';
           lostReason?: string;
@@ -253,7 +253,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
         }
 
         const opportunity = await opportunityService.closeOpportunity(
-          { tenantId, userId },
+          (req as any).db || prisma, { tenantId, userId, activeDepartmentId },
           req.params.id,
           { outcome, lostReason }
         );
@@ -273,8 +273,8 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     permissionMiddleware('opportunity:delete'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        await opportunityService.deleteOpportunity({ tenantId, userId }, req.params.id);
+        const { userId, tenantId, activeDepartmentId } = (req as AuthenticatedRequest).user;
+        await opportunityService.deleteOpportunity((req as any).db || prisma, { tenantId, userId, activeDepartmentId }, req.params.id);
         res.status(204).send();
       } catch (err) {
         next(err);

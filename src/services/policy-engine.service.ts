@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { AuthorizationDecision, ScopeType } from '../types/authorization';
 
 const SCOPE_ORDER: Record<ScopeType, number> = {
@@ -11,11 +11,11 @@ const SCOPE_ORDER: Record<ScopeType, number> = {
 export class PolicyEngineService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async authorize(membershipId: string, permissionSlug: string): Promise<AuthorizationDecision> {
+  async authorize(tx: PrismaClient, membershipId: string, permissionSlug: string): Promise<AuthorizationDecision> {
     const now = new Date();
     
     // a. Check PermissionOverride
-    const override = await this.prisma.permissionOverride.findUnique({
+    const override = await tx.permissionOverride.findUnique({
       where: {
         membershipId_permissionSlug: {
           membershipId,
@@ -56,7 +56,7 @@ export class PolicyEngineService {
     }
 
     // b. Fetch all MembershipRole records (active)
-    const membershipRoles = await this.prisma.membershipRole.findMany({
+    const membershipRoles = await tx.membershipRole.findMany({
       where: {
         membershipId,
         OR: [
@@ -118,18 +118,18 @@ export class PolicyEngineService {
     };
   }
 
-  async authorizeMany(membershipId: string, slugs: string[]): Promise<Record<string, AuthorizationDecision>> {
+  async authorizeMany(tx: PrismaClient, membershipId: string, slugs: string[]): Promise<Record<string, AuthorizationDecision>> {
     const results: Record<string, AuthorizationDecision> = {};
     const now = new Date();
     
-    const overrides = await this.prisma.permissionOverride.findMany({
+    const overrides = await tx.permissionOverride.findMany({
       where: {
         membershipId,
         permissionSlug: { in: slugs }
       }
     });
     
-    const membershipRoles = await this.prisma.membershipRole.findMany({
+    const membershipRoles = await tx.membershipRole.findMany({
       where: {
         membershipId,
         OR: [

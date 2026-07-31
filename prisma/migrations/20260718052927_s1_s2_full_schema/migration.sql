@@ -471,3 +471,114 @@ ALTER TABLE "Activity" ADD CONSTRAINT "Activity_opportunityId_fkey" FOREIGN KEY 
 
 -- AddForeignKey
 ALTER TABLE "Pipeline" ADD CONSTRAINT "Pipeline_opportunityId_fkey" FOREIGN KEY ("opportunityId") REFERENCES "Opportunity"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+
+-- CreateEnum
+CREATE TYPE "InvoiceStatus" AS ENUM ('DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED');
+
+-- CreateEnum
+CREATE TYPE "PaymentMethod" AS ENUM ('CREDIT_CARD', 'BANK_TRANSFER', 'UPI', 'CHEQUE', 'CASH', 'NEFT', 'RTGS', 'IMPS', 'OTHER');
+
+-- CreateEnum
+CREATE TYPE "PaymentStatus" AS ENUM ('PENDING', 'RECEIVED', 'FAILED', 'REFUNDED', 'CANCELLED');
+
+-- CreateTable
+CREATE TABLE "OpportunityType" (
+    "id" UUID NOT NULL,
+    "tenantId" UUID NOT NULL,
+    "name" TEXT NOT NULL,
+    "displayOrder" INTEGER NOT NULL DEFAULT 0,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "isDefault" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "deletedAt" TIMESTAMP(3),
+
+    CONSTRAINT "OpportunityType_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Invoice" (
+    "id" UUID NOT NULL,
+    "tenantId" UUID NOT NULL,
+    "opportunityId" UUID NOT NULL,
+    "invoiceNumber" TEXT,
+    "invoiceDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "amount" DECIMAL(18,2) NOT NULL,
+    "taxPercentage" DECIMAL(5,2) DEFAULT 0,
+    "discount" DECIMAL(18,2) DEFAULT 0,
+    "otherCharges" DECIMAL(18,2) DEFAULT 0,
+    "taxAmount" DECIMAL(18,2) DEFAULT 0,
+    "totalAmount" DECIMAL(18,2) NOT NULL,
+    "paymentTerms" TEXT,
+    "internalNotes" TEXT,
+    "invoiceNotes" TEXT,
+    "termsConditions" TEXT,
+    "attachments" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "status" "InvoiceStatus" NOT NULL DEFAULT 'DRAFT',
+    "dueDate" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "deletedAt" TIMESTAMP(3),
+
+    CONSTRAINT "Invoice_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Payment" (
+    "id" UUID NOT NULL,
+    "tenantId" UUID NOT NULL,
+    "invoiceId" UUID NOT NULL,
+    "amount" DECIMAL(18,2) NOT NULL,
+    "method" "PaymentMethod" NOT NULL DEFAULT 'CASH',
+    "referenceNumber" TEXT,
+    "bankName" TEXT,
+    "chequeNumber" TEXT,
+    "status" "PaymentStatus" NOT NULL DEFAULT 'PENDING',
+    "receivedBy" TEXT,
+    "notes" TEXT,
+    "attachmentUrl" TEXT,
+    "paidAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "deletedAt" TIMESTAMP(3),
+
+    CONSTRAINT "Payment_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "VerificationToken" (
+    "id" UUID NOT NULL,
+    "email" TEXT NOT NULL,
+    "token" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "VerificationToken_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "OpportunityType_tenantId_name_key" ON "OpportunityType"("tenantId", "name");
+CREATE INDEX "OpportunityType_tenantId_idx" ON "OpportunityType"("tenantId");
+CREATE INDEX "OpportunityType_deletedAt_idx" ON "OpportunityType"("deletedAt");
+
+CREATE INDEX "Invoice_tenantId_idx" ON "Invoice"("tenantId");
+CREATE INDEX "Invoice_tenantId_opportunityId_idx" ON "Invoice"("tenantId", "opportunityId");
+CREATE INDEX "Invoice_tenantId_status_idx" ON "Invoice"("tenantId", "status");
+CREATE INDEX "Invoice_deletedAt_idx" ON "Invoice"("deletedAt");
+
+CREATE INDEX "Payment_tenantId_idx" ON "Payment"("tenantId");
+CREATE INDEX "Payment_tenantId_invoiceId_idx" ON "Payment"("tenantId", "invoiceId");
+CREATE INDEX "Payment_deletedAt_idx" ON "Payment"("deletedAt");
+
+CREATE UNIQUE INDEX "VerificationToken_token_key" ON "VerificationToken"("token");
+
+-- AddForeignKey
+ALTER TABLE "OpportunityType" ADD CONSTRAINT "OpportunityType_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Invoice" ADD CONSTRAINT "Invoice_opportunityId_fkey" FOREIGN KEY ("opportunityId") REFERENCES "Opportunity"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Payment" ADD CONSTRAINT "Payment_invoiceId_fkey" FOREIGN KEY ("invoiceId") REFERENCES "Invoice"("id") ON DELETE CASCADE ON UPDATE CASCADE;

@@ -48,7 +48,7 @@ export class InvoiceService {
   }
 
   private calculateFinancials(
-    amount: number | string,
+    tx: PrismaClient, amount: number | string,
     taxPercentage: number | string = 0,
     discount: number | string = 0,
     otherCharges: number | string = 0
@@ -69,13 +69,13 @@ export class InvoiceService {
   }
 
   async createInvoice(
-    ctx: UserContext,
+    tx: PrismaClient, ctx: UserContext,
     data: CreateInvoiceInput
   ): Promise<Invoice> {
     const { tenantId, userId } = ctx;
 
     // Verify opportunity belongs to tenant
-    const opportunity = await this.prisma.opportunity.findFirst({
+    const opportunity = await tx.opportunity.findFirst({
       where: { id: data.opportunityId, tenantId, deletedAt: null }
     });
 
@@ -88,7 +88,7 @@ export class InvoiceService {
     }
 
     const { taxAmount, totalAmount } = this.calculateFinancials(
-      data.amount,
+      tx, data.amount,
       data.taxPercentage,
       data.discount,
       data.otherCharges
@@ -96,7 +96,7 @@ export class InvoiceService {
 
     const invoiceNumber = data.invoiceNumber || `INV-${Date.now().toString().slice(-6)}`;
 
-    const invoice = await this.prisma.invoice.create({
+    const invoice = await tx.invoice.create({
       data: {
         tenantId,
         opportunityId: data.opportunityId,
@@ -118,7 +118,7 @@ export class InvoiceService {
       }
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'INVOICE_CREATED',
       entityType: 'INVOICE',
@@ -132,7 +132,7 @@ export class InvoiceService {
   }
 
   async listInvoices(
-    ctx: UserContext,
+    tx: PrismaClient, ctx: UserContext,
     filters?: { status?: InvoiceStatus; opportunityId?: string }
   ): Promise<Invoice[]> {
     const { tenantId } = ctx;
@@ -145,7 +145,7 @@ export class InvoiceService {
     if (filters?.status) where.status = filters.status;
     if (filters?.opportunityId) where.opportunityId = filters.opportunityId;
 
-    return this.prisma.invoice.findMany({
+    return tx.invoice.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       include: {
@@ -159,8 +159,8 @@ export class InvoiceService {
     });
   }
 
-  async getInvoiceById(ctx: UserContext, id: string): Promise<Invoice> {
-    const invoice = await this.prisma.invoice.findFirst({
+  async getInvoiceById(tx: PrismaClient, ctx: UserContext, id: string): Promise<Invoice> {
+    const invoice = await tx.invoice.findFirst({
       where: { id, tenantId: ctx.tenantId, deletedAt: null },
       include: { payments: { where: { deletedAt: null } } }
     });
@@ -172,22 +172,22 @@ export class InvoiceService {
   }
 
   async updateInvoice(
-    ctx: UserContext,
+    tx: PrismaClient, ctx: UserContext,
     id: string,
     data: UpdateInvoiceInput
   ): Promise<Invoice> {
     const { tenantId, userId } = ctx;
 
-    const existing = await this.getInvoiceById(ctx, id);
+    const existing = await this.getInvoiceById(tx, ctx, id);
 
     const amt = data.amount !== undefined ? data.amount : existing.amount.toNumber();
     const taxP = data.taxPercentage !== undefined ? data.taxPercentage : (existing.taxPercentage?.toNumber() || 0);
     const disc = data.discount !== undefined ? data.discount : (existing.discount?.toNumber() || 0);
     const oth = data.otherCharges !== undefined ? data.otherCharges : (existing.otherCharges?.toNumber() || 0);
 
-    const { taxAmount, totalAmount } = this.calculateFinancials(amt, taxP, disc, oth);
+    const { taxAmount, totalAmount } = this.calculateFinancials(tx, amt, taxP, disc, oth);
 
-    const updated = await this.prisma.invoice.update({
+    const updated = await tx.invoice.update({
       where: { id },
       data: {
         invoiceNumber: data.invoiceNumber !== undefined ? data.invoiceNumber : undefined,
@@ -208,7 +208,7 @@ export class InvoiceService {
       }
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'INVOICE_UPDATED',
       entityType: 'INVOICE',
@@ -224,16 +224,16 @@ export class InvoiceService {
     return updated;
   }
 
-  async deleteInvoice(ctx: UserContext, id: string): Promise<void> {
+  async deleteInvoice(tx: PrismaClient, ctx: UserContext, id: string): Promise<void> {
     const { tenantId, userId } = ctx;
-    await this.getInvoiceById(ctx, id); // validates ownership and existence
+    await this.getInvoiceById(tx, ctx, id); // validates ownership and existence
 
-    await this.prisma.invoice.update({
+    await tx.invoice.update({
       where: { id },
       data: { deletedAt: new Date() }
     });
 
-    await this.auditService.log({
+    await this.auditService.log(tx, {
       tenantId,
       eventType: 'INVOICE_DELETED',
       entityType: 'INVOICE',

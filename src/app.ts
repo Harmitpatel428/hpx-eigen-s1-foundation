@@ -29,6 +29,10 @@ import { createOpportunityTypesRouter } from './routes/opportunity-types.router'
 import { createDepartmentsRouter } from './routes/departments.router';
 import { createTeamsRouter } from './routes/teams.router';
 
+// ─── Route Factories (S5 Process & S6 Documentation) ─────────────────────────
+import { createProcessRouter } from './routes/process.router';
+import { createDocsRouter } from './routes/docs.router';
+
 // ─── Invitation Routes (legacy paths — kept for backward compat) ──────────────
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
 import { InvitationService } from './services/invitation.service';
@@ -59,10 +63,13 @@ app.use(cors({
   },
   credentials: true, // Required for cookies/auth headers
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id', 'x-department-context']
 }));
 
 app.use(express.json());
+
+import { prismaContext } from './middleware/prismaContext';
+app.use(prismaContext);
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req: Request, res: Response) => {
@@ -94,6 +101,12 @@ app.use('/api/v1/settings/opportunity-types', createOpportunityTypesRouter(prism
 app.use('/api/v1/departments', createDepartmentsRouter(prisma));
 app.use('/api/v1/teams', createTeamsRouter(prisma));
 
+// ─── S5 Process Domain Routers ────────────────────────────────────────────────
+app.use('/api/v1/process', createProcessRouter(prisma));
+
+// ─── S6 Documentation Domain Routers ─────────────────────────────────────────
+app.use('/api/v1/docs', createDocsRouter(prisma));
+
 // ─── Legacy Invitation Routes (backward compat) ───────────────────────────────
 // These paths existed in S1 and may be relied on by existing tests.
 // New canonical path is POST /api/users/invite (in users.router.ts).
@@ -105,7 +118,7 @@ app.post('/api/invitations', authMiddleware, async (req: Request, res: Response,
     const { userId, tenantId } = (req as AuthenticatedRequest).user;
     const { email, roleId } = req.body as { email: string; roleId: string };
 
-    const invitation = await invitationService.createInvitation(tenantId, email, roleId, userId);
+    const invitation = await invitationService.createInvitation((req as any).db || prisma, tenantId, email, roleId, userId);
     res.status(201).json(invitation);
   } catch (err) {
     next(err);
@@ -118,7 +131,7 @@ app.post('/api/invitations/accept', authMiddleware, async (req: Request, res: Re
     const { userId, tenantId } = (req as AuthenticatedRequest).user;
     const { token } = req.body as { token: string };
 
-    const result = await invitationService.acceptInvitation(token, userId, tenantId);
+    const result = await invitationService.acceptInvitation((req as any).db || prisma, token, userId, tenantId);
     res.json(result);
   } catch (err) {
     next(err);

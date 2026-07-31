@@ -1,4 +1,4 @@
-import { PrismaClient, ActivityType } from '@prisma/client';
+import { PrismaClient, ActivityType, Prisma } from '@prisma/client';
 import { ActivityRepository, CreateActivityInput, UpdateActivityInput } from '../repositories/activity.repo';
 import { AuditService } from './audit.service';
 import { TenantContext } from '../repositories/base.repo';
@@ -11,12 +11,12 @@ export class ActivityService {
     this.audit = new AuditService(prisma);
   }
 
-  private makeRepo(ctx: TenantContext) {
-    return new ActivityRepository(ctx, this.prisma);
+  private makeRepo(tx: PrismaClient, ctx: TenantContext) {
+    return new ActivityRepository(ctx, tx);
   }
 
   /** Log a new activity against an opportunity */
-  async createActivity(ctx: TenantContext, input: CreateActivityInput) {
+  async createActivity(tx: PrismaClient, ctx: TenantContext, input: CreateActivityInput) {
     if (!input.subject?.trim()) {
       throw new ValidationError('subject is required.');
     }
@@ -29,10 +29,10 @@ export class ActivityService {
       throw new ValidationError(`type must be one of: ${validTypes.join(', ')}`);
     }
 
-    const repo = this.makeRepo(ctx);
-    const activity = await repo.create({ ...input, userId: ctx.userId });
+    const repo = this.makeRepo(tx, ctx);
+    const activity = await repo.create(tx, { ...input, userId: ctx.userId });
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'ACTIVITY_CREATED',
       entityType: 'Activity',
@@ -46,35 +46,35 @@ export class ActivityService {
   }
 
   /** Get a single activity by ID */
-  async getActivityById(ctx: TenantContext, activityId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findById(activityId);
+  async getActivityById(tx: PrismaClient, ctx: TenantContext, activityId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findById(tx, activityId);
   }
 
   /** List activities linked to an opportunity */
-  async listByOpportunity(ctx: TenantContext, opportunityId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByOpportunity(opportunityId);
+  async listByOpportunity(tx: PrismaClient, ctx: TenantContext, opportunityId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findByOpportunity(tx, opportunityId);
   }
 
   /** List activities by type */
-  async listByType(ctx: TenantContext, type: ActivityType) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByType(type);
+  async listByType(tx: PrismaClient, ctx: TenantContext, type: ActivityType) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findByType(tx, type);
   }
 
   /** List activities assigned to a user */
-  async listByUser(ctx: TenantContext, userId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByUser(userId);
+  async listByUser(tx: PrismaClient, ctx: TenantContext, userId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    return repo.findByUser(tx, userId);
   }
 
   /** Update activity details */
-  async updateActivity(ctx: TenantContext, activityId: string, input: UpdateActivityInput) {
-    const repo = this.makeRepo(ctx);
-    const activity = await repo.update(activityId, input);
+  async updateActivity(tx: PrismaClient, ctx: TenantContext, activityId: string, input: UpdateActivityInput) {
+    const repo = this.makeRepo(tx, ctx);
+    const activity = await repo.update(tx, activityId, input);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'ACTIVITY_UPDATED',
       entityType: 'Activity',
@@ -88,11 +88,11 @@ export class ActivityService {
   }
 
   /** Mark an activity as complete (sets completedAt = now) */
-  async markActivityComplete(ctx: TenantContext, activityId: string) {
-    const repo = this.makeRepo(ctx);
-    const activity = await repo.markComplete(activityId);
+  async markActivityComplete(tx: PrismaClient, ctx: TenantContext, activityId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    const activity = await repo.markComplete(tx, activityId);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'ACTIVITY_COMPLETED',
       entityType: 'Activity',
@@ -106,11 +106,11 @@ export class ActivityService {
   }
 
   /** Soft-delete an activity */
-  async deleteActivity(ctx: TenantContext, activityId: string) {
-    const repo = this.makeRepo(ctx);
-    await repo.softDelete(activityId);
+  async deleteActivity(tx: PrismaClient, ctx: TenantContext, activityId: string) {
+    const repo = this.makeRepo(tx, ctx);
+    await repo.softDelete(tx, activityId);
 
-    await this.audit.log({
+    await this.audit.log(tx, {
       tenantId: ctx.tenantId,
       eventType: 'ACTIVITY_DELETED',
       entityType: 'Activity',
