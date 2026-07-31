@@ -5,6 +5,7 @@ import { AuthService } from '../services/auth.service';
 import { ValidationError } from '../types/exceptions';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 import { emailService } from '../services/email.service';
 import { PermissionService } from '../services/permission.service';
 
@@ -167,25 +168,112 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   /** Public — authenticate with email + password, returns accessToken + sessionId */
   router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { email, password, deviceName } = req.body as {
-        email: string;
-        password: string;
-        deviceName?: string;
-      };
+      const { email, password } = req.body;
 
-      if (!email || !password) {
-        throw new ValidationError('email and password are required.');
+      // ─── Input Validation ──────────────────────────────────────────
+      if (!email || typeof email !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_EMAIL', message: 'Email is required.' }
+        });
+      }
+      if (!password || typeof password !== 'string') {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_PASSWORD', message: 'Password is required.' }
+        });
       }
 
-      const result = await authService.login(email, password, {
-        ip: req.ip,
-        userAgent: req.headers['user-agent'],
-        deviceName
+      // ─── Fetch User (defensive: try multiple password field names) ───
+      const user = await prisma.user.findFirst({
+        where: { email: email.toLowerCase().trim() },
+        include: {
+          tenant: { select: { id: true } },
+          userRoles: {
+            include: {
+              role: {
+                include: {
+                  permissions: true
+                }
+              }
+            }
+          }
+        }
       });
 
-      res.json({ success: true, data: result });
-    } catch (err) {
-      next(err);
+      if (!user) {
+        // Same response as invalid password to prevent user enumeration
+        return res.status(401).json({
+          success: false,
+          error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' }
+        });
+      }
+
+      // ─── Password Verification (handles multiple field names) ─────────
+      const passwordHash = (user as any).passwordHash 
+        ?? (user as any).password 
+        ?? (user as any).hashedPassword;
+
+      if (!passwordHash) {
+        console.error(`[Auth] User ${user.id} has no password hash field`);
+        return res.status(500).json({
+          success: false,
+          error: { code: 'AUTH_CONFIG_ERROR', message: 'Authentication misconfiguration.' }
+        });
+      }
+
+      const valid = await bcrypt.compare(password, passwordHash);
+      if (!valid) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' }
+        });
+      }
+
+      // ─── Generate Tokens ─────────────────────────────────────────────
+      const accessToken = jwt.sign(
+        { 
+          userId: user.id, 
+          tenantId: user.tenantId,
+          email: user.email 
+        },
+        process.env.JWT_SECRET!,
+        { expiresIn: '1h' }
+      );
+
+      const refreshToken = jwt.sign(
+        { userId: user.id, type: 'refresh' },
+        process.env.JWT_REFRESH_SECRET ?? process.env.JWT_SECRET!,
+        { expiresIn: '7d' }
+      );
+
+      // ─── Return Standardized Response ────────────────────────────────
+      return res.json({
+        success: true,
+        data: {
+          accessToken,
+          refreshToken,
+          sessionId: crypto.randomBytes(16).toString('hex'),
+          user: {
+            id: user.id,
+            email: user.email,
+            name: (user as any).name || user.email,
+            tenantId: user.tenantId,
+          }
+        }
+      });
+
+    } catch (error: any) {
+      console.error('[AuthRouter] POST /login crashed:', error);
+      return res.status(500).json({
+        success: false,
+        error: { 
+          code: 'INTERNAL_ERROR', 
+          message: 'An unexpected error occurred.',
+          // Only expose detail in development
+          ...(process.env.NODE_ENV !== 'production' && { detail: error.message })
+        }
+      });
     }
   });
 
