@@ -12,6 +12,57 @@ export function createUsersRouter(prisma: PrismaClient): Router {
 
   // All user routes require authentication
   router.use(authMiddleware);
+  // ─── GET /api/users/me ────────────────────────────────────────────
+  /** Get current user profile */
+  router.get('/me', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      
+      const user = await prisma.user.findFirst({
+        where: { id: userId, tenantId, deletedAt: null },
+        include: {
+          userRoles: {
+            include: {
+              role: {
+                include: { permissions: true }
+              }
+            }
+          }
+        }
+      });
+      
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'USER_NOT_FOUND', message: 'User profile not found.' }
+        });
+      }
+      
+      // Transform user to include flattened permissions if needed
+      const permissions = user.userRoles.reduce((acc: any, ur: any) => {
+        ur.role.permissions.forEach((p: any) => {
+          acc[p.permissionId] = true;
+        });
+        return acc;
+      }, {});
+      
+      const transformedUser = {
+        id: user.id,
+        email: user.email,
+        name: (user as any).name || user.email,
+        tenantId: user.tenantId,
+        permissions,
+        roles: user.userRoles.map((ur: any) => ur.role.name)
+      };
+      
+      res.json({
+        success: true,
+        data: transformedUser
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   // ─── GET /api/users ───────────────────────────────────────────────
   /** List all non-deleted users in the caller's tenant */
