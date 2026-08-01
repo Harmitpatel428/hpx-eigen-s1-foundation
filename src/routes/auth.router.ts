@@ -241,9 +241,30 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         });
       }
 
+      // ─── Create Session ──────────────────────────────────────────────
+      const BCRYPT_COST = 12;
+      const SESSION_LIFETIME_DAYS = 7;
+      
+      const refreshTokenPlain = crypto.randomBytes(64).toString('hex');
+      const refreshTokenHash = await bcrypt.hash(refreshTokenPlain, BCRYPT_COST);
+      
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + SESSION_LIFETIME_DAYS);
+      
+      const session = await prisma.session.create({
+        data: {
+          tenantId: user.tenantId,
+          userId: user.id,
+          status: 'CREATED', // Using string to avoid missing enum import
+          refreshTokenHash,
+          expiresAt
+        }
+      });
+
       // ─── Generate Tokens ─────────────────────────────────────────────
       const accessToken = jwt.sign(
         { 
+          sessionId: session.id,
           userId: user.id, 
           tenantId: user.tenantId,
           email: user.email 
@@ -264,7 +285,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         data: {
           accessToken,
           refreshToken,
-          sessionId: crypto.randomBytes(16).toString('hex'),
+          sessionId: session.id,
           user: {
             id: user.id,
             email: user.email,
