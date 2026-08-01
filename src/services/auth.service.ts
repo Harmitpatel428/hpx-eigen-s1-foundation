@@ -46,17 +46,14 @@ export class AuthService {
     password: string,
     meta: { ip?: string; userAgent?: string; deviceName?: string }
   ): Promise<LoginResult> {
-    // Lookup user by email globally (emails are assumed unique for this phase)
-    const user = await this.prisma.user.findFirst({
-      where: {
-        email,
-        deletedAt: null
-      }
+    // 1. Lookup Identity globally by email
+    const identity = await this.prisma.identity.findUnique({
+      where: { email },
     });
 
-    if (!user) throw new AuthenticationFailedError();
+    if (!identity) throw new AuthenticationFailedError();
 
-    if (!user.emailVerified) {
+    if (!identity.emailVerified) {
       throw new AppException(
         'EMAIL_NOT_VERIFIED',
         'Please verify your email before logging in.',
@@ -65,11 +62,30 @@ export class AuthService {
       );
     }
 
-    const actualTenantId = user.tenantId;
+    if (identity.globalStatus !== 'ACTIVE') {
+      throw new AppException(
+        'ACCOUNT_SUSPENDED',
+        'Your account is not active.',
+        RetryTag.USER_ACTION_REQUIRED,
+        403
+      );
+    }
 
-    // Constant-time password comparison
-    const passwordValid = await bcrypt.compare(password, user.password);
+    // 2. Validate password against Identity
+    const passwordValid = await bcrypt.compare(password, identity.passwordHash);
     if (!passwordValid) throw new AuthenticationFailedError();
+
+    // 3. Fetch the tenant-specific User profile linked to this Identity
+    const user = await this.prisma.user.findFirst({
+      where: {
+        email: identity.email,
+        deletedAt: null,
+      },
+    });
+
+    if (!user) throw new AuthenticationFailedError(); // Identity exists, but no tenant profile
+
+    const actualTenantId = user.tenantId;
 
     // Generate secure refresh token, store only hash
     const refreshToken = crypto.randomBytes(64).toString('hex');
