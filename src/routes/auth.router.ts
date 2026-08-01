@@ -184,17 +184,50 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         });
       }
 
-      // ─── Fetch User (defensive: try multiple password field names) ───
-      const user = await prisma.user.findFirst({
+      // ─── Lookup Identity (V2 auth table) ─────────────────────────
+      const identity = await prisma.identity.findUnique({
         where: { email: email.toLowerCase().trim() },
+      });
+
+      if (!identity) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' }
+        });
+      }
+
+      if (!identity.emailVerified) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'EMAIL_NOT_VERIFIED', message: 'Please verify your email before logging in.' }
+        });
+      }
+
+      if (identity.globalStatus !== 'ACTIVE') {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'ACCOUNT_SUSPENDED', message: 'Your account is not active.' }
+        });
+      }
+
+      // ─── Password Verification ────────────────────────────────────
+      const valid = await bcrypt.compare(password, identity.passwordHash);
+      if (!valid) {
+        return res.status(401).json({
+          success: false,
+          error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' }
+        });
+      }
+
+      // ─── Fetch tenant User profile linked to this Identity ────────
+      const user = await prisma.user.findFirst({
+        where: { email: identity.email, deletedAt: null },
         include: {
           tenant: { select: { id: true } },
           userRoles: {
             include: {
               role: {
-                include: {
-                  permissions: true
-                }
+                include: { permissions: true }
               }
             }
           }
@@ -202,28 +235,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       });
 
       if (!user) {
-        // Same response as invalid password to prevent user enumeration
-        return res.status(401).json({
-          success: false,
-          error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' }
-        });
-      }
-
-      // ─── Password Verification (handles multiple field names) ─────────
-      const passwordHash = (user as any).passwordHash 
-        ?? (user as any).password 
-        ?? (user as any).hashedPassword;
-
-      if (!passwordHash) {
-        console.error(`[Auth] User ${user.id} has no password hash field`);
-        return res.status(500).json({
-          success: false,
-          error: { code: 'AUTH_CONFIG_ERROR', message: 'Authentication misconfiguration.' }
-        });
-      }
-
-      const valid = await bcrypt.compare(password, passwordHash);
-      if (!valid) {
         return res.status(401).json({
           success: false,
           error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password.' }
