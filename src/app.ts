@@ -33,10 +33,31 @@ import { createTeamsRouter } from './routes/teams.router';
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
 import { InvitationService } from './services/invitation.service';
 
+import * as Sentry from '@sentry/node';
+
 const app = express();
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: process.env.NODE_ENV,
+  tracesSampleRate: 0.2,
+  beforeSend(event) {
+    // Scrub Authorization and Department headers
+    if (event.request && event.request.headers) {
+      delete event.request.headers['authorization'];
+      delete event.request.headers['x-department-id'];
+      delete event.request.headers['x-department-context'];
+    }
+    return event;
+  }
+});
+
+app.use(Sentry.Handlers.requestHandler());
+app.use(Sentry.Handlers.tracingHandler());
 
 // ─── Correlation Context (MUST BE FIRST) ──────────────────────────────────────
 app.use(correlationMiddleware);
+
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 // Strict whitelist for allowed origins
