@@ -52,8 +52,6 @@ Sentry.init({
   }
 });
 
-console.log(`[SENTRY STATUS] DSN loaded: ${process.env.SENTRY_DSN ? 'YES' : 'NO'}. Client initialized: ${Sentry.getClient() ? 'YES' : 'NO'}`);
-
 // ─── Correlation Context (MUST BE FIRST) ──────────────────────────────────────
 app.use(correlationMiddleware);
 
@@ -81,20 +79,8 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/health', async (_req: Request, res: Response) => {
-  try {
-    console.log('[SENTRY TEST] Capturing exception directly...');
-    Sentry.captureException(new Error('Sentry Direct Capture Test'));
-    
-    // Force the SDK to flush the event to the network before responding
-    await Sentry.flush(5000); 
-    console.log('[SENTRY TEST] Flush complete. Event should be in Sentry.');
-    
-    res.status(500).json({ status: 'sentry_test_triggered' });
-  } catch (err: any) {
-    console.error('[SENTRY TEST] Error during flush:', err);
-    res.status(500).json({ status: 'sentry_test_failed', error: err.message });
-  }
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // ─── Domain Routers ───────────────────────────────────────────────────────────
