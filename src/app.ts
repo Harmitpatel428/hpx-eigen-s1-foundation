@@ -51,7 +51,7 @@ const allowedOrigins = [
 const corsOptions = {
   origin: true, // Reflects the request origin, allowing Vercel
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-department-context'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-department-id', 'x-department-context'],
   credentials: true,
   optionsSuccessStatus: 204
 };
