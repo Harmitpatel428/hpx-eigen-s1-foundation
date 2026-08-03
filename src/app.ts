@@ -49,6 +49,7 @@ Sentry.init({
       delete event.request.headers['x-department-context'];
     }
     return event;
+  }
 });
 
 console.log('SENTRY_DSN loaded:', process.env.SENTRY_DSN ? 'YES' : 'NO');
