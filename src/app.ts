@@ -52,9 +52,6 @@ Sentry.init({
   }
 });
 
-app.use(Sentry.Handlers.requestHandler());
-app.use(Sentry.Handlers.tracingHandler());
-
 // ─── Correlation Context (MUST BE FIRST) ──────────────────────────────────────
 app.use(correlationMiddleware);
 
@@ -82,8 +79,8 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/health', (_req: Request, _res: Response) => {
-  throw new Error('Sentry Backend Test Error');
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // ─── Domain Routers ───────────────────────────────────────────────────────────
@@ -147,7 +144,7 @@ app.post('/api/invitations/accept', authMiddleware, async (req: Request, res: Re
 });
 
 // ─── Global Error Handler ─────────────────────────────────────────────────────
-app.use(Sentry.Handlers.errorHandler());
+Sentry.setupExpressErrorHandler(app);
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const correlationId = getCorrelationId() ?? 'unknown';
