@@ -175,7 +175,7 @@ async function getSalesMetrics(prisma: PrismaClient, tenantId: string) {
       SELECT 
         COALESCE(
           AVG(
-            EXTRACT(EPOCH FROM ("actualClose" - "createdAt")) / 86400
+            EXTRACT(EPOCH FROM ("closedAt" - "createdAt")) / 86400
           ), 
           0
         ) as avg_velocity
