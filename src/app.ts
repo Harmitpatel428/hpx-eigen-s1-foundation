@@ -82,8 +82,8 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', (_req: Request, _res: Response) => {
+  throw new Error('Sentry Backend Test Error');
 });
 
 // ─── Domain Routers ───────────────────────────────────────────────────────────
@@ -147,6 +147,8 @@ app.post('/api/invitations/accept', authMiddleware, async (req: Request, res: Re
 });
 
 // ─── Global Error Handler ─────────────────────────────────────────────────────
+app.use(Sentry.Handlers.errorHandler());
+
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const correlationId = getCorrelationId() ?? 'unknown';
 
