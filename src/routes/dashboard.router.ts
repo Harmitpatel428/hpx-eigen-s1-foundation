@@ -43,19 +43,30 @@ export function createDashboardRouter(prisma: PrismaClient): Router {
         });
       }
 
-      // ─── Verify user access to requested department ──────────────
-      const hasAccess = await prisma.$queryRaw<{ count: bigint }[]>`
-        SELECT COUNT(*) as count
-        FROM "Assignment"
-        WHERE "userId" = ${userId}::uuid AND "departmentId" = ${requestedDeptId}::uuid
-        UNION ALL
-        SELECT COUNT(*) as count
-        FROM "User"
-        WHERE "id" = ${userId}::uuid AND "departmentId" = ${requestedDeptId}::uuid
-      `;
+      // ─── UUID validation — guard against Postgres ::uuid cast crash ────
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!UUID_RE.test(requestedDeptId)) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_DEPARTMENT', message: 'Invalid department identifier format.' }
+        });
+      }
 
-      const accessCount = hasAccess.reduce((sum, row) => sum + Number(row.count), 0);
-      if (accessCount === 0) {
+      // ─── Verify user has access to the requested department ──────────────
+      // Uses User.departmentId (the correct column in the current schema).
+      // The legacy Assignment table query was referencing "userId" which does
+      // not exist on that model — fixed here to prevent the 500 crash.
+      const userRecord = await prisma.user.findFirst({
+        where: {
+          id: userId,
+          tenantId,
+          departmentId: requestedDeptId,
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+
+      if (!userRecord) {
         return res.status(403).json({
           success: false,
           error: { code: 'FORBIDDEN', message: 'Access denied to this department.' }
