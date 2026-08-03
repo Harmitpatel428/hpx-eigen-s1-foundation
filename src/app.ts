@@ -52,7 +52,7 @@ Sentry.init({
   }
 });
 
-console.log('SENTRY_DSN loaded:', process.env.SENTRY_DSN ? 'YES' : 'NO');
+console.log(`[SENTRY STATUS] DSN loaded: ${process.env.SENTRY_DSN ? 'YES' : 'NO'}. Client initialized: ${Sentry.getClient() ? 'YES' : 'NO'}`);
 
 // ─── Correlation Context (MUST BE FIRST) ──────────────────────────────────────
 app.use(correlationMiddleware);
