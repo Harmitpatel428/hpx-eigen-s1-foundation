@@ -81,8 +81,20 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/health', (_req: Request, _res: Response) => {
-  throw new Error('Sentry 500 Crash Test');
+app.get('/health', async (_req: Request, res: Response) => {
+  try {
+    console.log('[SENTRY TEST] Capturing exception directly...');
+    Sentry.captureException(new Error('Sentry Direct Capture Test'));
+    
+    // Force the SDK to flush the event to the network before responding
+    await Sentry.flush(5000); 
+    console.log('[SENTRY TEST] Flush complete. Event should be in Sentry.');
+    
+    res.status(500).json({ status: 'sentry_test_triggered' });
+  } catch (err: any) {
+    console.error('[SENTRY TEST] Error during flush:', err);
+    res.status(500).json({ status: 'sentry_test_failed', error: err.message });
+  }
 });
 
 // ─── Domain Routers ───────────────────────────────────────────────────────────
