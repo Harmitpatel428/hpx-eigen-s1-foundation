@@ -49,8 +49,9 @@ Sentry.init({
       delete event.request.headers['x-department-context'];
     }
     return event;
-  }
 });
+
+console.log('SENTRY_DSN loaded:', process.env.SENTRY_DSN ? 'YES' : 'NO');
 
 // ─── Correlation Context (MUST BE FIRST) ──────────────────────────────────────
 app.use(correlationMiddleware);
@@ -79,8 +80,8 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', (_req: Request, _res: Response) => {
+  throw new Error('Sentry 500 Crash Test');
 });
 
 // ─── Domain Routers ───────────────────────────────────────────────────────────
