@@ -124,7 +124,7 @@ export async function authMiddleware(
     // Fetch user's team/department context for ABAC scope resolution
     const userRecord = await prisma.user.findFirst({
       where: { id: userId, tenantId, deletedAt: null },
-      select: { teamId: true, departmentId: true, v2MembershipId: true },
+      select: { teamId: true, departmentId: true },
     });
 
     // Load permission manifest (Redis-backed with DB fallback)
@@ -141,7 +141,7 @@ export async function authMiddleware(
 
     const requestContext: RequestContext = {
       identityId: userId,
-      membershipId: userRecord?.v2MembershipId ?? '',
+      membershipId: '',
       tenantId,
       sessionId,
       correlationId: (req.headers['x-correlation-id'] as string) || crypto.randomUUID(),
