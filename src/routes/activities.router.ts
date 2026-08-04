@@ -29,7 +29,6 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
         { tenantId, userId },
         {
           opportunityId,
-          userId,
           type,
           subject,
           notes,

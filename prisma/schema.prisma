@@ -49,19 +49,7 @@ enum ScopeType {
   ORGANIZATION
 }
 
-enum IdentityStatus {
-  ACTIVE
-  SUSPENDED
-  PENDING_VERIFICATION
-  DELETED
-}
-
-enum MembershipStatus {
-  ACTIVE
-  SUSPENDED
-  PENDING
-  ARCHIVED
-}
+// Removed V2 enums
 
 enum OrganizationStatus {
   PROVISIONING
@@ -71,29 +59,7 @@ enum OrganizationStatus {
   ARCHIVED
 }
 
-enum AssignmentType {
-  DEPARTMENT
-  TEAM
-  BRANCH
-  REGION
-  DIVISION
-  BUSINESS_UNIT
-  PRACTICE_AREA
-  COUNTRY
-  PROJECT
-  PORTFOLIO
-}
-
-enum OverrideType {
-  ALLOW
-  DENY
-}
-
-enum DomainEventStatus {
-  PENDING
-  PUBLISHED
-  FAILED
-}
+// Removed assignment/domain event enums
 
 // ═══════════════════════════════════════════════════════════════════
 // S1 FOUNDATION — AUTH, USERS, ROLES, SESSIONS
@@ -117,9 +83,7 @@ model Tenant {
   departments     Department[]
   teams           Team[]
 
-  memberships     OrganizationMembership[]
   settings        TenantSettings?
-  outboxEvents    OutboxEvent[]
 
   @@index([status])
   @@index([deletedAt])
@@ -168,7 +132,6 @@ model Role {
   permissions     RolePermission[]
   users           UserRole[]
   userInvitations UserInvitation[]
-  membershipRoles MembershipRole[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -238,10 +201,6 @@ model User {
   invitedUsers        UserInvitation[] @relation("InvitedBy")
   acceptedInvitations UserInvitation[] @relation("AcceptedBy")
 
-  v2IdentityId        String?          @db.Uuid
-  v2MembershipId      String?          @db.Uuid
-  v2MigrationStatus   String?
-
   @@unique([tenantId, email])
   @@index([tenantId])
   @@index([email])
@@ -301,12 +260,8 @@ model Session {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  identityId       String?       @db.Uuid
-  identity         Identity?     @relation(fields: [identityId], references: [id], onDelete: Cascade)
-
   @@index([tenantId])
   @@index([userId])
-  @@index([identityId])
   @@index([status])
   @@index([expiresAt])
   @@index([deletedAt])
@@ -641,129 +596,9 @@ model VerificationToken {
   expiresAt  DateTime
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
-
-  identityId String?   @db.Uuid
-  identity   Identity? @relation(fields: [identityId], references: [id], onDelete: Cascade)
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// S4 V2 AUTH & IDENTITY MODELS
-// ═══════════════════════════════════════════════════════════════════
-
-model Identity {
-  id                 String          @id @default(uuid()) @db.Uuid
-  email              String          @unique
-  passwordHash       String
-  mfaSecret          String?
-  mfaEnabled         Boolean         @default(false)
-  globalStatus       IdentityStatus  @default(ACTIVE)
-  emailVerified      DateTime?
-  lastLoginAt        DateTime?
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
-  deletedAt          DateTime?
-
-  memberships        OrganizationMembership[]
-  sessions           Session[]
-  verificationTokens VerificationToken[]
-
-  @@index([email])
-  @@index([globalStatus])
-}
-
-model OrganizationMembership {
-  id               String           @id @default(uuid()) @db.Uuid
-  identityId       String           @db.Uuid
-  tenantId         String           @db.Uuid
-  status           MembershipStatus @default(ACTIVE)
-  joinedAt         DateTime         @default(now())
-  suspendedAt      DateTime?
-  suspensionReason String?
-  version          Int              @default(1)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-
-  identity         Identity         @relation(fields: [identityId], references: [id], onDelete: Cascade)
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  assignments      Assignment[]
-  membershipRoles  MembershipRole[]
-  overrides        PermissionOverride[]
-
-  @@unique([identityId, tenantId])
-  @@index([tenantId, status])
-  @@index([identityId])
-}
-
-model Assignment {
-  id             String         @id @default(uuid()) @db.Uuid
-  membershipId   String         @db.Uuid
-  assignmentType AssignmentType
-  targetId       String         @db.Uuid
-  isPrimary      Boolean        @default(false)
-  assignedAt     DateTime       @default(now())
-  assignedBy     String?        @db.Uuid
-  version        Int            @default(1)
-
-  membership     OrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-
-  @@index([membershipId, assignmentType])
-  @@index([targetId, assignmentType])
-  @@index([assignmentType, targetId])
-}
-
-model MembershipRole {
-  id           String    @id @default(uuid()) @db.Uuid
-  membershipId String    @db.Uuid
-  roleId       String    @db.Uuid
-  scopeType    ScopeType @default(OWN)
-  grantedAt    DateTime  @default(now())
-  grantedBy    String?   @db.Uuid
-  expiresAt    DateTime?
-  version      Int       @default(1)
-
-  membership   OrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-  role         Role                   @relation(fields: [roleId], references: [id], onDelete: Cascade)
-
-  @@unique([membershipId, roleId])
-  @@index([membershipId])
-  @@index([roleId])
-}
-
-model PermissionOverride {
-  id             String       @id @default(uuid()) @db.Uuid
-  membershipId   String       @db.Uuid
-  permissionSlug String
-  overrideType   OverrideType
-  reason         String?
-  grantedBy      String       @db.Uuid
-  createdAt      DateTime     @default(now())
-  expiresAt      DateTime?
-
-  membership     OrganizationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-
-  @@unique([membershipId, permissionSlug])
-  @@index([membershipId])
-}
-
-model OutboxEvent {
-  id            String            @id @default(uuid()) @db.Uuid
-  tenantId      String?           @db.Uuid
-  eventType     String
-  payload       Json
-  status        DomainEventStatus @default(PENDING)
-  attempts      Int               @default(0)
-  lastAttemptAt DateTime?
-  publishedAt   DateTime?
-  failedAt      DateTime?
-  error         String?
-  createdAt     DateTime          @default(now())
-
-  tenant        Tenant?           @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-
-  @@index([status, createdAt])
-  @@index([tenantId, status])
-  @@index([eventType])
-}
+// Removed S4 V2 AUTH & IDENTITY MODELS and OutboxEvent
 
 model TenantSettings {
   id                    String   @id @default(uuid()) @db.Uuid

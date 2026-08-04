@@ -1,8 +1,31 @@
 import { PrismaClient } from '@prisma/client';
-import { ContactRepository, CreateContactInput, UpdateContactInput } from '../repositories/contact.repo';
 import { AuditService } from './audit.service';
-import { TenantContext } from '../repositories/base.repo';
-import { ValidationError } from '../types/exceptions';
+import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
+
+export interface TenantContext {
+  tenantId: string;
+  userId: string;
+}
+
+export interface CreateContactInput {
+  firstName: string;
+  lastName: string;
+  email?: string;
+  phone?: string;
+  title?: string;
+  company?: string;
+  leadId?: string;
+}
+
+export interface UpdateContactInput {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  title?: string;
+  company?: string;
+  leadId?: string;
+}
 
 export class ContactService {
   private readonly audit: AuditService;
@@ -11,18 +34,24 @@ export class ContactService {
     this.audit = new AuditService(prisma);
   }
 
-  private makeRepo(ctx: TenantContext) {
-    return new ContactRepository(ctx, this.prisma);
-  }
-
   /** Create a new contact */
   async createContact(ctx: TenantContext, input: CreateContactInput) {
     if (!input.firstName?.trim() || !input.lastName?.trim()) {
       throw new ValidationError('firstName and lastName are required.');
     }
 
-    const repo = this.makeRepo(ctx);
-    const contact = await repo.create(input);
+    const contact = await this.prisma.contact.create({
+      data: {
+        tenantId: ctx.tenantId,
+        firstName: input.firstName,
+        lastName: input.lastName,
+        email: input.email ?? null,
+        phone: input.phone ?? null,
+        title: input.title ?? null,
+        company: input.company ?? null,
+        leadId: input.leadId ?? null
+      }
+    });
 
     await this.audit.log({
       tenantId: ctx.tenantId,
@@ -39,26 +68,45 @@ export class ContactService {
 
   /** Get a single contact by ID */
   async getContactById(ctx: TenantContext, contactId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findById(contactId);
+    const contact = await this.prisma.contact.findFirst({
+      where: { tenantId: ctx.tenantId, deletedAt: null, id: contactId }
+    });
+    if (!contact) throw new ResourceNotFoundError();
+    return contact;
   }
 
   /** List all contacts in the tenant */
   async listContacts(ctx: TenantContext) {
-    const repo = this.makeRepo(ctx);
-    return repo.findAll();
+    return this.prisma.contact.findMany({
+      where: { tenantId: ctx.tenantId, deletedAt: null },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }]
+    });
   }
 
   /** List contacts linked to a specific lead */
   async listContactsByLead(ctx: TenantContext, leadId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByLead(leadId);
+    return this.prisma.contact.findMany({
+      where: { tenantId: ctx.tenantId, deletedAt: null, leadId },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }]
+    });
   }
 
   /** Update a contact */
   async updateContact(ctx: TenantContext, contactId: string, input: UpdateContactInput) {
-    const repo = this.makeRepo(ctx);
-    const contact = await repo.update(contactId, input);
+    const existing = await this.getContactById(ctx, contactId);
+
+    const contact = await this.prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        ...(input.firstName !== undefined ? { firstName: input.firstName } : {}),
+        ...(input.lastName !== undefined ? { lastName: input.lastName } : {}),
+        ...(input.email !== undefined ? { email: input.email } : {}),
+        ...(input.phone !== undefined ? { phone: input.phone } : {}),
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.company !== undefined ? { company: input.company } : {}),
+        ...(input.leadId !== undefined ? { leadId: input.leadId } : {})
+      }
+    });
 
     await this.audit.log({
       tenantId: ctx.tenantId,
@@ -75,8 +123,12 @@ export class ContactService {
 
   /** Soft-delete a contact */
   async deleteContact(ctx: TenantContext, contactId: string) {
-    const repo = this.makeRepo(ctx);
-    await repo.softDelete(contactId);
+    const existing = await this.getContactById(ctx, contactId);
+
+    await this.prisma.contact.update({
+      where: { id: contactId },
+      data: { deletedAt: new Date() }
+    });
 
     await this.audit.log({
       tenantId: ctx.tenantId,

@@ -12,7 +12,6 @@
 import { PrismaClient } from '@prisma/client';
 import { redisGet, redisSet, redisIncr, redisKeys } from '../redis';
 import { AuthorizationDecision } from '../types/authorization';
-import { OutboxService } from './outbox.service';
 
 /** Compiled permission manifest: { [slug]: ScopeType } */
 export type PermissionManifest = Record<string, string | AuthorizationDecision>;
@@ -87,9 +86,6 @@ export class PermissionService {
     if (result === null) {
       process.stderr.write(`[PermissionService] Cache invalidation skipped for key ${key} — Redis unavailable.\n`);
     }
-
-    const outboxService = new OutboxService(this.prisma as any);
-    await outboxService.publish('PermissionCacheInvalidated', { tenantId }, tenantId);
   }
 
   /**

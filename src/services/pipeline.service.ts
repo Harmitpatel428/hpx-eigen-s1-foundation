@@ -1,6 +1,9 @@
 import { PrismaClient, OpportunityStage } from '@prisma/client';
-import { PipelineRepository } from '../repositories/pipeline.repo';
-import { TenantContext } from '../repositories/base.repo';
+
+export interface TenantContext {
+  tenantId: string;
+  userId: string;
+}
 
 export interface PipelineAnalytics {
   /** Total number of active (non-closed) opportunities */
@@ -22,32 +25,84 @@ export interface PipelineAnalytics {
 export class PipelineService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  private makeRepo(ctx: TenantContext) {
-    return new PipelineRepository(ctx, this.prisma);
-  }
-
   /** Get full stage transition history for an opportunity */
   async getOpportunityHistory(ctx: TenantContext, opportunityId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByOpportunity(opportunityId);
+    return this.prisma.pipeline.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        opportunityId
+      },
+      orderBy: { enteredAt: 'asc' }
+    });
   }
 
   /** Get the current active pipeline stage for an opportunity */
   async getCurrentStage(ctx: TenantContext, opportunityId: string) {
-    const repo = this.makeRepo(ctx);
-    return repo.findCurrentStage(opportunityId);
+    return this.prisma.pipeline.findFirst({
+      where: {
+        tenantId: ctx.tenantId,
+        opportunityId,
+        exitedAt: null
+      }
+    });
   }
 
   /** Get all opportunities currently in a specific pipeline stage */
   async getOpportunitiesByStage(ctx: TenantContext, stage: OpportunityStage) {
-    const repo = this.makeRepo(ctx);
-    return repo.findByStage(stage);
+    return this.prisma.pipeline.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        stage,
+        exitedAt: null
+      },
+      include: {
+        opportunity: {
+          select: {
+            id: true,
+            title: true,
+            value: true,
+            currency: true,
+            ownerId: true,
+            expectedCloseDate: true
+          }
+        }
+      },
+      orderBy: { enteredAt: 'asc' }
+    });
   }
 
   /** Compute stage velocity metrics — average days per stage */
   async getStageVelocity(ctx: TenantContext) {
-    const repo = this.makeRepo(ctx);
-    return repo.stageVelocity();
+    const records = await this.prisma.pipeline.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        exitedAt: { not: null }
+      },
+      select: {
+        stage: true,
+        enteredAt: true,
+        exitedAt: true
+      }
+    });
+
+    // Group by stage and compute averages
+    const stageMap = new Map<OpportunityStage, number[]>();
+
+    for (const record of records) {
+      if (!record.exitedAt) continue;
+      const days = Math.ceil(
+        (record.exitedAt.getTime() - record.enteredAt.getTime()) / (1000 * 60 * 60 * 24)
+      );
+      const existing = stageMap.get(record.stage) ?? [];
+      existing.push(days);
+      stageMap.set(record.stage, existing);
+    }
+
+    return Array.from(stageMap.entries()).map(([stage, days]) => ({
+      stage,
+      avgDays: days.reduce((a, b) => a + b, 0) / days.length,
+      count: days.length
+    }));
   }
 
   /**
@@ -96,8 +151,7 @@ export class PipelineService {
     const winRate = totalClosed > 0 ? Math.round((won / totalClosed) * 100) : 0;
 
     // Stage velocity
-    const repo = this.makeRepo(ctx);
-    const stageVelocity = await repo.stageVelocity();
+    const stageVelocity = await this.getStageVelocity(ctx);
 
     return {
       totalActiveOpportunities,
@@ -113,9 +167,8 @@ export class PipelineService {
    * stage velocity and current stage entry time.
    */
   async predictClosureDate(ctx: TenantContext, opportunityId: string): Promise<Date | null> {
-    const repo = this.makeRepo(ctx);
-    const history = await repo.findByOpportunity(opportunityId);
-    const velocity = await repo.stageVelocity();
+    const history = await this.getOpportunityHistory(ctx, opportunityId);
+    const velocity = await this.getStageVelocity(ctx);
 
     if (history.length === 0) return null;
 
