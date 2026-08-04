@@ -162,3 +162,6 @@ export class OrgInitService {
     }
   }
 }
+
+export default OrgInitService;
+

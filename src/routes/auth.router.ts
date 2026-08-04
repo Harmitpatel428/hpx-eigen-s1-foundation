@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { emailService } from '../services/email.service';
 import { PermissionService } from '../services/permission.service';
+import OrgInitService from '../services/rbac/OrgInitService';
 
 export function createAuthRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -68,7 +69,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       }); // End transaction for Tenant/User creation
 
       // 4. Call OrgInitService
-      const { OrgInitService } = await import('../services/rbac/OrgInitService');
       const orgInitService = new OrgInitService(prisma);
       const result = await orgInitService.initializeOrgRBAC(tenantId, userId, "Administration", "Admin");
       
