@@ -248,6 +248,7 @@ model User {
   @@index([deletedAt])
   @@index([teamId, deletedAt])
   @@index([departmentId, deletedAt])
+  @@index([tenantId, deletedAt])
 }
 
 model UserInvitation {

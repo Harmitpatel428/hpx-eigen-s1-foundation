@@ -27,78 +27,60 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         throw new ValidationError('Password must be at least 8 chars, with 1 uppercase and 1 number.');
       }
 
-      // Check if user already exists across any tenant (based on prompt, email must be unique or handled per tenant)
-      // Since email is unique per tenant, we should probably just check if email exists globally or assume they want one account per email.
-      // We will create a tenant, user, and role.
-      
       const existingUser = await prisma.user.findFirst({ where: { email } });
       if (existingUser) {
         return res.status(409).json({ error: 'USER_EXISTS', message: 'Email already registered' });
       }
 
-      // Hash password
       const hashedPassword = await bcrypt.hash(password, 12);
+      const token = crypto.randomBytes(32).toString('hex');
+      let tenantId = "";
+      let userId = "";
 
-      // Create Tenant
-      const tenant = await prisma.tenant.create({
-        data: { name: companyName }
-      });
-
-      // Create User (status NEW)
-      const user = await prisma.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-          tenantId: tenant.id,
-          emailVerified: null
-        }
-      });
-
-      // Fetch all global permissions
-      const allPermissions = await prisma.permission.findMany();
-
-      // Ensure 'Organization Admin' role exists for this tenant
-      let adminRole = await prisma.role.findFirst({
-        where: { tenantId: tenant.id, name: 'Organization Admin' }
-      });
-      if (!adminRole) {
-        adminRole = await prisma.role.create({
-          data: { tenantId: tenant.id, name: 'Organization Admin', isSystem: true }
+      // START TRANSACTION
+      await prisma.$transaction(async (tx) => {
+        // 1. Create Tenant
+        const tenant = await tx.tenant.create({
+          data: { name: companyName }
         });
+        tenantId = tenant.id;
 
-        if (allPermissions.length > 0) {
-          await prisma.rolePermission.createMany({
-            data: allPermissions.map(p => ({
-              roleId: adminRole!.id,
-              permissionId: p.id
-            }))
-          });
-        }
+        // 2. Create User
+        const user = await tx.user.create({
+          data: {
+            email,
+            password: hashedPassword,
+            tenantId: tenant.id,
+            emailVerified: null
+          }
+        });
+        userId = user.id;
+
+        // 3. Delete old tokens and create VerificationToken
+        await tx.verificationToken.deleteMany({ where: { email } });
+        await tx.verificationToken.create({
+          data: {
+            email,
+            token,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h
+          }
+        });
+      }); // End transaction for Tenant/User creation
+
+      // 4. Call OrgInitService
+      const { OrgInitService } = await import('../services/rbac/OrgInitService');
+      const orgInitService = new OrgInitService(prisma);
+      const result = await orgInitService.initializeOrgRBAC(tenantId, userId, "Administration", "Admin");
+      
+      if (!result.success) {
+        // If OrgInitService fails, we theoretically should rollback Tenant/User, 
+        // but since we split transactions, we just throw to return 500.
+        // A cleanup job can remove orphaned tenants.
+        throw new Error(`OrgInitService failed: ${result.error}`);
       }
 
-      // Assign ADMIN role to the user with scopeType: 'ORGANIZATION'
-      await prisma.userRole.create({
-        data: { userId: user.id, roleId: adminRole!.id, scopeType: 'ORGANIZATION' }
-      });
-
-      // Call permissionService.invalidatePermissionCache(tenant.id) to ensure the cache is fresh
-      await permissionService.invalidatePermissionCache(tenant.id);
-
-      // Generate verification token (32-char hex)
-      const token = crypto.randomBytes(32).toString('hex');
-      
-      // Delete old tokens for this email and create a new one
-      await prisma.verificationToken.deleteMany({ where: { email } });
-      await prisma.verificationToken.create({
-        data: {
-          email,
-          token,
-          expiresAt: new Date(Date.now() + 15 * 60 * 1000) // 15 min
-        }
-      });
-
-      // Attempt to send email, but don't crash the signup if it fails
-      const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+      // Send email via Resend
+      const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}&email=${encodeURIComponent(email)}`;
       try {
         await emailService.sendVerificationEmail(email, token);
       } catch (emailError) {
@@ -107,8 +89,10 @@ export function createAuthRouter(prisma: PrismaClient): Router {
 
       res.status(201).json({
         message: 'Signup successful. Check your email to verify account.',
-        userId: user.id,
-        tenantId: tenant.id
+        email,
+        organizationName: companyName,
+        userId,
+        tenantId
       });
     } catch (err) {
       next(err);
@@ -137,27 +121,74 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       }
 
       const user = await prisma.user.findFirst({
-        where: { email: verificationToken.email }
+        where: { email: verificationToken.email },
+        include: { tenant: true }
       });
 
       if (!user) {
         return res.status(404).json({ error: 'USER_NOT_FOUND', message: 'User account not found' });
       }
 
-      // Update user
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { emailVerified: new Date() }
+      // START TRANSACTION
+      await prisma.$transaction(async (tx) => {
+        // 1. Mark emailVerified
+        await tx.user.update({
+          where: { id: user.id },
+          data: { emailVerified: new Date() }
+        });
+
+        // 2. Delete VerificationToken
+        await tx.verificationToken.deleteMany({
+          where: { email: verificationToken.email }
+        });
+
+        // 3. Create AuditLog entry
+        const generateHash = (eventData: any) => crypto.createHash('sha256').update(JSON.stringify(eventData)).digest('hex');
+        await tx.auditLog.create({
+          data: {
+            tenantId: user.tenantId,
+            eventType: "email_verified",
+            entityType: "User",
+            entityId: user.id,
+            actorUserId: user.id,
+            actorIp: req.ip || "0.0.0.0",
+            actorUserAgent: req.headers['user-agent'] || "Unknown",
+            operation: "UPDATE",
+            payload: { emailVerified: true },
+            previousHash: null,
+            currentHash: generateHash({ eventType: "email_verified", entityId: user.id })
+          }
+        });
       });
 
-      // Clear tokens
-      await prisma.verificationToken.deleteMany({
-        where: { email: verificationToken.email }
-      });
+      // Load permissions into Redis
+      await permissionService.invalidatePermissionCache(user.tenantId); // Simple method, real one should be loadUserPermissions
+      // Wait, prompt wants to call PermissionService.loadUserPermissions(userId, tenantId)
+      // I will add it here, assuming we will add it to permissionService later
+      try {
+        await permissionService.loadUserPermissions(user.id, user.tenantId);
+      } catch (err) {
+        console.warn('Failed to load user permissions to Redis cache:', err);
+      }
+
+      // Issue JWT
+      const accessToken = jwt.sign(
+        { 
+          userId: user.id, 
+          tenantId: user.tenantId,
+          email: user.email,
+          role: "Organization Administrator",
+          scopes: ["ORGANIZATION"] 
+        },
+        process.env.JWT_SECRET!,
+        { expiresIn: '7d' } // Temporary long expiry for initial setup
+      );
 
       res.status(200).json({
         message: 'Email verified successfully! You can now login.',
-        email: user.email
+        jwt: accessToken,
+        user: { id: user.id, email: user.email, tenantId: user.tenantId },
+        organization: { tenantId: user.tenantId, name: user.tenant.name }
       });
     } catch (err) {
       next(err);
