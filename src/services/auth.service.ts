@@ -75,6 +75,10 @@ export class AuthService {
     }
 
     // 2. Validate password against User
+    if (!user.password) {
+      console.error('[LOGIN] User has no password hash:', email);
+      throw new AuthenticationFailedError();
+    }
     const passwordValid = await bcrypt.compare(password, user.password);
     if (!passwordValid) throw new AuthenticationFailedError();
 
