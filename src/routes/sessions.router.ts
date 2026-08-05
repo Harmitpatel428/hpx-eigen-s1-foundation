@@ -24,7 +24,7 @@ export function createSessionsRouter(prisma: PrismaClient): Router {
           tenantId,
           status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
           expiresAt: { gt: new Date() },
-          deletedAt: null
+          deletedAt: { equals: null }
         },
         select: {
           id: true,
@@ -64,7 +64,7 @@ export function createSessionsRouter(prisma: PrismaClient): Router {
           id: sessionId,
           userId,
           tenantId,
-          deletedAt: null
+          deletedAt: { equals: null }
         }
       });
 

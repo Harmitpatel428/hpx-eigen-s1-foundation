@@ -72,7 +72,7 @@ export class ActivityService {
   /** Get a single activity by ID */
   async getActivityById(ctx: TenantContext, activityId: string) {
     const activity = await this.prisma.activity.findFirst({
-      where: { tenantId: ctx.tenantId, deletedAt: null, id: activityId }
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, id: activityId }
     });
     if (!activity) throw new ResourceNotFoundError();
     return activity;
@@ -81,7 +81,7 @@ export class ActivityService {
   /** List activities linked to an opportunity */
   async listByOpportunity(ctx: TenantContext, opportunityId: string) {
     return this.prisma.activity.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null, opportunityId },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, opportunityId },
       orderBy: { createdAt: 'desc' }
     });
   }
@@ -89,7 +89,7 @@ export class ActivityService {
   /** List activities by type */
   async listByType(ctx: TenantContext, type: ActivityType) {
     return this.prisma.activity.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null, type },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, type },
       orderBy: { scheduledAt: 'asc' }
     });
   }
@@ -97,7 +97,7 @@ export class ActivityService {
   /** List activities assigned to a user */
   async listByUser(ctx: TenantContext, userId: string) {
     return this.prisma.activity.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null, userId },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, userId },
       orderBy: { scheduledAt: 'asc' }
     });
   }

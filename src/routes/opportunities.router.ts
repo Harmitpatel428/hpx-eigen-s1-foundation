@@ -105,7 +105,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
 
         const whereClause: Prisma.OpportunityWhereInput = {
           tenantId,
-          deletedAt: null,
+          deletedAt: { equals: null },
           ...ownerFilter,
         };
 

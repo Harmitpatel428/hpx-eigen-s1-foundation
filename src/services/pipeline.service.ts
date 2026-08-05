@@ -119,7 +119,7 @@ export class PipelineService {
 
     // Fetch all non-deleted opportunities for the tenant
     const opportunities = await this.prisma.opportunity.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null } },
       select: { stage: true, value: true }
     });
 

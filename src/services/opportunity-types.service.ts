@@ -26,7 +26,7 @@ export class OpportunityTypesService {
 
   async ensureDefaultTypes(ctx: UserContext): Promise<void> {
     const count = await this.prisma.opportunityType.count({
-      where: { tenantId: ctx.tenantId, deletedAt: null }
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null } }
     });
 
     if (count > 0) return;
@@ -45,7 +45,7 @@ export class OpportunityTypesService {
   async listTypes(ctx: UserContext): Promise<OpportunityType[]> {
     await this.ensureDefaultTypes(ctx);
     return this.prisma.opportunityType.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null } },
       orderBy: { displayOrder: 'asc' }
     });
   }
@@ -61,7 +61,7 @@ export class OpportunityTypesService {
     }
 
     const existing = await this.prisma.opportunityType.findFirst({
-      where: { tenantId: ctx.tenantId, name: { equals: cleanName, mode: 'insensitive' }, deletedAt: null }
+      where: { tenantId: ctx.tenantId, name: { equals: cleanName, mode: 'insensitive' }, deletedAt: { equals: null } }
     });
 
     if (existing) {
@@ -69,7 +69,7 @@ export class OpportunityTypesService {
     }
 
     const maxOrderType = await this.prisma.opportunityType.findFirst({
-      where: { tenantId: ctx.tenantId, deletedAt: null, isDefault: false },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, isDefault: false },
       orderBy: { displayOrder: 'desc' }
     });
     
@@ -85,7 +85,7 @@ export class OpportunityTypesService {
 
     // Make sure "Other" is pushed to the bottom
     const otherType = await this.prisma.opportunityType.findFirst({
-      where: { tenantId: ctx.tenantId, isDefault: true, name: 'Other', deletedAt: null }
+      where: { tenantId: ctx.tenantId, isDefault: true, name: 'Other', deletedAt: { equals: null } }
     });
     if (otherType && otherType.displayOrder <= displayOrder) {
       await this.prisma.opportunityType.update({
@@ -99,7 +99,7 @@ export class OpportunityTypesService {
 
   async updateType(ctx: UserContext, id: string, data: { name?: string; isActive?: boolean }): Promise<OpportunityType> {
     const type = await this.prisma.opportunityType.findFirst({
-      where: { id, tenantId: ctx.tenantId, deletedAt: null }
+      where: { id, tenantId: ctx.tenantId, deletedAt: { equals: null } }
     });
 
     if (!type) {
@@ -119,7 +119,7 @@ export class OpportunityTypesService {
           throw new ValidationError('"Other" is a reserved opportunity type name.');
        }
        const existing = await this.prisma.opportunityType.findFirst({
-         where: { tenantId: ctx.tenantId, name: { equals: cleanName, mode: 'insensitive' }, id: { not: id }, deletedAt: null }
+         where: { tenantId: ctx.tenantId, name: { equals: cleanName, mode: 'insensitive' }, id: { not: id }, deletedAt: { equals: null } }
        });
        if (existing) {
          throw new ValidationError('An opportunity type with this name already exists.');
@@ -137,7 +137,7 @@ export class OpportunityTypesService {
 
   async reorderTypes(ctx: UserContext, typeIds: string[]): Promise<void> {
     const types = await this.prisma.opportunityType.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null }
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null } }
     });
 
     const otherType = types.find(t => t.isDefault && t.name === 'Other');
@@ -168,7 +168,7 @@ export class OpportunityTypesService {
 
   async deleteType(ctx: UserContext, id: string): Promise<void> {
     const type = await this.prisma.opportunityType.findFirst({
-      where: { id, tenantId: ctx.tenantId, deletedAt: null }
+      where: { id, tenantId: ctx.tenantId, deletedAt: { equals: null } }
     });
 
     if (!type) {
@@ -180,7 +180,7 @@ export class OpportunityTypesService {
     }
 
     const inUse = await this.prisma.opportunity.count({
-      where: { opportunityTypeId: id, tenantId: ctx.tenantId, deletedAt: null }
+      where: { opportunityTypeId: id, tenantId: ctx.tenantId, deletedAt: { equals: null } }
     });
 
     if (inUse > 0) {

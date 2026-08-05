@@ -56,7 +56,7 @@ export class OpportunityService {
 
     if (input.opportunityTypeId) {
       const type = await this.prisma.opportunityType.findFirst({
-        where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: null }
+        where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: { equals: null } }
       });
       if (!type) {
         throw new ValidationError('Selected opportunity type is invalid.');
@@ -116,7 +116,7 @@ export class OpportunityService {
   /** Get a single opportunity by ID (includes lead + contact summary) */
   async getOpportunityById(ctx: TenantContext, opportunityId: string) {
     const opp = await this.prisma.opportunity.findFirst({
-      where: { tenantId: ctx.tenantId, deletedAt: null, id: opportunityId },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, id: opportunityId },
       include: {
         lead: { select: { id: true, firstName: true, lastName: true, company: true } },
         contact: { select: { id: true, firstName: true, lastName: true } },
@@ -132,7 +132,7 @@ export class OpportunityService {
     const opportunities = await this.prisma.opportunity.findMany({
       where: {
         tenantId: ctx.tenantId,
-        deletedAt: null,
+        deletedAt: { equals: null },
         ...(options?.stage ? { stage: options.stage } : {}),
         ...(options?.ownerId ? { ownerId: options.ownerId } : {})
       },
@@ -152,7 +152,7 @@ export class OpportunityService {
   /** List opportunities by pipeline stage */
   async listByStage(ctx: TenantContext, stage: OpportunityStage) {
     return this.prisma.opportunity.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null, stage },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, stage },
       include: {
         opportunityType: { select: { id: true, name: true, isDefault: true } }
       },
@@ -163,7 +163,7 @@ export class OpportunityService {
   /** List opportunities owned by a user */
   async listByOwner(ctx: TenantContext, ownerId: string) {
     return this.prisma.opportunity.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null, ownerId },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, ownerId },
       include: {
         opportunityType: { select: { id: true, name: true, isDefault: true } }
       },
@@ -175,7 +175,7 @@ export class OpportunityService {
   async updateOpportunity(ctx: TenantContext, opportunityId: string, input: UpdateOpportunityInput) {
     if (input.opportunityTypeId) {
       const type = await this.prisma.opportunityType.findFirst({
-        where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: null }
+        where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: { equals: null } }
       });
       if (!type) {
         throw new ValidationError('Selected opportunity type is invalid.');

@@ -144,7 +144,7 @@ export function createTeamsRouter(prisma: PrismaClient): Router {
       if (!team) throw new ResourceNotFoundError();
 
       const user = await prisma.user.findFirst({
-        where: { id: userId, tenantId, deletedAt: null },
+        where: { id: userId, tenantId, deletedAt: { equals: null } },
       });
       if (!user) throw new ValidationError('userId references a non-existent user.');
 

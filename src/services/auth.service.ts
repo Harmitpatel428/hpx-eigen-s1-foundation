@@ -56,7 +56,7 @@ export class AuthService {
     const user = await this.prisma.user.findFirst({
       where: {
         email,
-        deletedAt: null,
+        deletedAt: { equals: null },
       },
     });
 
@@ -137,7 +137,7 @@ export class AuthService {
    */
   async logout(sessionId: string, tenantId: string, userId: string): Promise<void> {
     const session = await this.prisma.session.findFirst({
-      where: { id: sessionId, tenantId, userId, deletedAt: null }
+      where: { id: sessionId, tenantId, userId, deletedAt: { equals: null } }
     });
 
     if (!session) throw new ResourceNotFoundError();
@@ -182,7 +182,7 @@ export class AuthService {
         userId,
         tenantId,
         status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
-        deletedAt: null
+        deletedAt: { equals: null }
       },
       data: {
         status: SessionStatus.INVALIDATED,
@@ -225,7 +225,7 @@ export class AuthService {
         tenantId,
         status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
         expiresAt: { gt: new Date() },
-        deletedAt: null
+        deletedAt: { equals: null }
       },
       include: { user: { select: { id: true, status: true } } }
     });

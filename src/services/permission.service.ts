@@ -110,7 +110,7 @@ export class PermissionService {
     const userRoles = await this.prisma.userRole.findMany({
       where: {
         userId,
-        role: { tenantId, deletedAt: null },
+        role: { tenantId, deletedAt: { equals: null } },
       },
       select: {
         scopeType: true,

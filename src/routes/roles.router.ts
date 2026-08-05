@@ -19,7 +19,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
       const roles = await prisma.role.findMany({
-        where: { tenantId, deletedAt: null },
+        where: { tenantId, deletedAt: { equals: null } },
         select: {
           id: true,
           name: true,
@@ -48,7 +48,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       }
 
       const existing = await prisma.role.findFirst({
-        where: { tenantId, name: name.trim(), deletedAt: null },
+        where: { tenantId, name: name.trim(), deletedAt: { equals: null } },
       });
       if (existing) throw new DuplicateResourceError();
 
@@ -70,7 +70,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
       const role = await prisma.role.findFirst({
-        where: { id: req.params.id, tenantId, deletedAt: null },
+        where: { id: req.params.id, tenantId, deletedAt: { equals: null } },
       });
       if (!role) throw new ResourceNotFoundError();
 
@@ -97,7 +97,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       if (!permissionId) throw new ValidationError('permissionId is required.');
 
       const role = await prisma.role.findFirst({
-        where: { id: req.params.id, tenantId, deletedAt: null },
+        where: { id: req.params.id, tenantId, deletedAt: { equals: null } },
       });
       if (!role) throw new ResourceNotFoundError();
 
@@ -145,7 +145,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
       const role = await prisma.role.findFirst({
-        where: { id: req.params.id, tenantId, deletedAt: null },
+        where: { id: req.params.id, tenantId, deletedAt: { equals: null } },
       });
       if (!role) throw new ResourceNotFoundError();
 
@@ -187,7 +187,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
       const role = await prisma.role.findFirst({
-        where: { id: req.params.id, tenantId, deletedAt: null },
+        where: { id: req.params.id, tenantId, deletedAt: { equals: null } },
       });
       if (!role) throw new ResourceNotFoundError();
 
@@ -235,12 +235,12 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       }
 
       const role = await prisma.role.findFirst({
-        where: { id: req.params.id, tenantId, deletedAt: null },
+        where: { id: req.params.id, tenantId, deletedAt: { equals: null } },
       });
       if (!role) throw new ResourceNotFoundError();
 
       const user = await prisma.user.findFirst({
-        where: { id: userId, tenantId, deletedAt: null },
+        where: { id: userId, tenantId, deletedAt: { equals: null } },
       });
       if (!user) throw new ValidationError('userId references a non-existent user.');
 
@@ -271,7 +271,7 @@ export function createRolesRouter(prisma: PrismaClient): Router {
       const { tenantId } = (req as AuthenticatedRequest).user;
 
       const role = await prisma.role.findFirst({
-        where: { id: req.params.id, tenantId, deletedAt: null },
+        where: { id: req.params.id, tenantId, deletedAt: { equals: null } },
       });
       if (!role) throw new ResourceNotFoundError();
 

@@ -69,7 +69,7 @@ export class ContactService {
   /** Get a single contact by ID */
   async getContactById(ctx: TenantContext, contactId: string) {
     const contact = await this.prisma.contact.findFirst({
-      where: { tenantId: ctx.tenantId, deletedAt: null, id: contactId }
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, id: contactId }
     });
     if (!contact) throw new ResourceNotFoundError();
     return contact;
@@ -78,7 +78,7 @@ export class ContactService {
   /** List all contacts in the tenant */
   async listContacts(ctx: TenantContext) {
     return this.prisma.contact.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null } },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }]
     });
   }
@@ -86,7 +86,7 @@ export class ContactService {
   /** List contacts linked to a specific lead */
   async listContactsByLead(ctx: TenantContext, leadId: string) {
     return this.prisma.contact.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null, leadId },
+      where: { tenantId: ctx.tenantId, deletedAt: { equals: null }, leadId },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }]
     });
   }

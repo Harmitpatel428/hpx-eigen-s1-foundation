@@ -141,7 +141,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         // Build dynamic where clause — tenantId is ALWAYS present (no IDOR)
         const whereClause: Prisma.LeadWhereInput = {
           tenantId,
-          deletedAt: null,
+          deletedAt: { equals: null },
           ...ownerFilter,
         };
 

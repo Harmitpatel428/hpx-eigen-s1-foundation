@@ -43,7 +43,7 @@ export async function buildOwnerFilter(
         return { ownerId: userId };
       }
       const members = await prisma.user.findMany({
-        where: { teamId, deletedAt: null },
+        where: { teamId, deletedAt: { equals: null } },
         select: { id: true },
       });
       return { ownerId: { in: members.map((m) => m.id) } };
@@ -55,7 +55,7 @@ export async function buildOwnerFilter(
         return { ownerId: userId };
       }
       const members = await prisma.user.findMany({
-        where: { departmentId, deletedAt: null },
+        where: { departmentId, deletedAt: { equals: null } },
         select: { id: true },
       });
       return { ownerId: { in: members.map((m) => m.id) } };

@@ -76,7 +76,7 @@ export class InvoiceService {
 
     // Verify opportunity belongs to tenant
     const opportunity = await this.prisma.opportunity.findFirst({
-      where: { id: data.opportunityId, tenantId, deletedAt: null }
+      where: { id: data.opportunityId, tenantId, deletedAt: { equals: null } }
     });
 
     if (!opportunity) {
@@ -139,7 +139,7 @@ export class InvoiceService {
 
     const where: Prisma.InvoiceWhereInput = {
       tenantId,
-      deletedAt: null
+      deletedAt: { equals: null }
     };
 
     if (filters?.status) where.status = filters.status;
@@ -161,8 +161,8 @@ export class InvoiceService {
 
   async getInvoiceById(ctx: UserContext, id: string): Promise<Invoice> {
     const invoice = await this.prisma.invoice.findFirst({
-      where: { id, tenantId: ctx.tenantId, deletedAt: null },
-      include: { payments: { where: { deletedAt: null } } }
+      where: { id, tenantId: ctx.tenantId, deletedAt: { equals: null } },
+      include: { payments: { where: { deletedAt: { equals: null } } } }
     });
 
     if (!invoice) {

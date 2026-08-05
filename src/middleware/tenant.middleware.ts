@@ -15,7 +15,7 @@ const TENANT_SCOPED_MODELS = new Set([
  * Creates a Prisma client extended with automatic tenant isolation.
  *
  * Per S1-Integration-Fix-1 spec:
- * - Auto-injects tenantId and deletedAt: null into all TENANT_SCOPED model queries
+ * - Auto-injects tenantId and deletedAt: { equals: null } into all TENANT_SCOPED model queries
  * - Developers never manually add tenant filters for normal tenant-scoped access
  * - Cross-tenant queries must use raw prisma and annotate with TENANT_BYPASS_APPROVED
  *
@@ -30,7 +30,7 @@ export function createTenantClient(tenantId: string, prisma: PrismaClient) {
             args.where = {
               ...args.where,
               tenantId,
-              deletedAt: null
+              deletedAt: { equals: null }
             };
           }
           return query(args);
@@ -41,7 +41,7 @@ export function createTenantClient(tenantId: string, prisma: PrismaClient) {
             args.where = {
               ...args.where,
               tenantId,
-              deletedAt: null
+              deletedAt: { equals: null }
             };
           }
           return query(args);

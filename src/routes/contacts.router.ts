@@ -78,7 +78,7 @@ export function createContactsRouter(prisma: PrismaClient): Router {
 
         const whereClause: Prisma.ContactWhereInput = {
           tenantId,
-          deletedAt: null,
+          deletedAt: { equals: null },
           ...ownerFilter,
         };
 

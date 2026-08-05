@@ -27,7 +27,7 @@ export class UserService {
     actorUserId: string
   ): Promise<{ success: boolean; sessionsRevoked: number }> {
     const user = await this.prisma.user.findFirst({
-      where: { id: userId, tenantId, deletedAt: null }
+      where: { id: userId, tenantId, deletedAt: { equals: null } }
     });
 
     if (!user) throw new ResourceNotFoundError();
@@ -44,7 +44,7 @@ export class UserService {
         userId,
         tenantId,
         status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
-        deletedAt: null
+        deletedAt: { equals: null }
       },
       data: {
         status: SessionStatus.INVALIDATED,
@@ -94,7 +94,7 @@ export class UserService {
     actorUserId: string
   ): Promise<{ success: boolean; sessionsRevoked: number }> {
     const user = await this.prisma.user.findFirst({
-      where: { id: userId, tenantId, deletedAt: null }
+      where: { id: userId, tenantId, deletedAt: { equals: null } }
     });
 
     if (!user) throw new ResourceNotFoundError();
@@ -110,7 +110,7 @@ export class UserService {
         userId,
         tenantId,
         status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
-        deletedAt: null
+        deletedAt: { equals: null }
       },
       data: {
         status: SessionStatus.INVALIDATED,
@@ -150,7 +150,7 @@ export class UserService {
    */
   async getUser(userId: string, tenantId: string) {
     const user = await this.prisma.user.findFirst({
-      where: { id: userId, tenantId, deletedAt: null },
+      where: { id: userId, tenantId, deletedAt: { equals: null } },
       select: {
         id: true,
         email: true,
@@ -178,7 +178,7 @@ export class UserService {
    */
   async listUsers(tenantId: string) {
     return this.prisma.user.findMany({
-      where: { tenantId, deletedAt: null },
+      where: { tenantId, deletedAt: { equals: null } },
       select: {
         id: true,
         email: true,

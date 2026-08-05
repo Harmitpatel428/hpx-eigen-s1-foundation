@@ -28,13 +28,13 @@ export class InvitationService {
   ) {
     // Validate role belongs to same tenant
     const role = await this.prisma.role.findFirst({
-      where: { id: roleId, tenantId, deletedAt: null }
+      where: { id: roleId, tenantId, deletedAt: { equals: null } }
     });
     if (!role) throw new ResourceNotFoundError();
 
     // Check for existing PENDING invitation for this email in this tenant
     const existing = await this.prisma.userInvitation.findFirst({
-      where: { tenantId, email, status: InvitationStatus.PENDING, deletedAt: null }
+      where: { tenantId, email, status: InvitationStatus.PENDING, deletedAt: { equals: null } }
     });
     if (existing) throw new DuplicateResourceError();
 
@@ -159,7 +159,7 @@ export class InvitationService {
         id: invitationId,
         tenantId,
         status: InvitationStatus.PENDING,
-        deletedAt: null
+        deletedAt: { equals: null }
       }
     });
 

@@ -46,8 +46,8 @@ export class PaymentService {
 
     // Verify invoice belongs to tenant and get payments
     const invoice = await this.prisma.invoice.findFirst({
-      where: { id: data.invoiceId, tenantId, deletedAt: null },
-      include: { payments: { where: { deletedAt: null, status: { not: PaymentStatus.CANCELLED } } } }
+      where: { id: data.invoiceId, tenantId, deletedAt: { equals: null } },
+      include: { payments: { where: { deletedAt: { equals: null }, status: { not: PaymentStatus.CANCELLED } } } }
     });
 
     if (!invoice) {
@@ -125,7 +125,7 @@ export class PaymentService {
 
     const where: Prisma.PaymentWhereInput = {
       tenantId,
-      deletedAt: null
+      deletedAt: { equals: null }
     };
 
     if (filters?.invoiceId) where.invoiceId = filters.invoiceId;
@@ -145,7 +145,7 @@ export class PaymentService {
     const { tenantId, userId } = ctx;
 
     const existing = await this.prisma.payment.findFirst({
-      where: { id, tenantId, deletedAt: null }
+      where: { id, tenantId, deletedAt: { equals: null } }
     });
 
     if (!existing) {
@@ -173,7 +173,7 @@ export class PaymentService {
 
   async getPaymentById(ctx: UserContext, id: string): Promise<Payment> {
     const payment = await this.prisma.payment.findFirst({
-      where: { id, tenantId: ctx.tenantId, deletedAt: null }
+      where: { id, tenantId: ctx.tenantId, deletedAt: { equals: null } }
     });
 
     if (!payment) {

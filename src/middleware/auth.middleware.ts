@@ -77,14 +77,14 @@ export async function authMiddleware(
         userId,
         status: { in: [SessionStatus.ACTIVE, SessionStatus.CREATED] },
         expiresAt: { gt: new Date() },
-        deletedAt: null,
+        deletedAt: { equals: null },
       },
     });
 
     if (!session) {
       // Distinguish expired vs revoked for better error messages
       const anySession = await prisma.session.findFirst({
-        where: { id: sessionId, deletedAt: null },
+        where: { id: sessionId, deletedAt: { equals: null } },
         select: { status: true, expiresAt: true },
       });
 
@@ -123,7 +123,7 @@ export async function authMiddleware(
 
     // Fetch user's team/department context for ABAC scope resolution
     const userRecord = await prisma.user.findFirst({
-      where: { id: userId, tenantId, deletedAt: null },
+      where: { id: userId, tenantId, deletedAt: { equals: null } },
       select: { teamId: true, departmentId: true },
     });
 

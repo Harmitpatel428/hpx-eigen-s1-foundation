@@ -26,7 +26,7 @@ export function requireRole(allowedRoles: string[]) {
           userId,
           role: {
             tenantId,
-            deletedAt: null,
+            deletedAt: { equals: null },
             name: { in: allowedRoles },
           },
         },

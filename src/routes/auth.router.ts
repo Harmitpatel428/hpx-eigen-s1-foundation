@@ -221,7 +221,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
 
       // ─── Lookup User (V1 auth) ─────────────────────────────────────────
       const user = await prisma.user.findFirst({
-        where: { email: email.toLowerCase().trim(), deletedAt: null },
+        where: { email: email.toLowerCase().trim(), deletedAt: { equals: null } },
         include: {
           tenant: { select: { id: true, name: true } },
           userRoles: {
@@ -346,7 +346,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
 
       const user = await prisma.user.findFirst({
-        where: { id: userId, tenantId, deletedAt: null },
+        where: { id: userId, tenantId, deletedAt: { equals: null } },
         select: {
           id: true,
           email: true,

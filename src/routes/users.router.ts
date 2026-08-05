@@ -19,7 +19,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       
       const user = await prisma.user.findFirst({
-        where: { id: userId, tenantId, deletedAt: null },
+        where: { id: userId, tenantId, deletedAt: { equals: null } },
         include: {
           userRoles: {
             include: {

@@ -61,7 +61,7 @@ export function createDashboardRouter(prisma: PrismaClient): Router {
           id: userId,
           tenantId,
           departmentId: requestedDeptId,
-          deletedAt: null,
+          deletedAt: { equals: null },
         },
         select: { id: true },
       });
