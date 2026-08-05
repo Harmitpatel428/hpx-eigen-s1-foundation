@@ -30,6 +30,12 @@ export interface RefreshResult {
 const BCRYPT_COST = parseInt(process.env.BCRYPT_COST ?? '12', 10);
 const SESSION_LIFETIME_DAYS = parseInt(process.env.SESSION_LIFETIME_DAYS ?? '30', 10);
 
+const JWT_SECRET = process.env.JWT_SECRET as string;
+if (!JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET not set');
+  process.exit(1);
+}
+
 export class AuthService {
   private readonly auditService: AuditService;
 
@@ -104,10 +110,9 @@ export class AuthService {
       }
     });
 
-    const secret = process.env.JWT_SECRET!;
     const accessToken = jwt.sign(
       { sessionId: session.id, userId: user.id, tenantId: actualTenantId },
-      secret,
+      JWT_SECRET,
       { expiresIn: `${SESSION_LIFETIME_DAYS}d` }
     );
 
@@ -231,10 +236,9 @@ export class AuthService {
     const tokenValid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
     if (!tokenValid) throw new AuthenticationFailedError();
 
-    const secret = process.env.JWT_SECRET!;
     const accessToken = jwt.sign(
       { sessionId: session.id, userId: session.userId, tenantId },
-      secret,
+      JWT_SECRET,
       { expiresIn: '15m' }
     );
 
