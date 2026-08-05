@@ -12,6 +12,20 @@ generator client {
 // ENUMS
 // ═══════════════════════════════════════════════════════════════════
 
+enum VerificationTokenStatus {
+  PENDING
+  USED
+  REVOKED
+  EXPIRED
+}
+
+enum PasswordResetTokenStatus {
+  PENDING
+  USED
+  REVOKED
+  EXPIRED
+}
+
 enum SessionStatus {
   CREATED
   ACTIVE
@@ -75,15 +89,15 @@ model Tenant {
   updatedAt          DateTime           @updatedAt
   deletedAt          DateTime?
 
-  roles           Role[]
-  users           User[]
-  userInvitations UserInvitation[]
-  sessions        Session[]
+  roles            Role[]
+  users            User[]
+  userInvitations  UserInvitation[]
+  sessions         Session[]
   opportunityTypes OpportunityType[]
-  departments     Department[]
-  teams           Team[]
+  departments      Department[]
+  teams            Team[]
 
-  settings        TenantSettings?
+  settings TenantSettings?
 
   @@index([status])
   @@index([deletedAt])
@@ -99,8 +113,8 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  users   User[]
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users  User[]
 
   @@index([tenantId])
 }
@@ -120,12 +134,12 @@ model Team {
 // ─── Roles & Permissions ──────────────────────────────────────────
 
 model Role {
-  id        String   @id @default(uuid()) @db.Uuid
-  tenantId  String   @db.Uuid
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @db.Uuid
   name      String
-  isSystem  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  isSystem  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -181,6 +195,7 @@ model User {
   tenantId          String     @db.Uuid
   email             String
   emailVerified     DateTime?
+  verifiedAt        DateTime?
   password          String
   status            UserStatus @default(NEW)
   teamId            String?    @db.Uuid
@@ -193,13 +208,15 @@ model User {
   updatedAt         DateTime   @updatedAt
   deletedAt         DateTime?
 
-  tenant              Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  team                Team?            @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  department          Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  team                Team?                @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  department          Department?          @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   sessions            Session[]
+  verificationTokens  VerificationToken[]
+  passwordResetTokens PasswordResetToken[]
   userRoles           UserRole[]
-  invitedUsers        UserInvitation[] @relation("InvitedBy")
-  acceptedInvitations UserInvitation[] @relation("AcceptedBy")
+  invitedUsers        UserInvitation[]     @relation("InvitedBy")
+  acceptedInvitations UserInvitation[]     @relation("AcceptedBy")
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -212,24 +229,24 @@ model User {
 }
 
 model UserInvitation {
-  id          String           @id @default(uuid()) @db.Uuid
-  tenantId    String           @db.Uuid
-  email       String
-  status      InvitationStatus @default(PENDING)
-  roleId      String           @db.Uuid
-  token       String           @unique
-  expiresAt   DateTime
-  invitedBy   String           @db.Uuid
-  acceptedBy  String?          @db.Uuid
-  acceptedAt  DateTime?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  deletedAt   DateTime?
+  id         String           @id @default(uuid()) @db.Uuid
+  tenantId   String           @db.Uuid
+  email      String
+  status     InvitationStatus @default(PENDING)
+  roleId     String           @db.Uuid
+  token      String           @unique
+  expiresAt  DateTime
+  invitedBy  String           @db.Uuid
+  acceptedBy String?          @db.Uuid
+  acceptedAt DateTime?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  deletedAt  DateTime?
 
-  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  role     Role    @relation(fields: [roleId], references: [id], onDelete: Restrict)
-  inviter  User    @relation("InvitedBy", fields: [invitedBy], references: [id], onDelete: Restrict)
-  acceptor User?   @relation("AcceptedBy", fields: [acceptedBy], references: [id], onDelete: SetNull)
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  role     Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  inviter  User   @relation("InvitedBy", fields: [invitedBy], references: [id], onDelete: Restrict)
+  acceptor User?  @relation("AcceptedBy", fields: [acceptedBy], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, email])
   @@index([tenantId])
@@ -239,23 +256,23 @@ model UserInvitation {
 }
 
 model Session {
-  id               String        @id @default(uuid()) @db.Uuid
-  tenantId         String        @db.Uuid
-  userId           String        @db.Uuid
-  status           SessionStatus @default(CREATED)
-  refreshTokenHash String
-  expiresAt        DateTime
-  lastActivityAt   DateTime?
-  revokedAt        DateTime?
-  invalidatedAt    DateTime?
-  expiredAt        DateTime?
-  ipAddress        String?
-  userAgent        String?
+  id                String        @id @default(uuid()) @db.Uuid
+  tenantId          String        @db.Uuid
+  userId            String        @db.Uuid
+  status            SessionStatus @default(CREATED)
+  refreshTokenHash  String
+  expiresAt         DateTime
+  lastActivityAt    DateTime?
+  revokedAt         DateTime?
+  invalidatedAt     DateTime?
+  expiredAt         DateTime?
+  ipAddress         String?
+  userAgent         String?
   deviceFingerprint String?
-  riskScore        Int           @default(0)
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
-  deletedAt        DateTime?
+  riskScore         Int           @default(0)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  deletedAt         DateTime?
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -377,18 +394,18 @@ model Lead {
 
 // ─── Contact ──────────────────────────────────────────────────────
 model Contact {
-  id        String   @id @default(uuid()) @db.Uuid
-  tenantId  String   @db.Uuid
-  leadId    String?  @db.Uuid
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @db.Uuid
+  leadId    String?   @db.Uuid
   firstName String
   lastName  String
   email     String?
   phone     String?
   title     String?
   company   String?
-  ownerId   String?  @db.Uuid
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  ownerId   String?   @db.Uuid
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
   lead          Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
@@ -402,14 +419,14 @@ model Contact {
 
 // ─── OpportunityType ──────────────────────────────────────────────
 model OpportunityType {
-  id           String   @id @default(uuid()) @db.Uuid
-  tenantId     String   @db.Uuid
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
   name         String
-  displayOrder Int      @default(0)
-  isActive     Boolean  @default(true)
-  isDefault    Boolean  @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  displayOrder Int       @default(0)
+  isActive     Boolean   @default(true)
+  isDefault    Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?
 
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -590,12 +607,44 @@ model Payment {
 }
 
 model VerificationToken {
-  id         String    @id @default(uuid()) @db.Uuid
-  email      String
-  token      String    @unique
-  expiresAt  DateTime
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  token     String
+  tokenHash String                  @unique
+  status    VerificationTokenStatus @default(PENDING)
+
+  usedAt    DateTime?
+  revokedAt DateTime?
+  expiresAt DateTime
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId, status, expiresAt])
+  @@index([tokenHash, status])
+}
+
+model PasswordResetToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String                   @unique
+  status    PasswordResetTokenStatus @default(PENDING)
+
+  usedAt    DateTime?
+  revokedAt DateTime?
+  expiresAt DateTime
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId, status, expiresAt])
+  @@index([tokenHash, status])
 }
 
 // Removed S4 V2 AUTH & IDENTITY MODELS and OutboxEvent

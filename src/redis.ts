@@ -131,6 +131,19 @@ export async function redisSet(key: string, value: string, ttlSeconds?: number):
   }
 }
 
+/** Set expiry on a key in seconds */
+export async function redisExpire(key: string, ttlSeconds: number): Promise<void> {
+  if (!checkCircuit()) return;
+  try {
+    const client = getClient();
+    if (!client) return;
+    await client.expire(key, ttlSeconds);
+    recordSuccess();
+  } catch (err) {
+    recordFailure(err);
+  }
+}
+
 /** Atomically increment an integer key. Returns new value or null if unavailable. */
 export async function redisIncr(key: string): Promise<number | null> {
   if (!checkCircuit()) return null;
