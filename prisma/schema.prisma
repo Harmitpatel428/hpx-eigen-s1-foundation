@@ -96,6 +96,8 @@ model Tenant {
   opportunityTypes OpportunityType[]
   departments      Department[]
   teams            Team[]
+  docPresets       DocPreset[]
+  docCases         DocCase[]
 
   settings TenantSettings?
 
@@ -385,6 +387,7 @@ model Lead {
 
   contacts      Contact[]
   opportunities Opportunity[]
+  docCase       DocCase?
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -648,6 +651,336 @@ model PasswordResetToken {
 }
 
 // Removed S4 V2 AUTH & IDENTITY MODELS and OutboxEvent
+
+// ═══════════════════════════════════════════════════════════════════
+// S4 DOCUMENTATION TRACKER DOMAIN
+// Workflow orchestration — NOT a document storage system.
+// The CRM tracks readiness, metadata, and audit. Documents live elsewhere.
+// ═══════════════════════════════════════════════════════════════════
+
+enum DocPresetCategory {
+  GOVERNMENT
+  FINANCIAL
+  LEGAL
+  OPERATIONAL
+  COMPLIANCE
+  CUSTOM
+}
+
+enum DocDocumentStatus {
+  REQUESTED
+  PENDING_COLLECTION
+  RECEIVED
+  UNDER_VERIFICATION
+  APPROVED
+  REJECTED
+  RE_REQUESTED
+  EXPIRED
+  NOT_APPLICABLE
+  WAIVED
+  MANAGER_APPROVED
+}
+
+enum DocCaseStatus {
+  ACTIVE
+  DOCUMENTATION_READY
+  TRANSFERRED_TO_PROCESS
+  CLOSED
+  CANCELLED
+}
+
+enum DocNoteType {
+  INTERNAL
+  CUSTOMER
+}
+
+enum DocStorageType {
+  GOOGLE_DRIVE
+  ONEDRIVE
+  DROPBOX
+  SHAREPOINT
+  NAS_PATH
+  LOCAL_FOLDER
+  PHYSICAL_CABINET
+  REFERENCE_NUMBER
+  EMAIL
+  EXTERNAL_PORTAL
+  STORED_OFFLINE
+  OTHER
+}
+
+enum DocEventType {
+  CASE_CREATED
+  PRESET_APPLIED
+  DOCUMENT_STATUS_CHANGED
+  DOCUMENT_RECEIVED
+  DOCUMENT_VERIFIED
+  DOCUMENT_REJECTED
+  DOCUMENT_WAIVED
+  DOCUMENT_APPROVED
+  REMINDER_SENT
+  NOTE_ADDED
+  STORAGE_REF_ADDED
+  MANAGER_OVERRIDE
+  TRANSFERRED_TO_PROCESS
+  CASE_CLOSED
+  CASE_CANCELLED
+  EXPIRY_WARNING
+}
+
+// ─── DocPreset — reusable document requirement template ───────────
+model DocPreset {
+  id          String            @id @default(uuid()) @db.Uuid
+  tenantId    String            @db.Uuid
+  name        String
+  description String?
+  category    DocPresetCategory @default(CUSTOM)
+  color       String?
+  icon        String?
+  isActive    Boolean           @default(true)
+  version     Int               @default(1)
+  usageCount  Int               @default(0)
+  createdBy   String            @db.Uuid
+  updatedBy   String?           @db.Uuid
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+
+  tenant         Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items          DocPresetItem[]
+  versionHistory DocPresetVersion[]
+  cases          DocCase[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@index([deletedAt])
+}
+
+// ─── DocPresetItem — individual document definition in a preset ───
+model DocPresetItem {
+  id                    String   @id @default(uuid()) @db.Uuid
+  presetId              String   @db.Uuid
+  tenantId              String   @db.Uuid
+  name                  String
+  description           String?
+  isMandatory           Boolean  @default(true)
+  isBlocking            Boolean  @default(false)
+  displayOrder          Int      @default(0)
+  verificationRequired  Boolean  @default(true)
+  expiryTrackingEnabled Boolean  @default(false)
+  expiryDays            Int?
+  metadataFields        Json     @default("[]")
+  notes                 String?
+  conditionRule         Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  deletedAt             DateTime?
+
+  preset DocPreset @relation(fields: [presetId], references: [id], onDelete: Cascade)
+
+  @@index([presetId])
+  @@index([tenantId])
+  @@index([deletedAt])
+}
+
+// ─── DocPresetVersion — immutable snapshot; old cases are never affected ─
+model DocPresetVersion {
+  id         String   @id @default(uuid()) @db.Uuid
+  presetId   String   @db.Uuid
+  tenantId   String   @db.Uuid
+  version    Int
+  snapshot   Json
+  changedBy  String   @db.Uuid
+  changeNote String?
+  createdAt  DateTime @default(now())
+
+  preset DocPreset @relation(fields: [presetId], references: [id], onDelete: Cascade)
+
+  @@unique([presetId, version])
+  @@index([tenantId])
+  @@index([presetId, createdAt])
+}
+
+// ─── DocCase — one documentation tracking case per lead ──────────
+model DocCase {
+  id                String        @id @default(uuid()) @db.Uuid
+  tenantId          String        @db.Uuid
+  leadId            String        @db.Uuid
+  presetId          String?       @db.Uuid
+  presetVersion     Int?
+  assignedTo        String?       @db.Uuid
+  status            DocCaseStatus @default(ACTIVE)
+  priority          Int           @default(0)
+  totalDocs         Int           @default(0)
+  receivedDocs      Int           @default(0)
+  verifiedDocs      Int           @default(0)
+  approvedDocs      Int           @default(0)
+  rejectedDocs      Int           @default(0)
+  mandatoryDocs     Int           @default(0)
+  mandatoryApproved Int           @default(0)
+  completionPercent Int           @default(0)
+  isReady           Boolean       @default(false)
+  dueDate           DateTime?
+  transferredAt     DateTime?
+  transferredBy     String?       @db.Uuid
+  closedAt          DateTime?
+  notes             String?
+  createdBy         String        @db.Uuid
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  deletedAt         DateTime?
+
+  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead      Lead                 @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  preset    DocPreset?           @relation(fields: [presetId], references: [id], onDelete: SetNull)
+  documents DocCaseDocument[]
+  events    DocCaseEvent[]
+  caseNotes DocCaseNote[]
+  reminders DocReminder[]
+  overrides DocManagerOverride[]
+
+  @@unique([tenantId, leadId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, assignedTo])
+  @@index([tenantId, isReady])
+  @@index([deletedAt])
+}
+
+// ─── DocCaseDocument — individual document tracking entry ─────────
+model DocCaseDocument {
+  id                    String            @id @default(uuid()) @db.Uuid
+  tenantId              String            @db.Uuid
+  caseId                String            @db.Uuid
+  presetItemId          String?           @db.Uuid
+  name                  String
+  description           String?
+  isMandatory           Boolean           @default(true)
+  isBlocking            Boolean           @default(false)
+  displayOrder          Int               @default(0)
+  verificationRequired  Boolean           @default(true)
+  expiryTrackingEnabled Boolean           @default(false)
+  expiryDate            DateTime?
+  status                DocDocumentStatus @default(REQUESTED)
+  receivedAt            DateTime?
+  verifiedAt            DateTime?
+  verifiedBy            String?           @db.Uuid
+  verificationRemarks   String?
+  rejectionReason       String?
+  isWaived              Boolean           @default(false)
+  waivedBy              String?           @db.Uuid
+  waivedReason          String?
+  metadataValues        Json              @default("{}")
+  notes                 String?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  deletedAt             DateTime?
+
+  case        DocCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  storageRefs DocStorageRef[]
+  events      DocCaseEvent[]
+
+  @@index([caseId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([deletedAt])
+}
+
+// ─── DocCaseEvent — append-only event timeline ────────────────────
+model DocCaseEvent {
+  id              String             @id @default(uuid()) @db.Uuid
+  tenantId        String             @db.Uuid
+  caseId          String             @db.Uuid
+  documentId      String?            @db.Uuid
+  eventType       DocEventType
+  actorUserId     String?            @db.Uuid
+  actorDepartment String?
+  fromStatus      DocDocumentStatus?
+  toStatus        DocDocumentStatus?
+  remarks         String?
+  payload         Json               @default("{}")
+  createdAt       DateTime           @default(now())
+
+  case     DocCase          @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  document DocCaseDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([caseId, createdAt])
+  @@index([tenantId])
+}
+
+// ─── DocCaseNote — internal or customer-facing notes ──────────────
+model DocCaseNote {
+  id        String      @id @default(uuid()) @db.Uuid
+  tenantId  String      @db.Uuid
+  caseId    String      @db.Uuid
+  noteType  DocNoteType @default(INTERNAL)
+  content   String
+  createdBy String      @db.Uuid
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  deletedAt DateTime?
+
+  case DocCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([tenantId])
+}
+
+// ─── DocStorageRef — optional informational storage reference ─────
+// The CRM never reads or depends on these paths. Informational only.
+model DocStorageRef {
+  id          String         @id @default(uuid()) @db.Uuid
+  tenantId    String         @db.Uuid
+  documentId  String         @db.Uuid
+  storageType DocStorageType
+  reference   String
+  label       String?
+  addedBy     String         @db.Uuid
+  createdAt   DateTime       @default(now())
+
+  document DocCaseDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([tenantId])
+}
+
+// ─── DocReminder — reminder scheduling per case/document ─────────
+model DocReminder {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @db.Uuid
+  caseId          String    @db.Uuid
+  documentId      String?   @db.Uuid
+  reminderDate    DateTime
+  dueDate         DateTime?
+  escalationLevel Int       @default(0)
+  message         String?
+  isTriggered     Boolean   @default(false)
+  triggeredAt     DateTime?
+  createdBy       String    @db.Uuid
+  createdAt       DateTime  @default(now())
+
+  case DocCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([tenantId, reminderDate])
+}
+
+// ─── DocManagerOverride — audited override when case is incomplete ─
+model DocManagerOverride {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  caseId       String    @db.Uuid
+  overriddenBy String    @db.Uuid
+  reason       String
+  allowedAt    DateTime  @default(now())
+  expiresAt    DateTime?
+
+  case DocCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([tenantId])
+}
 
 model TenantSettings {
   id                    String   @id @default(uuid()) @db.Uuid

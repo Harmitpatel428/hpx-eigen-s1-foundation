@@ -29,6 +29,9 @@ import { createOpportunityTypesRouter } from './routes/opportunity-types.router'
 import { createDepartmentsRouter } from './routes/departments.router';
 import { createTeamsRouter } from './routes/teams.router';
 
+// ─── Route Factories (S4 Documentation Tracker) ───────────────────────────────
+import { createDocumentationRouter } from './routes/documentation.router';
+
 // ─── Invitation Routes (legacy paths — kept for backward compat) ──────────────
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
 import { InvitationService } from './services/invitation.service';
@@ -107,6 +110,9 @@ app.use('/api/v1/settings/opportunity-types', createOpportunityTypesRouter(prism
 // ─── Org Hierarchy Routers ────────────────────────────────────────────────────
 app.use('/api/v1/departments', createDepartmentsRouter(prisma));
 app.use('/api/v1/teams', createTeamsRouter(prisma));
+
+// ─── S4 Documentation Tracker ─────────────────────────────────────────────────
+app.use('/api/v1/documentation', createDocumentationRouter(prisma));
 
 // ─── Dashboard Router ─────────────────────────────────────────────────────────
 import { createDashboardRouter } from './routes/dashboard.router';

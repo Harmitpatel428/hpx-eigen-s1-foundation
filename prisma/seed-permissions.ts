@@ -54,6 +54,16 @@ const PERMISSIONS = [
   { slug: 'department:manage', module: 'Admin', description: 'Create, edit, delete departments' },
   { slug: 'team:view',   module: 'Admin', description: 'View teams' },
   { slug: 'team:manage', module: 'Admin', description: 'Create, edit, delete teams and assign members' },
+  // Documentation Tracker
+  { slug: 'doc:view',           module: 'Documentation', description: 'View documentation cases and documents' },
+  { slug: 'doc:create',         module: 'Documentation', description: 'Create documentation tracking cases' },
+  { slug: 'doc:edit',           module: 'Documentation', description: 'Edit documentation cases and documents' },
+  { slug: 'doc:verify',         module: 'Documentation', description: 'Verify and approve documents' },
+  { slug: 'doc:override',       module: 'Documentation', description: 'Override documentation completion requirements (manager)' },
+  { slug: 'doc:transfer',       module: 'Documentation', description: 'Transfer documentation-ready cases to Process Department' },
+  { slug: 'doc:preset:view',    module: 'Documentation', description: 'View document presets' },
+  { slug: 'doc:preset:manage',  module: 'Documentation', description: 'Create, edit, and delete document presets' },
+  { slug: 'doc:audit:view',     module: 'Documentation', description: 'View documentation audit timeline' },
 ] as const;
 
 async function main(): Promise<void> {
