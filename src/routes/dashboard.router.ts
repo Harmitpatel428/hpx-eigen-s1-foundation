@@ -52,21 +52,30 @@ export function createDashboardRouter(prisma: PrismaClient): Router {
         });
       }
 
-      // ─── Verify user has access to the requested department ──────────────
-      // Uses User.departmentId (the correct column in the current schema).
-      // The legacy Assignment table query was referencing "userId" which does
-      // not exist on that model — fixed here to prevent the 500 crash.
+      // ─── Verify user exists in tenant (dept check is role-dependent) ────
+      // Super admins can access any department's metrics.
+      // Regular users are checked against their assigned department.
       const userRecord = await prisma.user.findFirst({
         where: {
           id: userId,
           tenantId,
-          departmentId: requestedDeptId,
           deletedAt: { equals: null },
         },
-        select: { id: true },
+        select: { id: true, departmentId: true },
       });
 
       if (!userRecord) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Access denied.' }
+        });
+      }
+
+      // Non-super-admin users can only access their own department
+      const isSuperAdmin = (authReq as any).user?.permissions?.['*'] !== undefined
+        || (authReq as any).user?.permissions?.['admin:all'] !== undefined;
+
+      if (!isSuperAdmin && userRecord.departmentId && userRecord.departmentId !== requestedDeptId) {
         return res.status(403).json({
           success: false,
           error: { code: 'FORBIDDEN', message: 'Access denied to this department.' }
