@@ -167,8 +167,8 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       });
       
       const jwtToken = jwt.sign(
-        { sub: user.id, tenantId: user.tenantId, sessionId: session.id }, 
-        process.env.JWT_SECRET!, 
+        { userId: user.id, tenantId: user.tenantId, sessionId: session.id },
+        process.env.JWT_SECRET!,
         { expiresIn: '7d' }
       );
       
