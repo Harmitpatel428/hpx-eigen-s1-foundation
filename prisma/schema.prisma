@@ -387,7 +387,7 @@ model Lead {
 
   contacts      Contact[]
   opportunities Opportunity[]
-  docCase       DocCase?
+  docCases      DocCase[]
 
   @@index([tenantId])
   @@index([tenantId, status])
