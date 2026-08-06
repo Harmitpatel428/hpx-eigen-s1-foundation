@@ -9,7 +9,7 @@ import jwt from 'jsonwebtoken';
 import { emailService } from '../services/email.service';
 import { PermissionService } from '../services/permission.service';
 import { TokenService } from '../services/auth/TokenService';
-import { RateLimitService } from '../services/auth/RateLimitService';
+import { checkLoginAttempts, checkResendLimit } from '../services/auth/RateLimitService';
 import OrgInitService from '../services/rbac/OrgInitService';
 
 export function createAuthRouter(prisma: PrismaClient): Router {
@@ -19,7 +19,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
 
   
   const tokenService = new TokenService(prisma);
-  const rateLimitService = new RateLimitService();
 
   // ─── POST /api/auth/signup ────────────────────────────────────────
   router.post('/signup', async (req: Request, res: Response, next: NextFunction) => {
@@ -94,7 +93,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         return res.status(400).json({ success: false, code: 'INVALID_INPUT', message: 'Email and password required' });
       }
 
-      const attempts = await rateLimitService.checkLoginAttempts(email);
+      const attempts = await checkLoginAttempts(email);
       if (attempts > 5) return res.status(429).json({ success: false, error: { message: 'Too many attempts' } });
       
       // User lookup (INCLUDE emailVerified)
@@ -149,10 +148,9 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         });
       }
       
-      // Fetch all needed data BEFORE response (initialMetrics)
-      const [permissions, metrics] = await Promise.all([
-        permissionService.getPermissionManifest(user.id, user.tenantId).catch(() => ({})),
-        { leads: 10, deals: 5, revenue: 50000 } // Mock initial metrics for instant hydration
+      // Fetch all needed data BEFORE response
+      const [permissions] = await Promise.all([
+        permissionService.getPermissionManifest(user.id, user.tenantId).catch(() => ({}))
       ]);
 
       // EMAIL VERIFIED — Create session
@@ -189,14 +187,17 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       });
       
       console.log('[LOGIN] Success');
-      
+
       return res.status(200).json({
         success: true,
-        jwt: jwtToken,
-        user: { id: user.id, email: user.email, tenantId: user.tenantId },
-        organization: { id: user.tenant.id, name: user.tenant.name },
-        permissions,
-        initialMetrics: { activeLeads: metrics.leads, deals: metrics.deals, revenue: metrics.revenue }
+        data: {
+          accessToken: jwtToken,
+          refreshToken: session.id, // sessionId as refresh identifier
+          user: { id: user.id, email: user.email, tenantId: user.tenantId },
+          organization: { id: user.tenant.id, name: user.tenant.name },
+          permissions,
+          sessionId: session.id
+        }
       });
       
     } catch (error) {
@@ -304,11 +305,13 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       });
       
       console.log('[VERIFY-EMAIL] Verification complete');
-      
+
       return res.status(200).json({
         success: true,
-        message: 'Email verified successfully. You can now login.',
-        email: result.email
+        data: {
+          message: 'Email verified successfully. You can now login.',
+          email: result.email
+        }
       });
       
     } catch (error) {
@@ -325,7 +328,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       if (!user) return res.status(404).json({ error: 'User not found' });
       if (user.emailVerified != null) return res.status(409).json({ error: 'Email already verified' });
 
-      const attempts = await rateLimitService.checkResendLimit(email);
+      const attempts = await checkResendLimit(email);
       if (attempts > 3) return res.status(429).json({ error: 'Too many resend attempts. Try again in 1 hour.' });
 
       await tokenService.revokeOldTokens(user.id);
