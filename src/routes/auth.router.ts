@@ -10,7 +10,7 @@ import { emailService } from '../services/email.service';
 import { PermissionService } from '../services/permission.service';
 import { TokenService } from '../services/auth/TokenService';
 import { checkLoginAttempts, checkResendLimit } from '../services/auth/RateLimitService';
-import OrgInitService from '../services/rbac/OrgInitService';
+import OrgInitService from '../services/OrgInitService';
 
 export function createAuthRouter(prisma: PrismaClient): Router {
   const router = Router();

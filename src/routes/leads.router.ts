@@ -4,6 +4,7 @@ import {
   LeadStatus,
   LeadSource,
   LeadStage,
+  LeadPriority,
   OpportunityCurrency,
   Prisma,
 } from '@prisma/client';
@@ -17,7 +18,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   const leadService = new LeadService(prisma);
 
   // ─── POST /api/v1/leads ───────────────────────────────────────────
-  /** Create a new lead — requires lead:create permission */
   router.post(
     '/',
     authMiddleware,
@@ -37,6 +37,14 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           score,
           stage,
           expectedValue,
+          priority,
+          expectedCloseDate,
+          country,
+          state,
+          city,
+          area,
+          postalCode,
+          tagNames,
         } = req.body as {
           firstName: string;
           lastName: string;
@@ -49,6 +57,14 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           score?: number;
           stage?: LeadStage;
           expectedValue?: number | string;
+          priority?: LeadPriority;
+          expectedCloseDate?: string;
+          country?: string;
+          state?: string;
+          city?: string;
+          area?: string;
+          postalCode?: string;
+          tagNames?: string[];
         };
 
         if (!firstName || !lastName) {
@@ -58,6 +74,12 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         if (stage && !Object.values(LeadStage).includes(stage)) {
           throw new ValidationError(
             `stage must be one of: ${Object.values(LeadStage).join(', ')}`
+          );
+        }
+
+        if (priority && !Object.values(LeadPriority).includes(priority)) {
+          throw new ValidationError(
+            `priority must be one of: ${Object.values(LeadPriority).join(', ')}`
           );
         }
 
@@ -75,10 +97,48 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             score,
             stage,
             expectedValue,
+            priority,
+            expectedCloseDate,
+            country,
+            state,
+            city,
+            area,
+            postalCode,
+            tagNames: Array.isArray(tagNames) ? tagNames : undefined,
           }
         );
 
-        res.status(201).json(lead);
+        res.status(201).json({ data: lead });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── GET /api/v1/leads/check-duplicates ──────────────────────────
+  // Must be defined before /:id to avoid route conflict
+  router.get(
+    '/check-duplicates',
+    authMiddleware,
+    permissionMiddleware('lead:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId } = (req as AuthenticatedRequest).user;
+        const { email, phone, company, firstName, lastName, excludeId } = req.query as {
+          email?: string;
+          phone?: string;
+          company?: string;
+          firstName?: string;
+          lastName?: string;
+          excludeId?: string;
+        };
+
+        const duplicates = await leadService.checkDuplicates(
+          { tenantId, userId: (req as AuthenticatedRequest).user.userId },
+          { email, phone, company, firstName, lastName, excludeId }
+        );
+
+        res.json({ data: duplicates });
       } catch (err) {
         next(err);
       }
@@ -86,15 +146,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   );
 
   // ─── GET /api/v1/leads ────────────────────────────────────────────
-  /**
-   * List leads with dynamic ABAC scope filtering.
-   * The scope is injected by permissionMiddleware from the user's permission manifest.
-   *
-   * OWN          → only leads the caller owns
-   * TEAM         → leads owned by any member of the caller's team
-   * DEPARTMENT   → leads owned by any member of the caller's department
-   * ORGANIZATION → all tenant leads
-   */
   router.get(
     '/',
     authMiddleware,
@@ -129,7 +180,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           throw new ValidationError('pageSize must be between 1 and 200.');
         }
 
-        // Build ABAC-scoped ownerId filter
         const ownerFilter = await buildOwnerFilter(
           (scope ?? 'OWN') as ScopeType,
           userId,
@@ -138,7 +188,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           prisma
         );
 
-        // Build dynamic where clause — tenantId is ALWAYS present (no IDOR)
         const whereClause: Prisma.LeadWhereInput = {
           tenantId,
           deletedAt: { equals: null },
@@ -146,7 +195,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         };
 
         if (status) whereClause.status = status;
-        // If admin explicitly passes ownerId, intersect with scope filter
         if (ownerId && !ownerFilter.hasOwnProperty('ownerId')) {
           whereClause.ownerId = ownerId;
         }
@@ -161,11 +209,24 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
         const skip = (page - 1) * pageSize;
         const [data, total] = await Promise.all([
-          prisma.lead.findMany({ where: whereClause, skip, take: pageSize, orderBy: { createdAt: 'desc' } }),
+          prisma.lead.findMany({
+            where: whereClause,
+            skip,
+            take: pageSize,
+            orderBy: { createdAt: 'desc' },
+            include: {
+              tags: { include: { tag: true } },
+            },
+          }),
           prisma.lead.count({ where: whereClause }),
         ]);
 
-        res.json({ data, total, page, pageSize });
+        const enriched = data.map((l: any) => ({
+          ...l,
+          tags: (l.tags ?? []).map((a: any) => a.tag),
+        }));
+
+        res.json({ data: enriched, total, page, pageSize });
       } catch (err) {
         next(err);
       }
@@ -173,7 +234,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   );
 
   // ─── GET /api/v1/leads/:id ────────────────────────────────────────
-  /** Get a single lead by ID — requires lead:view */
   router.get(
     '/:id',
     authMiddleware,
@@ -190,7 +250,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   );
 
   // ─── PUT /api/v1/leads/:id ────────────────────────────────────────
-  /** Update lead fields — requires lead:edit */
   router.put(
     '/:id',
     authMiddleware,
@@ -212,6 +271,14 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           score,
           stage,
           expectedValue,
+          priority,
+          expectedCloseDate,
+          country,
+          state,
+          city,
+          area,
+          postalCode,
+          tagNames,
         } = req.body as {
           firstName?: string;
           lastName?: string;
@@ -225,11 +292,25 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           score?: number;
           stage?: LeadStage;
           expectedValue?: number | string;
+          priority?: LeadPriority;
+          expectedCloseDate?: string | null;
+          country?: string;
+          state?: string;
+          city?: string;
+          area?: string;
+          postalCode?: string;
+          tagNames?: string[];
         };
 
         if (stage && !Object.values(LeadStage).includes(stage)) {
           throw new ValidationError(
             `stage must be one of: ${Object.values(LeadStage).join(', ')}`
+          );
+        }
+
+        if (priority && !Object.values(LeadPriority).includes(priority)) {
+          throw new ValidationError(
+            `priority must be one of: ${Object.values(LeadPriority).join(', ')}`
           );
         }
 
@@ -250,10 +331,18 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             score,
             stage,
             expectedValue,
+            priority,
+            expectedCloseDate,
+            country,
+            state,
+            city,
+            area,
+            postalCode,
+            tagNames: Array.isArray(tagNames) ? tagNames : undefined,
           }
         );
 
-        res.json(lead);
+        res.json({ data: lead });
       } catch (err) {
         next(err);
       }
@@ -261,7 +350,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   );
 
   // ─── POST /api/v1/leads/:id/convert ──────────────────────────────
-  /** Convert a lead — requires lead:edit */
   router.post(
     '/:id/convert',
     authMiddleware,
@@ -318,7 +406,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   );
 
   // ─── DELETE /api/v1/leads/:id ─────────────────────────────────────
-  /** Soft-delete a lead — requires lead:delete */
   router.delete(
     '/:id',
     authMiddleware,

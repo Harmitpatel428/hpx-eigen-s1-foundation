@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, OpportunityCurrency } from '@prisma/client';
+import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, ResourceNotFoundError } from '../types/exceptions';
 import { AuthorizationDecision } from '../types/authorization';
@@ -37,6 +37,14 @@ export interface CreateLeadInput {
   score?: number;
   stage?: LeadStage;
   expectedValue?: number | string;
+  priority?: LeadPriority;
+  expectedCloseDate?: string | Date;
+  country?: string;
+  state?: string;
+  city?: string;
+  area?: string;
+  postalCode?: string;
+  tagNames?: string[];
 }
 
 export interface UpdateLeadInput {
@@ -52,6 +60,14 @@ export interface UpdateLeadInput {
   score?: number;
   stage?: LeadStage;
   expectedValue?: number | string;
+  priority?: LeadPriority;
+  expectedCloseDate?: string | Date | null;
+  country?: string;
+  state?: string;
+  city?: string;
+  area?: string;
+  postalCode?: string;
+  tagNames?: string[];
 }
 
 export interface FindAllLeadsOptions {
@@ -69,11 +85,44 @@ export interface PaginatedLeads {
   pageSize: number;
 }
 
+export interface DuplicateCheckInput {
+  email?: string;
+  phone?: string;
+  company?: string;
+  firstName?: string;
+  lastName?: string;
+  excludeId?: string;
+}
+
 export class LeadService {
   private readonly audit: AuditService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.audit = new AuditService(prisma);
+  }
+
+  /** Resolve tag names to tag IDs within a transaction, creating missing tags. */
+  private async resolveTagIds(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    tagNames: string[]
+  ): Promise<string[]> {
+    if (!tagNames.length) return [];
+
+    const tagIds: string[] = [];
+    for (const name of tagNames) {
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+
+      const tag = await (tx as any).leadTag.upsert({
+        where: { tenantId_name: { tenantId, name: trimmed } },
+        create: { tenantId, name: trimmed },
+        update: { usageCount: { increment: 1 } },
+        select: { id: true },
+      });
+      tagIds.push(tag.id);
+    }
+    return tagIds;
   }
 
   /** Create a new lead */
@@ -98,10 +147,30 @@ export class LeadService {
           expectedValue: input.expectedValue !== undefined
             ? new Prisma.Decimal(input.expectedValue)
             : new Prisma.Decimal(0),
+          priority: input.priority ?? LeadPriority.MEDIUM,
+          expectedCloseDate: input.expectedCloseDate
+            ? new Date(input.expectedCloseDate)
+            : null,
+          country: input.country ?? null,
+          state: input.state ?? null,
+          city: input.city ?? null,
+          area: input.area ?? null,
+          postalCode: input.postalCode ?? null,
           notes: input.notes ?? null,
-          ownerId: input.ownerId ?? null
-        }
+          ownerId: input.ownerId ?? null,
+        },
       });
+
+      // Assign tags
+      if (input.tagNames?.length) {
+        const tagIds = await this.resolveTagIds(tx, ctx.tenantId, input.tagNames);
+        if (tagIds.length) {
+          await (tx as any).leadTagAssignment.createMany({
+            data: tagIds.map((tagId) => ({ leadId: created.id, tagId })),
+            skipDuplicates: true,
+          });
+        }
+      }
 
       const txAudit = new AuditService(tx as any);
       await txAudit.log({
@@ -113,45 +182,67 @@ export class LeadService {
         operation: 'CREATE',
         payload: { firstName: input.firstName, lastName: input.lastName, source: input.source },
         beforeState: null,
-        afterState: created as unknown as Record<string, unknown>
+        afterState: created as unknown as Record<string, unknown>,
       });
 
       return created;
     });
 
-    return lead;
+    return this.getLeadWithTags(ctx, lead.id);
   }
 
-  /** Get a single lead by ID */
+  /** Get a single lead by ID, including tags */
   async getLeadById(ctx: TenantContext, leadId: string) {
     const lead = await this.prisma.lead.findUnique({
-      where: { id: leadId }
+      where: { id: leadId },
     });
     if (!lead) throw new ResourceNotFoundError();
     return lead;
   }
 
+  /** Get lead with tag assignments */
+  private async getLeadWithTags(ctx: TenantContext, leadId: string) {
+    const lead = await (this.prisma as any).lead.findUnique({
+      where: { id: leadId },
+      include: {
+        tags: {
+          include: { tag: true },
+        },
+      },
+    });
+    if (!lead) throw new ResourceNotFoundError();
+    return {
+      ...lead,
+      tags: (lead.tags ?? []).map((a: any) => a.tag),
+    };
+  }
+
   /** List leads with optional filters, search, and pagination */
-  async listLeads(ctx: TenantContext, decision: AuthorizationDecision | undefined, options?: FindAllLeadsOptions): Promise<PaginatedLeads> {
-    if (decision && !decision.allowed) throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
-    
+  async listLeads(
+    ctx: TenantContext,
+    decision: AuthorizationDecision | undefined,
+    options?: FindAllLeadsOptions
+  ): Promise<PaginatedLeads> {
+    if (decision && !decision.allowed)
+      throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
+
     const page = options?.page ?? 1;
     const pageSize = options?.pageSize ?? 50;
     const skip = (page - 1) * pageSize;
 
     const searchWhere: Prisma.LeadWhereInput[] | undefined = options?.search
       ? [
-          { firstName: { contains: options.search, mode: 'insensitive' } },
-          { lastName: { contains: options.search, mode: 'insensitive' } },
-          { company: { contains: options.search, mode: 'insensitive' } },
-          { email: { contains: options.search, mode: 'insensitive' } }
+          { firstName: { contains: options.search, mode: Prisma.QueryMode.insensitive } },
+          { lastName:  { contains: options.search, mode: Prisma.QueryMode.insensitive } },
+          { company:   { contains: options.search, mode: Prisma.QueryMode.insensitive } },
+          { email:     { contains: options.search, mode: Prisma.QueryMode.insensitive } },
         ]
       : undefined;
 
     const where: Prisma.LeadWhereInput = {
       ...(options?.status ? { status: options.status } : {}),
       ...(options?.ownerId ? { ownerId: options.ownerId } : {}),
-      ...(searchWhere ? { OR: searchWhere } : {})
+      ...(searchWhere ? { OR: searchWhere } : {}),
     };
 
     const [data, total] = await Promise.all([
@@ -159,25 +250,23 @@ export class LeadService {
         where,
         orderBy: { createdAt: 'desc' },
         skip,
-        take: pageSize
+        take: pageSize,
       }),
-      this.prisma.lead.count({ where })
+      this.prisma.lead.count({ where }),
     ]);
 
     return { data, total, page, pageSize };
   }
 
-  /** List leads by status */
-  async listLeadsByStatus(ctx: TenantContext, status: LeadStatus) {
-    return this.prisma.lead.findMany({
-      where: { status },
-      orderBy: { createdAt: 'desc' }
-    });
-  }
+  async updateLead(
+    ctx: TenantContext,
+    decision: AuthorizationDecision | undefined,
+    leadId: string,
+    input: UpdateLeadInput
+  ) {
+    if (decision && !decision.allowed)
+      throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
 
-  async updateLead(ctx: TenantContext, decision: AuthorizationDecision | undefined, leadId: string, input: UpdateLeadInput) {
-    if (decision && !decision.allowed) throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
-    
     const beforeLead = await this.getLeadById(ctx, leadId);
 
     const lead = await this.prisma.$transaction(async (tx) => {
@@ -197,10 +286,33 @@ export class LeadService {
           ...(input.score !== undefined ? { score: input.score } : {}),
           ...(input.expectedValue !== undefined
             ? { expectedValue: new Prisma.Decimal(input.expectedValue) }
-            : {})
-        }
+            : {}),
+          ...(input.priority !== undefined ? { priority: input.priority } : {}),
+          ...('expectedCloseDate' in input
+            ? { expectedCloseDate: input.expectedCloseDate ? new Date(input.expectedCloseDate) : null }
+            : {}),
+          ...(input.country !== undefined ? { country: input.country } : {}),
+          ...(input.state !== undefined ? { state: input.state } : {}),
+          ...(input.city !== undefined ? { city: input.city } : {}),
+          ...(input.area !== undefined ? { area: input.area } : {}),
+          ...(input.postalCode !== undefined ? { postalCode: input.postalCode } : {}),
+        },
       });
-      
+
+      // Replace tag assignments if tagNames provided
+      if (Array.isArray(input.tagNames)) {
+        await (tx as any).leadTagAssignment.deleteMany({ where: { leadId } });
+        if (input.tagNames.length) {
+          const tagIds = await this.resolveTagIds(tx, ctx.tenantId, input.tagNames);
+          if (tagIds.length) {
+            await (tx as any).leadTagAssignment.createMany({
+              data: tagIds.map((tagId) => ({ leadId, tagId })),
+              skipDuplicates: true,
+            });
+          }
+        }
+      }
+
       const txAudit = new AuditService(tx as any);
       await txAudit.log({
         tenantId: ctx.tenantId,
@@ -211,13 +323,67 @@ export class LeadService {
         operation: 'UPDATE',
         payload: { changes: input },
         beforeState: beforeLead as unknown as Record<string, unknown>,
-        afterState: updated as unknown as Record<string, unknown>
+        afterState: updated as unknown as Record<string, unknown>,
       });
 
       return updated;
     });
 
-    return lead;
+    return this.getLeadWithTags(ctx, lead.id);
+  }
+
+  /**
+   * Check for potential duplicate leads.
+   * Returns leads that match on email, phone, or company+name combination.
+   * Does NOT block creation — purely informational.
+   */
+  async checkDuplicates(ctx: TenantContext, input: DuplicateCheckInput): Promise<any[]> {
+    const conditions: Prisma.LeadWhereInput[] = [];
+
+    if (input.email) {
+      conditions.push({ email: { equals: input.email, mode: Prisma.QueryMode.insensitive } });
+    }
+    if (input.phone) {
+      conditions.push({ phone: input.phone });
+    }
+    if (input.company && (input.firstName || input.lastName)) {
+      const nameOr: Prisma.LeadWhereInput[] = [];
+      if (input.firstName) nameOr.push({ firstName: { contains: input.firstName, mode: Prisma.QueryMode.insensitive } });
+      if (input.lastName) nameOr.push({ lastName: { contains: input.lastName, mode: Prisma.QueryMode.insensitive } });
+      conditions.push({
+        AND: [
+          { company: { contains: input.company, mode: Prisma.QueryMode.insensitive } },
+          { OR: nameOr },
+        ],
+      });
+    }
+
+    if (!conditions.length) return [];
+
+    const where: Prisma.LeadWhereInput = {
+      tenantId: ctx.tenantId,
+      deletedAt: { equals: null },
+      OR: conditions,
+      ...(input.excludeId ? { id: { not: input.excludeId } } : {}),
+    };
+
+    return this.prisma.lead.findMany({
+      where,
+      take: 5,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        company: true,
+        stage: true,
+        status: true,
+        ownerId: true,
+        createdAt: true,
+      },
+    });
   }
 
   /**
@@ -240,8 +406,8 @@ export class LeadService {
           email: input.contact.email ?? null,
           phone: input.contact.phone ?? null,
           title: input.contact.title ?? null,
-          company: input.contact.company ?? lead.company ?? null
-        }
+          company: input.contact.company ?? lead.company ?? null,
+        },
       });
 
       const opportunity = await tx.opportunity.create({
@@ -253,8 +419,8 @@ export class LeadService {
           title: input.opportunity.title,
           value: input.opportunity.value,
           currency: input.opportunity.currency ?? OpportunityCurrency.INR,
-          expectedCloseDate: input.opportunity.expectedCloseDate ?? null
-        }
+          expectedCloseDate: input.opportunity.expectedCloseDate ?? null,
+        },
       });
 
       await tx.pipeline.create({
@@ -262,13 +428,13 @@ export class LeadService {
           tenantId: ctx.tenantId,
           opportunityId: opportunity.id,
           stage: opportunity.stage,
-          enteredAt: new Date()
-        }
+          enteredAt: new Date(),
+        },
       });
 
       await tx.lead.update({
         where: { id: leadId },
-        data: { status: LeadStatus.CONVERTED }
+        data: { status: LeadStatus.CONVERTED },
       });
 
       return { contact, opportunity };
@@ -284,8 +450,8 @@ export class LeadService {
       payload: {
         contactId: result.contact.id,
         opportunityId: result.opportunity.id,
-        opportunityTitle: input.opportunity.title
-      }
+        opportunityTitle: input.opportunity.title,
+      },
     });
 
     return result;
@@ -293,11 +459,11 @@ export class LeadService {
 
   /** Soft-delete a lead */
   async deleteLead(ctx: TenantContext, leadId: string) {
-    const lead = await this.getLeadById(ctx, leadId);
-    
+    await this.getLeadById(ctx, leadId);
+
     await this.prisma.lead.update({
       where: { id: leadId },
-      data: { deletedAt: new Date() }
+      data: { deletedAt: new Date() },
     });
 
     await this.audit.log({
@@ -307,7 +473,7 @@ export class LeadService {
       entityId: leadId,
       actorUserId: ctx.userId,
       operation: 'DELETE',
-      payload: {}
+      payload: {},
     });
   }
 }

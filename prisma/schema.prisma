@@ -315,6 +315,13 @@ model AuditLog {
 // S2 CRM DOMAIN
 // ═══════════════════════════════════════════════════════════════════
 
+enum LeadPriority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
 enum LeadStatus {
   NEW
   CONTACTED
@@ -367,32 +374,72 @@ enum ActivityType {
 
 // ─── Lead ─────────────────────────────────────────────────────────
 model Lead {
-  id            String     @id @default(uuid()) @db.Uuid
-  tenantId      String     @db.Uuid
-  firstName     String
-  lastName      String
-  email         String?
-  phone         String?
-  company       String?
-  source        LeadSource @default(OTHER)
-  status        LeadStatus @default(NEW)
-  stage         LeadStage  @default(NEW)
-  score         Int        @default(0)
-  expectedValue Decimal    @default(0) @db.Decimal(18, 2)
-  ownerId       String?    @db.Uuid
-  notes         String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  deletedAt     DateTime?
+  id                String       @id @default(uuid()) @db.Uuid
+  tenantId          String       @db.Uuid
+  firstName         String
+  lastName          String
+  email             String?
+  phone             String?
+  company           String?
+  source            LeadSource   @default(OTHER)
+  status            LeadStatus   @default(NEW)
+  stage             LeadStage    @default(NEW)
+  score             Int          @default(0)
+  expectedValue     Decimal      @default(0) @db.Decimal(18, 2)
+  priority          LeadPriority @default(MEDIUM)
+  expectedCloseDate DateTime?
+  country           String?
+  state             String?
+  city              String?
+  area              String?
+  postalCode        String?
+  ownerId           String?      @db.Uuid
+  notes             String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  deletedAt         DateTime?
 
   contacts      Contact[]
   opportunities Opportunity[]
   docCases      DocCase[]
+  tags          LeadTagAssignment[]
 
   @@index([tenantId])
   @@index([tenantId, status])
+  @@index([tenantId, priority])
   @@index([tenantId, ownerId])
   @@index([deletedAt])
+}
+
+// ─── LeadTag — tenant-scoped tag catalog ─────────────────────────
+model LeadTag {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @db.Uuid
+  name       String
+  color      String?   @default("#6366f1")
+  usageCount Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  assignments LeadTagAssignment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([deletedAt])
+}
+
+// ─── LeadTagAssignment — many-to-many junction ───────────────────
+model LeadTagAssignment {
+  leadId String @db.Uuid
+  tagId  String @db.Uuid
+
+  lead Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  tag  LeadTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([leadId, tagId])
+  @@index([leadId])
+  @@index([tagId])
 }
 
 // ─── Contact ──────────────────────────────────────────────────────
@@ -406,6 +453,8 @@ model Contact {
   phone     String?
   title     String?
   company   String?
+  role      String?
+  isMain    Boolean   @default(false)
   ownerId   String?   @db.Uuid
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
