@@ -32,10 +32,11 @@ import { createTeamsRouter } from './routes/teams.router';
 // ─── Route Factories (S4 Documentation Tracker) ───────────────────────────────
 import { createDocumentationRouter } from './routes/documentation.router';
 
-// ─── Route Factories (Lead Tags + Lead Contacts + Lead Fields) ───────────────
+// ─── Route Factories (Lead Tags + Lead Contacts + Lead Fields + Lead Notes) ───
 import { createLeadTagsRouter } from './routes/lead-tags.router';
 import { createLeadContactsRouter } from './routes/lead-contacts.router';
 import { createLeadFieldsRouter } from './routes/lead-fields.router';
+import { createLeadNotesRouter } from './routes/lead-notes.router';
 
 // ─── Invitation Routes (legacy paths — kept for backward compat) ──────────────
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
@@ -119,10 +120,11 @@ app.use('/api/v1/teams', createTeamsRouter(prisma));
 // ─── S4 Documentation Tracker ─────────────────────────────────────────────────
 app.use('/api/v1/documentation', createDocumentationRouter(prisma));
 
-// ─── Lead Tags + Lead Contacts ────────────────────────────────────────────────
+// ─── Lead Tags + Lead Contacts + Lead Notes ────────────────────────────────────
 app.use('/api/v1/lead-tags', createLeadTagsRouter(prisma));
 app.use('/api/v1/lead-fields', createLeadFieldsRouter(prisma));
 app.use('/api/v1/leads/:leadId/contacts', createLeadContactsRouter(prisma));
+app.use('/api/v1/leads/:leadId/notes', createLeadNotesRouter(prisma));
 
 // ─── Dashboard Router ─────────────────────────────────────────────────────────
 import { createDashboardRouter } from './routes/dashboard.router';

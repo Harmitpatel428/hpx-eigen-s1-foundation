@@ -59,7 +59,7 @@ export class LeadNotesService {
   async updateNote(
     ctx: TenantContext,
     noteId: string,
-    content: string,
+    content?: string,
     followUpDate?: Date | null,
     followUpTime?: string | null
   ) {
