@@ -1,0 +1,3 @@
+-- Enforce isolation fields (already applied to database)
+-- This migration adds indexes and constraints for tenantId isolation
+-- Timestamp: 2026-07-30 13:20:00

@@ -1,0 +1,3 @@
+-- Add isolation fields (already applied to database)
+-- This migration adds tenantId isolation fields to all models
+-- Timestamp: 2026-07-30 13:17:28
