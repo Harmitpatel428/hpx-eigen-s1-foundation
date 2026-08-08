@@ -61,10 +61,11 @@ export const prisma = basePrisma.$extends({
           operation === 'update' ||
           operation === 'delete'
         ) {
+          const where = (queryArgs.where as Record<string, unknown> || {});
           queryArgs.where = {
-            ...(queryArgs.where as object || {}),
+            ...where,
             tenantId: ctx.tenantId,
-            ...(model !== 'AuditLog' ? { deletedAt: { equals: null } } : {})
+            ...(model !== 'AuditLog' && !where.deletedAt ? { deletedAt: { equals: null } } : {})
           };
         } else if (operation === 'create') {
           queryArgs.data = {

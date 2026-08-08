@@ -44,6 +44,8 @@ export interface CreateLeadInput {
   city?: string;
   area?: string;
   postalCode?: string;
+  freeformAddress?: string;
+  customFieldValues?: Array<{ fieldId: string; value: string | null }>;
   tagNames?: string[];
 }
 
@@ -67,6 +69,8 @@ export interface UpdateLeadInput {
   city?: string;
   area?: string;
   postalCode?: string;
+  freeformAddress?: string | null;
+  customFieldValues?: Array<{ fieldId: string; value: string | null }>;
   tagNames?: string[];
 }
 
@@ -156,9 +160,11 @@ export class LeadService {
           city: input.city ?? null,
           area: input.area ?? null,
           postalCode: input.postalCode ?? null,
+          freeformAddress: input.freeformAddress ?? null,
+          customFieldValues: input.customFieldValues ?? [],
           notes: input.notes ?? null,
           ownerId: input.ownerId ?? null,
-        },
+        } as any,
       });
 
       // Assign tags
@@ -296,7 +302,9 @@ export class LeadService {
           ...(input.city !== undefined ? { city: input.city } : {}),
           ...(input.area !== undefined ? { area: input.area } : {}),
           ...(input.postalCode !== undefined ? { postalCode: input.postalCode } : {}),
-        },
+          ...(input.freeformAddress !== undefined ? { freeformAddress: input.freeformAddress } : {}),
+          ...(input.customFieldValues !== undefined ? { customFieldValues: input.customFieldValues } : {}),
+        } as any,
       });
 
       // Replace tag assignments if tagNames provided
@@ -475,5 +483,131 @@ export class LeadService {
       operation: 'DELETE',
       payload: {},
     });
+  }
+
+  /** Bulk soft-delete */
+  async bulkSoftDelete(ctx: TenantContext, leadIds: string[]) {
+    const result = await this.prisma.lead.updateMany({
+      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'LEADS_BULK_DELETED',
+      entityType: 'Lead',
+      entityId: leadIds.join(','),
+      actorUserId: ctx.userId,
+      operation: 'DELETE',
+      payload: { count: result.count },
+    });
+
+    return { count: result.count };
+  }
+
+  /** List soft-deleted leads */
+  async listDeleted(ctx: TenantContext, page = 1, pageSize = 50) {
+    const where: Prisma.LeadWhereInput = {
+      tenantId: ctx.tenantId,
+      deletedAt: { not: null },
+    };
+
+    const [data, total] = await Promise.all([
+      (this.prisma as any).lead.findMany({
+        where,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        orderBy: { deletedAt: 'desc' },
+        include: { tags: { include: { tag: true } } },
+      }),
+      this.prisma.lead.count({ where }),
+    ]);
+
+    const enriched = data.map((l: any) => ({
+      ...l,
+      tags: (l.tags ?? []).map((a: any) => a.tag),
+    }));
+
+    return { data: enriched, total, page, pageSize };
+  }
+
+  /** Restore a soft-deleted lead */
+  async restoreLead(ctx: TenantContext, leadId: string) {
+    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+    if (!lead || lead.tenantId !== ctx.tenantId) throw new ResourceNotFoundError();
+    if (!lead.deletedAt) throw new ValidationError('Lead is not deleted.');
+
+    await this.prisma.lead.update({
+      where: { id: leadId },
+      data: { deletedAt: null },
+    });
+
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'LEAD_RESTORED',
+      entityType: 'Lead',
+      entityId: leadId,
+      actorUserId: ctx.userId,
+      operation: 'UPDATE',
+      payload: {},
+    });
+  }
+
+  /** Bulk restore soft-deleted leads */
+  async bulkRestore(ctx: TenantContext, leadIds: string[]) {
+    const result = await this.prisma.lead.updateMany({
+      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: { not: null } },
+      data: { deletedAt: null },
+    });
+
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'LEADS_BULK_RESTORED',
+      entityType: 'Lead',
+      entityId: leadIds.join(','),
+      actorUserId: ctx.userId,
+      operation: 'UPDATE',
+      payload: { count: result.count },
+    });
+
+    return { count: result.count };
+  }
+
+  /** Permanently delete a lead */
+  async permanentDeleteLead(ctx: TenantContext, leadId: string) {
+    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+    if (!lead || lead.tenantId !== ctx.tenantId) throw new ResourceNotFoundError();
+    if (!lead.deletedAt) throw new ValidationError('Lead must be soft-deleted before permanent deletion.');
+
+    await this.prisma.lead.delete({ where: { id: leadId } });
+
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'LEAD_PERMANENTLY_DELETED',
+      entityType: 'Lead',
+      entityId: leadId,
+      actorUserId: ctx.userId,
+      operation: 'DELETE',
+      payload: { firstName: lead.firstName, lastName: lead.lastName },
+    });
+  }
+
+  /** Bulk permanently delete leads */
+  async bulkPermanentDelete(ctx: TenantContext, leadIds: string[]) {
+    const result = await this.prisma.lead.deleteMany({
+      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: { not: null } },
+    });
+
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'LEADS_BULK_PERMANENTLY_DELETED',
+      entityType: 'Lead',
+      entityId: leadIds.join(','),
+      actorUserId: ctx.userId,
+      operation: 'DELETE',
+      payload: { count: result.count },
+    });
+
+    return { count: result.count };
   }
 }

@@ -44,6 +44,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           city,
           area,
           postalCode,
+          freeformAddress,
+          customFieldValues,
           tagNames,
         } = req.body as {
           firstName: string;
@@ -64,11 +66,20 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           city?: string;
           area?: string;
           postalCode?: string;
+          freeformAddress?: string;
+          customFieldValues?: Array<{ fieldId: string; value: string | null }>;
           tagNames?: string[];
         };
 
         if (!firstName || !lastName) {
           throw new ValidationError('firstName and lastName are required.');
+        }
+
+        if (Array.isArray(customFieldValues)) {
+          if (customFieldValues.length > 50) throw new ValidationError('Maximum 50 custom field values per lead.');
+          for (const v of customFieldValues) {
+            if (typeof v.value === 'string' && v.value.length > 1000) throw new ValidationError('Custom field value must be 1,000 characters or fewer.');
+          }
         }
 
         if (stage && !Object.values(LeadStage).includes(stage)) {
@@ -104,6 +115,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             city,
             area,
             postalCode,
+            freeformAddress,
+            customFieldValues: Array.isArray(customFieldValues) ? customFieldValues : undefined,
             tagNames: Array.isArray(tagNames) ? tagNames : undefined,
           }
         );
@@ -139,6 +152,87 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         );
 
         res.json({ data: duplicates });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── GET /api/v1/leads/deleted ──────────────────────────────────
+  // Must be defined before /:id to avoid route conflict
+  router.get(
+    '/deleted',
+    authMiddleware,
+    permissionMiddleware('lead:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+        const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string, 10) : 50;
+        if (page < 1 || isNaN(page)) throw new ValidationError('page must be a positive integer.');
+        if (pageSize < 1 || pageSize > 200 || isNaN(pageSize)) throw new ValidationError('pageSize must be between 1 and 200.');
+        const result = await leadService.listDeleted({ tenantId, userId }, page, pageSize);
+        res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── POST /api/v1/leads/bulk-delete ─────────────────────────────
+  // Must be defined before /:id to avoid route conflict
+  router.post(
+    '/bulk-delete',
+    authMiddleware,
+    permissionMiddleware('lead:delete'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { ids } = req.body as { ids: string[] };
+        if (!Array.isArray(ids) || ids.length === 0) throw new ValidationError('ids array is required.');
+        if (ids.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
+        const result = await leadService.bulkSoftDelete({ tenantId, userId }, ids);
+        res.json({ data: result });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── POST /api/v1/leads/bulk-restore ────────────────────────────
+  // Must be defined before /:id to avoid route conflict
+  router.post(
+    '/bulk-restore',
+    authMiddleware,
+    permissionMiddleware('lead:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { ids } = req.body as { ids: string[] };
+        if (!Array.isArray(ids) || ids.length === 0) throw new ValidationError('ids array is required.');
+        if (ids.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
+        const result = await leadService.bulkRestore({ tenantId, userId }, ids);
+        res.json({ data: result });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── POST /api/v1/leads/bulk-permanent-delete ───────────────────
+  // Must be defined before /:id to avoid route conflict
+  router.post(
+    '/bulk-permanent-delete',
+    authMiddleware,
+    permissionMiddleware('lead:delete'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { ids } = req.body as { ids: string[] };
+        if (!Array.isArray(ids) || ids.length === 0) throw new ValidationError('ids array is required.');
+        if (ids.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
+        const result = await leadService.bulkPermanentDelete({ tenantId, userId }, ids);
+        res.json({ data: result });
       } catch (err) {
         next(err);
       }
@@ -278,6 +372,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           city,
           area,
           postalCode,
+          freeformAddress,
+          customFieldValues,
           tagNames,
         } = req.body as {
           firstName?: string;
@@ -299,8 +395,17 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           city?: string;
           area?: string;
           postalCode?: string;
+          freeformAddress?: string | null;
+          customFieldValues?: Array<{ fieldId: string; value: string | null }>;
           tagNames?: string[];
         };
+
+        if (Array.isArray(customFieldValues)) {
+          if (customFieldValues.length > 50) throw new ValidationError('Maximum 50 custom field values per lead.');
+          for (const v of customFieldValues) {
+            if (typeof v.value === 'string' && v.value.length > 1000) throw new ValidationError('Custom field value must be 1,000 characters or fewer.');
+          }
+        }
 
         if (stage && !Object.values(LeadStage).includes(stage)) {
           throw new ValidationError(
@@ -338,6 +443,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             city,
             area,
             postalCode,
+            freeformAddress,
+            customFieldValues: Array.isArray(customFieldValues) ? customFieldValues : undefined,
             tagNames: Array.isArray(tagNames) ? tagNames : undefined,
           }
         );
@@ -414,6 +521,38 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
         await leadService.deleteLead({ tenantId, userId }, req.params.id);
+        res.status(204).send();
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── POST /api/v1/leads/:id/restore ─────────────────────────────
+  router.post(
+    '/:id/restore',
+    authMiddleware,
+    permissionMiddleware('lead:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        await leadService.restoreLead({ tenantId, userId }, req.params.id);
+        res.json({ message: 'Lead restored.' });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── DELETE /api/v1/leads/:id/permanent ─────────────────────────
+  router.delete(
+    '/:id/permanent',
+    authMiddleware,
+    permissionMiddleware('lead:delete'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        await leadService.permanentDeleteLead({ tenantId, userId }, req.params.id);
         res.status(204).send();
       } catch (err) {
         next(err);

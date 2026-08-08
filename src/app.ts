@@ -32,9 +32,10 @@ import { createTeamsRouter } from './routes/teams.router';
 // ─── Route Factories (S4 Documentation Tracker) ───────────────────────────────
 import { createDocumentationRouter } from './routes/documentation.router';
 
-// ─── Route Factories (Lead Tags + Lead Contacts) ──────────────────────────────
+// ─── Route Factories (Lead Tags + Lead Contacts + Lead Fields) ───────────────
 import { createLeadTagsRouter } from './routes/lead-tags.router';
 import { createLeadContactsRouter } from './routes/lead-contacts.router';
+import { createLeadFieldsRouter } from './routes/lead-fields.router';
 
 // ─── Invitation Routes (legacy paths — kept for backward compat) ──────────────
 import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
@@ -76,14 +77,14 @@ const allowedOrigins = [
 const corsOptions = {
   origin: true, // Reflects the request origin, allowing Vercel
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-department-id', 'x-department-context'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-tenant-id', 'x-department-id', 'x-department-context'],
   credentials: true,
   optionsSuccessStatus: 204
 };
 
 app.use(cors(corsOptions));
 
-app.use(express.json());
+app.use(express.json({ limit: '512kb' }));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req: Request, res: Response) => {
@@ -120,6 +121,7 @@ app.use('/api/v1/documentation', createDocumentationRouter(prisma));
 
 // ─── Lead Tags + Lead Contacts ────────────────────────────────────────────────
 app.use('/api/v1/lead-tags', createLeadTagsRouter(prisma));
+app.use('/api/v1/lead-fields', createLeadFieldsRouter(prisma));
 app.use('/api/v1/leads/:leadId/contacts', createLeadContactsRouter(prisma));
 
 // ─── Dashboard Router ─────────────────────────────────────────────────────────
