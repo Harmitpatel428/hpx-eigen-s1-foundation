@@ -24,6 +24,7 @@ import { createPipelineRouter } from './routes/pipeline.router';
 import { createInvoicesRouter } from './routes/invoices.router';
 import { createPaymentsRouter } from './routes/payments.router';
 import { createOpportunityTypesRouter } from './routes/opportunity-types.router';
+import { createCrmSettingsRouter } from './routes/crm-settings.router';
 
 // ─── Route Factories (Org Hierarchy) ─────────────────────────────────────────
 import { createDepartmentsRouter } from './routes/departments.router';
@@ -112,6 +113,7 @@ app.use('/api/v1/payments', createPaymentsRouter(prisma));
 
 // ─── Settings Domain Routers ──────────────────────────────────────────────────
 app.use('/api/v1/settings/opportunity-types', createOpportunityTypesRouter(prisma));
+app.use('/api/v1/settings/crm', createCrmSettingsRouter(prisma));
 
 // ─── Org Hierarchy Routers ────────────────────────────────────────────────────
 app.use('/api/v1/departments', createDepartmentsRouter(prisma));
