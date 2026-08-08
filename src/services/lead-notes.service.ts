@@ -6,10 +6,37 @@ export class LeadNotesService {
   constructor(private prisma: PrismaClient) {}
 
   /**
+   * Get notes summary: count + latest note
+   * Used by Lead Info modal to avoid fetching all notes
+   */
+  async getNotesSummary(ctx: TenantContext, leadId: string) {
+    // Verify Lead exists and belongs to tenant
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenantId: ctx.tenantId },
+    });
+    if (!lead) throw { code: 'LEAD_NOT_FOUND' };
+
+    // Count active notes
+    const count = await this.prisma.leadNote.count({
+      where: { leadId, tenantId: ctx.tenantId, deletedAt: null },
+    });
+
+    // Get latest active note
+    const latest = await this.prisma.leadNote.findFirst({
+      where: { leadId, tenantId: ctx.tenantId, deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, content: true, createdAt: true, authorId: true },
+    });
+
+    return { count, latest };
+  }
+
+  /**
    * Create a new lead note
    * - 500 char max (server-side enforced)
    * - XSS-safe: plain text only
    * - Tenant-scoped
+   * - 15-note max enforced server-side
    */
   async createNote(
     ctx: TenantContext,
@@ -31,6 +58,14 @@ export class LeadNotesService {
       where: { id: leadId, tenantId: ctx.tenantId },
     });
     if (!lead) throw { code: 'LEAD_NOT_FOUND' };
+
+    // CRITICAL: Check 15-note limit (server-side enforcement, race-safe via DB constraint)
+    const activeNoteCount = await this.prisma.leadNote.count({
+      where: { leadId, tenantId: ctx.tenantId, deletedAt: null },
+    });
+    if (activeNoteCount >= 15) {
+      throw { code: 'NOTES_LIMIT_EXCEEDED', message: 'Maximum of 15 notes reached for this lead' };
+    }
 
     // Validate follow-up if provided
     if (followUpDate && isNaN(followUpDate.getTime())) {

@@ -8,6 +8,24 @@ export function createLeadNotesRouter(prisma: PrismaClient): Router {
   const router = Router({ mergeParams: true });
   const notesService = new LeadNotesService(prisma);
 
+  // GET /api/v1/leads/:leadId/notes/summary (count + latest)
+  router.get(
+    '/summary',
+    authMiddleware,
+    permissionMiddleware('lead:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const { leadId } = req.params;
+
+        const summary = await notesService.getNotesSummary({ tenantId, userId }, leadId);
+        res.json({ data: summary });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
   // GET /api/v1/leads/:leadId/notes
   router.get(
     '/',
@@ -17,7 +35,7 @@ export function createLeadNotesRouter(prisma: PrismaClient): Router {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
         const { leadId } = req.params;
-        const { limit = '100', skip = '0' } = req.query;
+        const { limit = '15', skip = '0' } = req.query;
 
         const notes = await notesService.listNotes(
           { tenantId, userId },
