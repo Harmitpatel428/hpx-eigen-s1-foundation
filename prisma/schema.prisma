@@ -405,12 +405,33 @@ model Lead {
   opportunities Opportunity[]
   docCases      DocCase[]
   tags          LeadTagAssignment[]
+  leadNotes     LeadNote[] @relation("LeadNotes")
 
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([tenantId, priority])
   @@index([tenantId, ownerId])
   @@index([deletedAt])
+}
+
+// ─── LeadNote — chronological note history with same-day editing ─────
+model LeadNote {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @db.Uuid
+  leadId        String    @db.Uuid
+  authorId      String    @db.Uuid
+  content       String    @db.VarChar(500)
+  followUpDate  DateTime?
+  followUpTime  String?   // HH:mm stored as string for timezone handling
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  lead Lead @relation("LeadNotes", fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@index([tenantId])
+  @@index([createdAt])
 }
 
 // ─── LeadFieldDef — tenant-scoped custom field definitions ──────
