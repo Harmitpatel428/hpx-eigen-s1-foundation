@@ -533,9 +533,8 @@ export class LeadService {
 
   /** Restore a soft-deleted lead */
   async restoreLead(ctx: TenantContext, leadId: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.tenantId !== ctx.tenantId) throw new ResourceNotFoundError();
-    if (!lead.deletedAt) throw new ValidationError('Lead is not deleted.');
+    const lead = await this.prisma.lead.findFirst({ where: { id: leadId, tenantId: ctx.tenantId, deletedAt: { not: null } } });
+    if (!lead) throw new ResourceNotFoundError();
 
     await this.prisma.lead.update({
       where: { id: leadId },
