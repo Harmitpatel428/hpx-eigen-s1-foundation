@@ -1079,8 +1079,8 @@ model TenantSettings {
   allowedIpRanges       String[] @default([])
   version               Int      @default(1)
   updatedAt             DateTime @updatedAt
-  // 'name' | 'company' | 'phone' — set once, immutable after; NULL means unconfigured
-  leadHeaderPreference  String?
+  // 'name' | 'company' — org-level setting, mutable by role:manage; default 'name'
+  leadHeaderPreference  String   @default("name")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }

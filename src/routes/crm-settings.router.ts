@@ -2,25 +2,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError } from '../types/exceptions';
-import { AppException, RetryTag } from '../types/exceptions';
 
-const VALID_PREFS = new Set(['name', 'company', 'phone']);
-
-class AlreadyConfiguredError extends AppException {
-  constructor() {
-    super(
-      'ALREADY_CONFIGURED',
-      'Lead header preference is already configured and cannot be changed.',
-      RetryTag.NON_RETRYABLE,
-      409,
-    );
-  }
-}
+const VALID_PREFS = new Set(['name', 'company']);
 
 export function createCrmSettingsRouter(prisma: PrismaClient): Router {
   const router = Router();
 
-  // ponytail: 'as any' casts below — Prisma client locked by running server; regenerate on next restart
+  // ponytail: 'as any' cast — Prisma client locked by running server; regenerate on next restart
   const db = prisma as any;
 
   // GET /api/v1/settings/crm — returns CRM config for this tenant (auth only, no RBAC)
@@ -32,7 +20,7 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
     } catch (err) { next(err); }
   });
 
-  // POST /api/v1/settings/crm/lead-header — set once; server enforces immutability
+  // POST /api/v1/settings/crm/lead-header — org-level setting; role:manage gate, freely mutable
   router.post(
     '/lead-header',
     authMiddleware,
@@ -43,12 +31,7 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
         const { preference } = req.body as { preference?: string };
 
         if (!preference || !VALID_PREFS.has(preference)) {
-          throw new ValidationError('preference must be one of: name, company, phone');
-        }
-
-        const existing = await db.tenantSettings.findUnique({ where: { tenantId } });
-        if (existing?.leadHeaderPreference != null) {
-          throw new AlreadyConfiguredError();
+          throw new ValidationError('preference must be one of: name, company');
         }
 
         await db.tenantSettings.upsert({
