@@ -24,24 +24,23 @@ export function createUsersRouter(prisma: PrismaClient): Router {
           userRoles: {
             include: {
               role: {
-                include: { permissions: true }
+                include: { permissions: { include: { permission: true } } }
               }
             }
           }
         }
       });
-      
+
       if (!user) {
         return res.status(404).json({
           success: false,
           error: { code: 'USER_NOT_FOUND', message: 'User profile not found.' }
         });
       }
-      
-      // Transform user to include flattened permissions if needed
+
       const permissions = user.userRoles.reduce((acc: any, ur: any) => {
-        ur.role.permissions.forEach((p: any) => {
-          acc[p.permissionId] = true;
+        ur.role.permissions.forEach((rp: any) => {
+          acc[rp.permission.slug] = true;
         });
         return acc;
       }, {});
