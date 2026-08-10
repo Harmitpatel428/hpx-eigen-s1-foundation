@@ -15,20 +15,20 @@ async function main() {
   });
 
   // Hash password
-  const hashedPassword = await bcrypt.hash('password123', 12);
+  const hashedPassword = await bcrypt.hash('Anil@404', 12);
 
-  // Create test user
+  // Create admin user
   const user = await prisma.user.upsert({
-    where: { 
-      tenantId_email: {
-        tenantId: tenant.id,
-        email: 'test@example.com'
-      }
+    where: { id: '00000000-0000-0000-0000-000000000002' },
+    update: {
+      email: 'anil@v4ubizsolutions.com',
+      password: hashedPassword,
+      status: 'ACTIVE',
+      emailVerified: new Date(),
     },
-    update: {},
     create: {
       id: '00000000-0000-0000-0000-000000000002',
-      email: 'test@example.com',
+      email: 'anil@v4ubizsolutions.com',
       password: hashedPassword,
       tenantId: tenant.id,
       status: 'ACTIVE',
