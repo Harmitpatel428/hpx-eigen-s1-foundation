@@ -83,6 +83,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
       const { email, roleId } = req.body as { email: string; roleId: string };
 
       if (!email || !roleId) throw new ValidationError('email and roleId are required.');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) throw new ValidationError('Invalid email address.');
 
       const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
       await checkInviteCreation(userId, tenantId, ip);

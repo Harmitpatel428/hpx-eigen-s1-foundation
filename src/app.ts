@@ -4,6 +4,7 @@ import cors from 'cors';
 import { prisma } from './db';
 import { AppException } from './types/exceptions';
 import { correlationMiddleware } from './middleware/correlation.middleware';
+import { authMiddleware } from './middleware/auth.middleware';
 import { logger } from './utils/logger';
 import { getCorrelationId } from './utils/requestContext';
 // ─── Route Factories (S1) ─────────────────────────────────────────────────────
@@ -38,10 +39,6 @@ import { createLeadTagsRouter } from './routes/lead-tags.router';
 import { createLeadContactsRouter } from './routes/lead-contacts.router';
 import { createLeadFieldsRouter } from './routes/lead-fields.router';
 import { createLeadNotesRouter } from './routes/lead-notes.router';
-
-// ─── Invitation Routes (legacy paths — kept for backward compat) ──────────────
-import { authMiddleware, AuthenticatedRequest } from './middleware/auth.middleware';
-import { InvitationService } from './services/invitation.service';
 
 import * as Sentry from '@sentry/node';
 
@@ -132,36 +129,10 @@ app.use('/api/v1/leads/:leadId/notes', createLeadNotesRouter(prisma));
 import { createDashboardRouter } from './routes/dashboard.router';
 app.use('/api/v1/dashboard', authMiddleware, createDashboardRouter(prisma));
 
-// ─── Legacy Invitation Routes (backward compat) ───────────────────────────────
-// These paths existed in S1 and may be relied on by existing tests.
-// New canonical path is POST /api/users/invite (in users.router.ts).
-const invitationService = new InvitationService(prisma);
-
-/** POST /api/invitations */
-app.post('/api/invitations', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { userId, tenantId } = (req as AuthenticatedRequest).user;
-    const { email, roleId } = req.body as { email: string; roleId: string };
-
-    const invitation = await invitationService.createInvitation(tenantId, email, roleId, userId);
-    res.status(201).json(invitation);
-  } catch (err) {
-    next(err);
-  }
-});
-
-/** POST /api/invitations/accept */
-app.post('/api/invitations/accept', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { userId, tenantId } = (req as AuthenticatedRequest).user;
-    const { token } = req.body as { token: string };
-
-    const result = await invitationService.acceptInvitation(token, userId, tenantId);
-    res.json(result);
-  } catch (err) {
-    next(err);
-  }
-});
+// POST /api/invitations and POST /api/invitations/accept removed —
+// superseded by POST /api/v1/users/invite and POST /api/v1/auth/accept-invite.
+// The legacy paths had no permission gate (any authenticated user could invite)
+// and no rate limiting — removed during invitation hardening audit.
 
 // ─── Global Error Handler ─────────────────────────────────────────────────────
 Sentry.setupExpressErrorHandler(app);

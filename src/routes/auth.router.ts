@@ -628,14 +628,14 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
       await checkAcceptAttempts(ip);
 
-      const { token, name, password } = req.body as { token?: string; name?: string; password?: string };
+      const { token, password } = req.body as { token?: string; password?: string };
       if (!token || typeof token !== 'string') throw new ValidationError('token is required.');
 
       const tokenHash = tokenService.hashToken(token);
 
       const { userId, tenantId, invitationId } = await invitationService.acceptInvitation(
         tokenHash,
-        { name, password }
+        { password }
       );
 
       // Load user + tenant for response (same shape as login)

@@ -56,8 +56,8 @@ export class InvitationService {
     });
 
     if (existing) {
-      // Duplicate: active PENDING invitation already sent or pending
-      if (existing.status === InvitationStatus.PENDING) {
+      // Soft-deleted rows → re-issue (raw-token invalidation migration produced these)
+      if (!existing.deletedAt && existing.status === InvitationStatus.PENDING) {
         if (existing.emailStatus === InvitationEmailStatus.PENDING) {
           throw new DuplicateResourceError('An invitation is already pending for this email.');
         }
@@ -66,7 +66,7 @@ export class InvitationService {
         }
         // FAILED or SKIPPED → retry with new token
       }
-      // EXPIRED, REVOKED, or soft-deleted → re-issue
+      // EXPIRED, REVOKED, soft-deleted, or FAILED/SKIPPED PENDING → re-issue
 
       const token = this.tokenService.generateToken();
       const tokenHash = this.tokenService.hashToken(token);
@@ -171,7 +171,7 @@ export class InvitationService {
    */
   async acceptInvitation(
     tokenHash: string,
-    userData: { name?: string; password?: string }
+    userData: { password?: string }
   ): Promise<{ userId: string; tenantId: string; roleId: string; invitationId: string }> {
     // Pre-hash password outside the transaction (slow bcrypt should not hold DB lock)
     let passwordHash: string | undefined;
@@ -180,19 +180,21 @@ export class InvitationService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Prisma schema uses camelCase field names with no @map, so PostgreSQL columns
+      // are quoted camelCase ("roleId", "tenantId", etc.) — must quote them in raw SQL.
       const rows = await tx.$queryRaw<Array<{
         id: string;
         status: string;
         email: string;
-        role_id: string;
-        tenant_id: string;
-        expires_at: Date;
-        invited_by: string;
+        roleId: string;
+        tenantId: string;
+        expiresAt: Date;
+        invitedBy: string;
       }>>`
-        SELECT id, status, email, role_id, tenant_id, expires_at, invited_by
+        SELECT id, status, email, "roleId", "tenantId", "expiresAt", "invitedBy"
         FROM "UserInvitation"
         WHERE token = ${tokenHash}
-          AND deleted_at IS NULL
+          AND "deletedAt" IS NULL
         FOR UPDATE
       `;
 
@@ -207,7 +209,7 @@ export class InvitationService {
       if (inv.status !== InvitationStatus.PENDING)  throw new BusinessRuleViolationError('This invitation is not valid.');
 
       // Runtime expiry check (PENDING rows can expire without a status update)
-      if (new Date(inv.expires_at) < new Date()) {
+      if (new Date(inv.expiresAt) < new Date()) {
         await tx.userInvitation.update({
           where: { id: inv.id },
           data: { status: InvitationStatus.EXPIRED }
@@ -217,13 +219,13 @@ export class InvitationService {
 
       // Role must still exist
       const role = await tx.role.findFirst({
-        where: { id: inv.role_id, tenantId: inv.tenant_id, deletedAt: null }
+        where: { id: inv.roleId, tenantId: inv.tenantId, deletedAt: null }
       });
       if (!role) throw new BusinessRuleViolationError('The role assigned to this invitation no longer exists.');
 
       // User lookup
       let user = await tx.user.findFirst({
-        where: { email: inv.email, tenantId: inv.tenant_id, deletedAt: null }
+        where: { email: inv.email, tenantId: inv.tenantId, deletedAt: null }
       });
 
       if (user) {
@@ -232,10 +234,7 @@ export class InvitationService {
         }
         // ACTIVE user — assign role only, no credential change
       } else {
-        // New user — name and password required
-        if (!userData.name || !userData.name.trim()) {
-          throw new BusinessRuleViolationError('Name is required.');
-        }
+        // New user — password required
         if (!userData.password || userData.password.length < 8) {
           throw new BusinessRuleViolationError('Password must be at least 8 characters.');
         }
@@ -243,18 +242,17 @@ export class InvitationService {
         user = await tx.user.create({
           data: {
             email: inv.email,
-            tenantId: inv.tenant_id,
+            tenantId: inv.tenantId,
             password: passwordHash!,
             status: 'ACTIVE',
-            emailVerified: new Date(), // CRITICAL: prevents login rejection
-            name: userData.name.trim()
-          } as any
+            emailVerified: new Date() // CRITICAL: prevents login rejection at login
+          }
         });
       }
 
       await tx.userRole.upsert({
-        where: { userId_roleId: { userId: user.id, roleId: inv.role_id } },
-        create: { userId: user.id, roleId: inv.role_id },
+        where: { userId_roleId: { userId: user.id, roleId: inv.roleId } },
+        create: { userId: user.id, roleId: inv.roleId },
         update: {}
       });
 
@@ -265,16 +263,16 @@ export class InvitationService {
 
       // Audit: invitationId + userId + roleId only — raw token never in audit payload
       await this.auditService.log({
-        tenantId: inv.tenant_id,
+        tenantId: inv.tenantId,
         eventType: 'INVITATION_ACCEPTED',
         entityType: 'UserInvitation',
         entityId: inv.id,
         actorUserId: user.id,
         operation: 'UPDATE',
-        payload: { invitationId: inv.id, userId: user.id, roleId: inv.role_id }
+        payload: { invitationId: inv.id, userId: user.id, roleId: inv.roleId }
       });
 
-      return { userId: user.id, tenantId: inv.tenant_id, roleId: inv.role_id, invitationId: inv.id };
+      return { userId: user.id, tenantId: inv.tenantId, roleId: inv.roleId, invitationId: inv.id };
     });
   }
 
