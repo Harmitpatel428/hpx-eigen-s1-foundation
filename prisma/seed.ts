@@ -32,6 +32,7 @@ async function main() {
       password: hashedPassword,
       tenantId: tenant.id,
       status: 'ACTIVE',
+      emailVerified: new Date(),
     },
   });
 
