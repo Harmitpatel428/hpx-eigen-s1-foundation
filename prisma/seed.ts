@@ -14,6 +14,28 @@ async function main() {
     },
   });
 
+  // Create default department + team
+  const dept = await prisma.department.upsert({
+    where: { id: '00000000-0000-0000-0000-000000000003' },
+    update: {},
+    create: {
+      id: '00000000-0000-0000-0000-000000000003',
+      tenantId: tenant.id,
+      name: 'Sales',
+    },
+  });
+
+  const team = await prisma.team.upsert({
+    where: { id: '00000000-0000-0000-0000-000000000004' },
+    update: {},
+    create: {
+      id: '00000000-0000-0000-0000-000000000004',
+      tenantId: tenant.id,
+      departmentId: dept.id,
+      name: 'Default Team',
+    },
+  });
+
   // Hash password
   const hashedPassword = await bcrypt.hash('Anil@404', 12);
 
@@ -25,6 +47,8 @@ async function main() {
       password: hashedPassword,
       status: 'ACTIVE',
       emailVerified: new Date(),
+      departmentId: dept.id,
+      teamId: team.id,
     },
     create: {
       id: '00000000-0000-0000-0000-000000000002',
@@ -33,10 +57,13 @@ async function main() {
       tenantId: tenant.id,
       status: 'ACTIVE',
       emailVerified: new Date(),
+      departmentId: dept.id,
+      teamId: team.id,
     },
   });
 
-  console.log('✅ Test user created:', user.email);
+  console.log('✅ Admin user created:', user.email);
+  console.log('✅ Department:', dept.name, '| Team:', team.name);
 }
 
 main()
