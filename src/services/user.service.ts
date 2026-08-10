@@ -1,9 +1,11 @@
-import { PrismaClient, UserStatus, SessionStatus } from '@prisma/client';
+import { PrismaClient, Prisma, UserStatus, SessionStatus } from '@prisma/client';
 import { AuditService } from './audit.service';
 import {
   ResourceNotFoundError,
   BusinessRuleViolationError
 } from '../types/exceptions';
+
+type DbClient = PrismaClient | Prisma.TransactionClient;
 
 export class UserService {
   private readonly auditService: AuditService;
@@ -24,22 +26,23 @@ export class UserService {
     userId: string,
     tenantId: string,
     reason: string,
-    actorUserId: string
+    actorUserId: string,
+    tx?: Prisma.TransactionClient
   ): Promise<{ success: boolean; sessionsRevoked: number }> {
-    const user = await this.prisma.user.findFirst({
+    const db: DbClient = tx ?? this.prisma;
+
+    const user = await db.user.findFirst({
       where: { id: userId, tenantId, deletedAt: { equals: null } }
     });
 
     if (!user) throw new ResourceNotFoundError();
 
-    // Only ACTIVE users can be suspended
     const suspendableStates: UserStatus[] = [UserStatus.ACTIVE];
     if (!suspendableStates.includes(user.status)) {
       throw new BusinessRuleViolationError();
     }
 
-    // Invalidate all active sessions
-    const sessionResult = await this.prisma.session.updateMany({
+    const sessionResult = await db.session.updateMany({
       where: {
         userId,
         tenantId,
@@ -52,8 +55,7 @@ export class UserService {
       }
     });
 
-    // Update user status
-    await this.prisma.user.update({
+    await db.user.update({
       where: { id: userId },
       data: {
         status: UserStatus.SUSPENDED,
@@ -62,19 +64,23 @@ export class UserService {
       }
     });
 
-    await this.auditService.log({
-      tenantId,
-      eventType: 'USER_SUSPENDED',
-      entityType: 'User',
-      entityId: userId,
-      actorUserId,
-      operation: 'UPDATE',
-      payload: {
-        reason,
-        sessionsRevoked: sessionResult.count,
-        previousStatus: user.status
-      }
-    });
+    try {
+      await this.auditService.log({
+        tenantId,
+        eventType: 'USER_SUSPENDED',
+        entityType: 'User',
+        entityId: userId,
+        actorUserId,
+        operation: 'UPDATE',
+        payload: {
+          reason,
+          sessionsRevoked: sessionResult.count,
+          previousStatus: user.status
+        }
+      });
+    } catch (auditErr) {
+      console.error('[AUDIT_DELIVERY_FAILURE]', { eventType: 'USER_SUSPENDED', entityId: userId, tenantId }, auditErr);
+    }
 
     return { success: true, sessionsRevoked: sessionResult.count };
   }
@@ -91,21 +97,22 @@ export class UserService {
     userId: string,
     tenantId: string,
     reason: string,
-    actorUserId: string
+    actorUserId: string,
+    tx?: Prisma.TransactionClient
   ): Promise<{ success: boolean; sessionsRevoked: number }> {
-    const user = await this.prisma.user.findFirst({
+    const db: DbClient = tx ?? this.prisma;
+
+    const user = await db.user.findFirst({
       where: { id: userId, tenantId, deletedAt: { equals: null } }
     });
 
     if (!user) throw new ResourceNotFoundError();
 
-    // Cannot terminate already-terminated users
     if (user.status === UserStatus.TERMINATED) {
       throw new BusinessRuleViolationError();
     }
 
-    // Invalidate all active sessions
-    const sessionResult = await this.prisma.session.updateMany({
+    const sessionResult = await db.session.updateMany({
       where: {
         userId,
         tenantId,
@@ -118,8 +125,7 @@ export class UserService {
       }
     });
 
-    // Update user status
-    await this.prisma.user.update({
+    await db.user.update({
       where: { id: userId },
       data: {
         status: UserStatus.TERMINATED,
@@ -128,19 +134,23 @@ export class UserService {
       }
     });
 
-    await this.auditService.log({
-      tenantId,
-      eventType: 'USER_TERMINATED',
-      entityType: 'User',
-      entityId: userId,
-      actorUserId,
-      operation: 'UPDATE',
-      payload: {
-        reason,
-        sessionsRevoked: sessionResult.count,
-        previousStatus: user.status
-      }
-    });
+    try {
+      await this.auditService.log({
+        tenantId,
+        eventType: 'USER_TERMINATED',
+        entityType: 'User',
+        entityId: userId,
+        actorUserId,
+        operation: 'UPDATE',
+        payload: {
+          reason,
+          sessionsRevoked: sessionResult.count,
+          previousStatus: user.status
+        }
+      });
+    } catch (auditErr) {
+      console.error('[AUDIT_DELIVERY_FAILURE]', { eventType: 'USER_TERMINATED', entityId: userId, tenantId }, auditErr);
+    }
 
     return { success: true, sessionsRevoked: sessionResult.count };
   }
@@ -183,9 +193,15 @@ export class UserService {
         id: true,
         email: true,
         status: true,
-        createdAt: true
+        createdAt: true,
+        userRoles: {
+          select: {
+            scopeType: true,
+            role: { select: { id: true, name: true } },
+          },
+        },
       },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     });
   }
 }

@@ -2,14 +2,15 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { AuthService } from '../services/auth.service';
-import { ValidationError } from '../types/exceptions';
+import { ValidationError, InvitationAlreadyAcceptedError } from '../types/exceptions';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { emailService } from '../services/email.service';
 import { PermissionService } from '../services/permission.service';
 import { TokenService } from '../services/auth/TokenService';
-import { checkLoginAttempts, checkResendLimit } from '../services/auth/RateLimitService';
+import { checkLoginAttempts, checkResendLimit, checkInviteTokenLookup, checkAcceptAttempts } from '../services/auth/RateLimitService';
+import { InvitationService } from '../services/invitation.service';
 import OrgInitService from '../services/OrgInitService';
 
 export function createAuthRouter(prisma: PrismaClient): Router {
@@ -19,6 +20,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
 
   
   const tokenService = new TokenService(prisma);
+  const invitationService = new InvitationService(prisma);
 
   // ─── POST /api/auth/signup ────────────────────────────────────────
   router.post('/signup', async (req: Request, res: Response, next: NextFunction) => {
@@ -562,6 +564,137 @@ export function createAuthRouter(prisma: PrismaClient): Router {
     // permissions are already loaded by authMiddleware via Redis/DB
     const { permissions } = (req as AuthenticatedRequest).user;
     res.json(permissions);
+  });
+
+  // ─── GET /api/v1/auth/invite/:token ──────────────────────────────
+  // Public, read-only — no DB mutation under any circumstance.
+  // Rate limited to prevent token enumeration.
+  router.get('/invite/:token', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      await checkInviteTokenLookup(ip);
+
+      const rawToken = req.params['token'];
+      if (!rawToken || typeof rawToken !== 'string') {
+        return res.status(404).json({ code: 'INVITATION_NOT_FOUND', message: 'Invitation not found.' });
+      }
+
+      const tokenHash = tokenService.hashToken(rawToken);
+      const invitation = await prisma.userInvitation.findFirst({
+        where: { token: tokenHash, deletedAt: null },
+        include: { role: { select: { name: true } } }
+      });
+
+      if (!invitation) {
+        return res.status(404).json({ code: 'INVITATION_NOT_FOUND', message: 'Invitation not found.' });
+      }
+
+      if (invitation.status === 'REVOKED') {
+        return res.status(410).json({ code: 'INVITATION_REVOKED', message: 'This invitation has been revoked.' });
+      }
+
+      if (invitation.status === 'ACCEPTED') {
+        return res.status(410).json({ code: 'INVITATION_ALREADY_ACCEPTED', message: 'This invitation has already been accepted.' });
+      }
+
+      if (invitation.status === 'EXPIRED' || invitation.expiresAt < new Date()) {
+        return res.status(410).json({ code: 'INVITATION_EXPIRED', message: 'This invitation has expired.' });
+      }
+
+      // Mask email: first char + *** + @domain
+      const atIdx = invitation.email.indexOf('@');
+      const maskedEmail = invitation.email[0] + '***' + invitation.email.slice(atIdx);
+
+      // Check if an ACTIVE user with this email already exists in the tenant
+      const existingUser = await prisma.user.findFirst({
+        where: { email: invitation.email, tenantId: invitation.tenantId, status: 'ACTIVE', deletedAt: null }
+      });
+
+      return res.json({
+        email: maskedEmail,
+        roleName: invitation.role.name,
+        expiresAt: invitation.expiresAt.toISOString(),
+        userExists: existingUser !== null
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─── POST /api/v1/auth/accept-invite ─────────────────────────────
+  // Public — accepts invitation, creates user if new, creates session.
+  router.post('/accept-invite', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      await checkAcceptAttempts(ip);
+
+      const { token, name, password } = req.body as { token?: string; name?: string; password?: string };
+      if (!token || typeof token !== 'string') throw new ValidationError('token is required.');
+
+      const tokenHash = tokenService.hashToken(token);
+
+      const { userId, tenantId, invitationId } = await invitationService.acceptInvitation(
+        tokenHash,
+        { name, password }
+      );
+
+      // Load user + tenant for response (same shape as login)
+      const user = await prisma.user.findFirst({
+        where: { id: userId },
+        include: { tenant: { select: { id: true, name: true } } }
+      });
+      if (!user) throw new Error('User not found after acceptance — data integrity error');
+
+      const [permissions] = await Promise.all([
+        permissionService.getPermissionManifest(userId, tenantId).catch(() => ({}))
+      ]);
+
+      const session = await prisma.session.create({
+        data: {
+          tenantId,
+          userId,
+          status: 'ACTIVE',
+          refreshTokenHash: await bcrypt.hash(crypto.randomBytes(64).toString('hex'), 12),
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        }
+      });
+
+      const jwtToken = jwt.sign(
+        { userId, tenantId, sessionId: session.id },
+        process.env.JWT_SECRET!,
+        { expiresIn: '7d' }
+      );
+
+      await prisma.auditLog.create({
+        data: {
+          tenantId,
+          eventType: 'INVITATION_SESSION_CREATED',
+          entityType: 'Session',
+          entityId: session.id,
+          actorUserId: userId,
+          operation: 'CREATE',
+          payload: { invitationId, sessionId: session.id },
+          currentHash: crypto.randomBytes(32).toString('hex')
+        }
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          accessToken: jwtToken,
+          refreshToken: session.id,
+          user: { id: user.id, email: user.email, tenantId: user.tenantId },
+          organization: { id: user.tenant!.id, name: user.tenant!.name },
+          permissions,
+          sessionId: session.id
+        }
+      });
+    } catch (err) {
+      if (err instanceof InvitationAlreadyAcceptedError) {
+        return res.status(409).json({ code: err.code, message: err.message });
+      }
+      next(err);
+    }
   });
 
   return router;

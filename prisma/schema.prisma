@@ -42,6 +42,13 @@ enum InvitationStatus {
   FAILED
 }
 
+enum InvitationEmailStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
 enum UserStatus {
   NEW
   PENDING_ACTIVATION
@@ -231,19 +238,20 @@ model User {
 }
 
 model UserInvitation {
-  id         String           @id @default(uuid()) @db.Uuid
-  tenantId   String           @db.Uuid
-  email      String
-  status     InvitationStatus @default(PENDING)
-  roleId     String           @db.Uuid
-  token      String           @unique
-  expiresAt  DateTime
-  invitedBy  String           @db.Uuid
-  acceptedBy String?          @db.Uuid
-  acceptedAt DateTime?
-  createdAt  DateTime         @default(now())
-  updatedAt  DateTime         @updatedAt
-  deletedAt  DateTime?
+  id          String                @id @default(uuid()) @db.Uuid
+  tenantId    String                @db.Uuid
+  email       String
+  status      InvitationStatus      @default(PENDING)
+  emailStatus InvitationEmailStatus @default(PENDING)
+  roleId      String                @db.Uuid
+  token       String                @unique
+  expiresAt   DateTime
+  invitedBy   String                @db.Uuid
+  acceptedBy  String?               @db.Uuid
+  acceptedAt  DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  deletedAt   DateTime?
 
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   role     Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)

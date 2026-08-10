@@ -3,21 +3,23 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { UserService } from '../services/user.service';
 import { InvitationService } from '../services/invitation.service';
-import { ValidationError } from '../types/exceptions';
+import { AdminLockoutService } from '../services/admin-lockout.service';
+import { ValidationError, BusinessRuleViolationError, DuplicateResourceError } from '../types/exceptions';
+import { checkInviteCreation } from '../services/auth/RateLimitService';
 
 export function createUsersRouter(prisma: PrismaClient): Router {
   const router = Router();
   const userService = new UserService(prisma);
   const invitationService = new InvitationService(prisma);
+  const adminLockoutService = new AdminLockoutService(prisma);
 
-  // All user routes require authentication
   router.use(authMiddleware);
+
   // ─── GET /api/users/me ────────────────────────────────────────────
-  /** Get current user profile */
   router.get('/me', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
-      
+
       const user = await prisma.user.findFirst({
         where: { id: userId, tenantId, deletedAt: { equals: null } },
         include: {
@@ -44,7 +46,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         });
         return acc;
       }, {});
-      
+
       const transformedUser = {
         id: user.id,
         email: user.email,
@@ -53,7 +55,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         permissions,
         roles: user.userRoles.map((ur: any) => ur.role.name)
       };
-      
+
       res.json({
         success: true,
         data: transformedUser
@@ -64,7 +66,6 @@ export function createUsersRouter(prisma: PrismaClient): Router {
   });
 
   // ─── GET /api/users ───────────────────────────────────────────────
-  /** List all non-deleted users in the caller's tenant */
   router.get('/', permissionMiddleware('user:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
@@ -76,26 +77,29 @@ export function createUsersRouter(prisma: PrismaClient): Router {
   });
 
   // ─── POST /api/users/invite ───────────────────────────────────────
-  /**
-   * Invite a user to the tenant via email.
-   * Body: { email: string, roleId: string }
-   * Returns: { invitationId, token, expiresAt }
-   */
   router.post('/invite', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const { email, roleId } = req.body as { email: string; roleId: string };
 
-      if (!email || !roleId) {
-        throw new ValidationError('email and roleId are required.');
+      if (!email || !roleId) throw new ValidationError('email and roleId are required.');
+
+      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      await checkInviteCreation(userId, tenantId, ip);
+
+      let result;
+      try {
+        result = await invitationService.createInvitation(tenantId, email, roleId, userId);
+      } catch (err: any) {
+        // Prisma P2002 unique constraint — concurrent invite creation race
+        if (err?.code === 'P2002') throw new DuplicateResourceError('An invitation already exists for this email.');
+        throw err;
       }
 
-      const invitation = await invitationService.createInvitation(tenantId, email, roleId, userId);
-
       res.status(201).json({
-        invitationId: invitation.id,
-        token: invitation.token,
-        expiresAt: invitation.expiresAt
+        invitationId: result.invitationId,
+        emailStatus: result.emailStatus,
+        ...(result.devInviteUrl ? { devInviteUrl: result.devInviteUrl } : {})
       });
     } catch (err) {
       next(err);
@@ -103,11 +107,6 @@ export function createUsersRouter(prisma: PrismaClient): Router {
   });
 
   // ─── PUT /api/users/:id/suspend ───────────────────────────────────
-  /**
-   * Suspend a user — sets status to SUSPENDED, invalidates all sessions.
-   * Body: { reason: string }
-   * Returns: { success: true, sessionsRevoked: number }
-   */
   router.put('/:id/suspend', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId: actorUserId, tenantId } = (req as AuthenticatedRequest).user;
@@ -118,7 +117,27 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         throw new ValidationError('reason is required for suspension.');
       }
 
-      const result = await userService.suspendUser(targetUserId, tenantId, reason, actorUserId);
+      if (targetUserId === actorUserId) {
+        throw new BusinessRuleViolationError();
+      }
+
+      const targetHasManage = await prisma.rolePermission.findFirst({
+        where: {
+          permission: { slug: 'role:manage' },
+          role: { tenantId, deletedAt: { equals: null }, users: { some: { userId: targetUserId } } },
+        },
+      });
+
+      let result;
+      if (targetHasManage) {
+        result = await adminLockoutService.withAdminGuard(
+          tenantId,
+          { skipUserId: targetUserId },
+          async (tx) => userService.suspendUser(targetUserId, tenantId, reason, actorUserId, tx)
+        );
+      } else {
+        result = await userService.suspendUser(targetUserId, tenantId, reason, actorUserId);
+      }
       res.json(result);
     } catch (err) {
       next(err);
@@ -126,11 +145,6 @@ export function createUsersRouter(prisma: PrismaClient): Router {
   });
 
   // ─── PUT /api/users/:id/terminate ────────────────────────────────
-  /**
-   * Terminate a user permanently — sets status to TERMINATED, invalidates all sessions.
-   * Body: { reason: string }
-   * Returns: { success: true, sessionsRevoked: number }
-   */
   router.put('/:id/terminate', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId: actorUserId, tenantId } = (req as AuthenticatedRequest).user;
@@ -141,7 +155,27 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         throw new ValidationError('reason is required for termination.');
       }
 
-      const result = await userService.terminateUser(targetUserId, tenantId, reason, actorUserId);
+      if (targetUserId === actorUserId) {
+        throw new BusinessRuleViolationError();
+      }
+
+      const targetHasManage = await prisma.rolePermission.findFirst({
+        where: {
+          permission: { slug: 'role:manage' },
+          role: { tenantId, deletedAt: { equals: null }, users: { some: { userId: targetUserId } } },
+        },
+      });
+
+      let result;
+      if (targetHasManage) {
+        result = await adminLockoutService.withAdminGuard(
+          tenantId,
+          { skipUserId: targetUserId },
+          async (tx) => userService.terminateUser(targetUserId, tenantId, reason, actorUserId, tx)
+        );
+      } else {
+        result = await userService.terminateUser(targetUserId, tenantId, reason, actorUserId);
+      }
       res.json(result);
     } catch (err) {
       next(err);

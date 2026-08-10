@@ -59,8 +59,8 @@ export class ResourceNotFoundError extends AppException {
 }
 
 export class DuplicateResourceError extends AppException {
-  constructor() {
-    super('DUPLICATE_RESOURCE', 'Resource already exists.', RetryTag.NON_RETRYABLE, 409);
+  constructor(message = 'Resource already exists.') {
+    super('DUPLICATE_RESOURCE', message, RetryTag.NON_RETRYABLE, 409);
   }
 }
 
@@ -125,8 +125,14 @@ export class ConflictError extends AppException {
 }
 
 export class BusinessRuleViolationError extends AppException {
+  constructor(message = 'Operation is not allowed.') {
+    super('BUSINESS_RULE_VIOLATION', message, RetryTag.NON_RETRYABLE, 422);
+  }
+}
+
+export class InvitationAlreadyAcceptedError extends AppException {
   constructor() {
-    super('BUSINESS_RULE_VIOLATION', 'Operation is not allowed.', RetryTag.NON_RETRYABLE, 422);
+    super('INVITATION_ALREADY_ACCEPTED', 'This invitation has already been accepted.', RetryTag.NON_RETRYABLE, 409);
   }
 }
 

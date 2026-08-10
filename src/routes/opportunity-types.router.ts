@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { OpportunityTypesService } from '../services/opportunity-types.service';
 
 export function createOpportunityTypesRouter(prisma: PrismaClient): Router {
@@ -9,7 +9,9 @@ export function createOpportunityTypesRouter(prisma: PrismaClient): Router {
 
   router.use(authMiddleware);
 
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  // ponytail: UI removed in Stage 3. API retained because Opportunity.opportunityTypeId
+  // is a required FK. Mutations restricted to role:manage. Remove routes when FK drops.
+  router.get('/', permissionMiddleware('opportunity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -23,7 +25,7 @@ export function createOpportunityTypesRouter(prisma: PrismaClient): Router {
     }
   });
 
-  router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', permissionMiddleware('role:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -38,7 +40,7 @@ export function createOpportunityTypesRouter(prisma: PrismaClient): Router {
     }
   });
 
-  router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.patch('/:id', permissionMiddleware('role:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -53,7 +55,7 @@ export function createOpportunityTypesRouter(prisma: PrismaClient): Router {
     }
   });
 
-  router.put('/reorder', async (req: Request, res: Response, next: NextFunction) => {
+  router.put('/reorder', permissionMiddleware('role:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -68,7 +70,7 @@ export function createOpportunityTypesRouter(prisma: PrismaClient): Router {
     }
   });
 
-  router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', permissionMiddleware('role:manage'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {

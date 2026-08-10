@@ -148,7 +148,44 @@ async function main(): Promise<void> {
     updatedCount++;
   }
 
-  // Step 7: Log success message
+  // Step 7: Seed preset roles (Sales Manager, Sales Executive) per tenant
+  const PRESET_ROLES: Record<string, string[]> = {
+    'Sales Manager': [
+      'lead:view', 'lead:create', 'lead:edit', 'lead:delete', 'lead:assign',
+      'contact:view', 'contact:create', 'contact:edit', 'contact:delete',
+      'opportunity:view', 'opportunity:create', 'opportunity:edit', 'opportunity:delete',
+      'activity:view', 'activity:create', 'activity:edit', 'activity:delete',
+      'user:view', 'team:view', 'department:view',
+    ],
+    'Sales Executive': [
+      'lead:view', 'lead:create', 'lead:edit',
+      'contact:view', 'contact:create', 'contact:edit',
+      'opportunity:view', 'opportunity:create', 'opportunity:edit',
+      'activity:view', 'activity:create', 'activity:edit',
+    ],
+  };
+
+  const permBySlug = Object.fromEntries(createdPermissions.map(p => [p.slug, p]));
+  const tenantIds = [...new Set(users.map(u => u.tenantId))];
+
+  for (const tenantId of tenantIds) {
+    for (const [roleName, slugs] of Object.entries(PRESET_ROLES)) {
+      const role = await prisma.role.upsert({
+        where: { tenantId_name: { tenantId, name: roleName } },
+        create: { tenantId, name: roleName },
+        update: {},
+      });
+
+      const permIds = slugs.map(s => permBySlug[s]?.id).filter(Boolean) as string[];
+      await prisma.rolePermission.createMany({
+        data: permIds.map(pid => ({ roleId: role.id, permissionId: pid })),
+        skipDuplicates: true,
+      });
+    }
+  }
+  console.info(`✓ Preset roles seeded for ${tenantIds.length} tenant(s).`);
+
+  // Step 8: Log success message
   console.info(`✓ Super Admin access restored for ${updatedCount} users.`);
 }
 
