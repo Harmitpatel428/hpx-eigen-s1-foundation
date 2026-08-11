@@ -179,6 +179,47 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     }
   );
 
+  // ─── POST /api/v1/leads/bulk-assign/preview ─────────────────────
+  router.post(
+    '/bulk-assign/preview',
+    authMiddleware,
+    permissionMiddleware('lead:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { leadIds, departmentId } = req.body as { leadIds: string[]; departmentId: string };
+        if (!Array.isArray(leadIds) || leadIds.length === 0) throw new ValidationError('leadIds array is required.');
+        if (leadIds.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
+        if (!departmentId) throw new ValidationError('departmentId is required.');
+        const result = await leadService.previewAutoAssign({ tenantId, userId }, leadIds, departmentId);
+        res.json({ data: result });
+      } catch (err) { next(err); }
+    }
+  );
+
+  // ─── POST /api/v1/leads/bulk-assign ─────────────────────────────
+  router.post(
+    '/bulk-assign',
+    authMiddleware,
+    permissionMiddleware('lead:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { leadIds, mode, userId: targetUserId, departmentId } = req.body as {
+          leadIds: string[];
+          mode: 'MANUAL' | 'AUTO';
+          userId?: string;
+          departmentId?: string;
+        };
+        if (!Array.isArray(leadIds) || leadIds.length === 0) throw new ValidationError('leadIds array is required.');
+        if (leadIds.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
+        if (mode !== 'MANUAL' && mode !== 'AUTO') throw new ValidationError('mode must be MANUAL or AUTO.');
+        const result = await leadService.bulkAssign({ tenantId, userId }, { leadIds, mode, userId: targetUserId, departmentId });
+        res.json({ data: result });
+      } catch (err) { next(err); }
+    }
+  );
+
   // ─── POST /api/v1/leads/bulk-delete ─────────────────────────────
   // Must be defined before /:id to avoid route conflict
   router.post(

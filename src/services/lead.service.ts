@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency } from '@prisma/client';
+import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency, UserStatus } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, ResourceNotFoundError } from '../types/exceptions';
 import { AuthorizationDecision } from '../types/authorization';
@@ -608,5 +608,146 @@ export class LeadService {
     });
 
     return { count: result.count };
+  }
+
+  // ponytail: active workload = not terminal (DISQUALIFIED/CONVERTED) and not soft-deleted
+  private readonly ACTIVE_STATUSES = [LeadStatus.NEW, LeadStatus.CONTACTED, LeadStatus.QUALIFIED];
+
+  private async computeDistribution(
+    ctx: TenantContext,
+    leadIds: string[],
+    departmentId: string,
+    db: Prisma.TransactionClient | PrismaClient
+  ) {
+    const leads = await (db as any).lead.findMany({
+      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: null },
+      select: { id: true },
+    });
+    if (leads.length === 0) throw new ValidationError('No eligible leads found to assign.');
+
+    const eligibleLeadIds: string[] = leads.map((l: { id: string }) => l.id);
+
+    const employees = await (db as any).user.findMany({
+      where: { tenantId: ctx.tenantId, departmentId, deletedAt: null, status: UserStatus.ACTIVE },
+      select: { id: true, firstName: true, lastName: true },
+      orderBy: { id: 'asc' }, // deterministic tie-break
+    });
+    if (employees.length === 0) return { assignments: [], employees: [], eligibleLeadIds };
+
+    // ponytail: READ COMMITTED isolation — acceptable race window for concurrent auto-assigns
+    const workloadCounts: number[] = await Promise.all(
+      employees.map((emp: { id: string }) =>
+        (db as any).lead.count({
+          where: {
+            ownerId: emp.id,
+            tenantId: ctx.tenantId,
+            deletedAt: null,
+            status: { in: this.ACTIVE_STATUSES },
+            id: { notIn: eligibleLeadIds },
+          },
+        })
+      )
+    );
+
+    const empState: Array<{ id: string; firstName: string | null; lastName: string | null; base: number; delta: number }> =
+      employees.map((e: { id: string; firstName: string | null; lastName: string | null }, i: number) => ({
+        id: e.id,
+        firstName: e.firstName,
+        lastName: e.lastName,
+        base: workloadCounts[i],
+        delta: 0,
+      }));
+
+    const assignments: Array<{ leadId: string; assigneeId: string }> = [];
+
+    for (const leadId of eligibleLeadIds) {
+      empState.sort((a, b) => {
+        const wa = a.base + a.delta;
+        const wb = b.base + b.delta;
+        return wa !== wb ? wa - wb : a.id.localeCompare(b.id);
+      });
+      empState[0].delta += 1;
+      assignments.push({ leadId, assigneeId: empState[0].id });
+    }
+
+    return {
+      assignments,
+      eligibleLeadIds,
+      employees: empState.map(e => ({
+        id: e.id,
+        firstName: e.firstName,
+        lastName: e.lastName,
+        currentWorkload: e.base,
+        delta: e.delta,
+      })),
+    };
+  }
+
+  async previewAutoAssign(
+    ctx: TenantContext,
+    leadIds: string[],
+    departmentId: string
+  ) {
+    const { employees, eligibleLeadIds } = await this.computeDistribution(ctx, leadIds, departmentId, this.prisma);
+    return { employees, totalLeads: eligibleLeadIds.length };
+  }
+
+  async bulkAssign(
+    ctx: TenantContext,
+    input: { leadIds: string[]; mode: 'MANUAL' | 'AUTO'; userId?: string; departmentId?: string }
+  ): Promise<{ count: number }> {
+    if (input.mode === 'MANUAL') {
+      if (!input.userId) throw new ValidationError('userId is required for MANUAL mode.');
+
+      const target = await this.prisma.user.findFirst({
+        where: { id: input.userId, tenantId: ctx.tenantId, deletedAt: null, status: UserStatus.ACTIVE },
+      });
+      if (!target) throw new ResourceNotFoundError();
+
+      const result = await this.prisma.lead.updateMany({
+        where: { id: { in: input.leadIds }, tenantId: ctx.tenantId, deletedAt: null },
+        data: { ownerId: input.userId },
+      });
+
+      await this.audit.log({
+        tenantId: ctx.tenantId,
+        eventType: 'LEADS_BULK_ASSIGNED',
+        entityType: 'Lead',
+        entityId: input.leadIds.join(','),
+        actorUserId: ctx.userId,
+        operation: 'UPDATE',
+        payload: { mode: 'MANUAL', targetUserId: input.userId, count: result.count },
+      });
+
+      return { count: result.count };
+    }
+
+    // AUTO mode
+    if (!input.departmentId) throw new ValidationError('departmentId is required for AUTO mode.');
+
+    let count = 0;
+    await this.prisma.$transaction(async (tx) => {
+      const { assignments } = await this.computeDistribution(ctx, input.leadIds, input.departmentId!, tx);
+      if (assignments.length === 0) throw new ValidationError('No eligible employees in the selected department.');
+
+      await Promise.all(
+        assignments.map(({ leadId, assigneeId }) =>
+          tx.lead.update({ where: { id: leadId }, data: { ownerId: assigneeId } })
+        )
+      );
+      count = assignments.length;
+    });
+
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'LEADS_BULK_ASSIGNED',
+      entityType: 'Lead',
+      entityId: input.leadIds.join(','),
+      actorUserId: ctx.userId,
+      operation: 'UPDATE',
+      payload: { mode: 'AUTO', departmentId: input.departmentId, count },
+    });
+
+    return { count };
   }
 }
