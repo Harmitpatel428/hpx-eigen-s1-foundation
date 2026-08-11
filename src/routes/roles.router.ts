@@ -431,6 +431,67 @@ export function createRolesRouter(prisma: PrismaClient): Router {
     }
   });
 
+  // ─── DELETE /api/v1/roles/:id ─────────────────────────────────────
+  router.delete('/:id', permissionMiddleware('role:manage'), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { tenantId, userId: actorUserId } = (req as AuthenticatedRequest).user;
+      const roleId = req.params.id;
+
+      const role = await prisma.role.findFirst({
+        where: { id: roleId, tenantId, deletedAt: { equals: null } },
+      });
+      if (!role) throw new ResourceNotFoundError();
+
+      if (role.isSystem) {
+        res.status(409).json({ code: 'SYSTEM_ROLE_NOT_DELETABLE', message: 'System roles cannot be deleted.' });
+        return;
+      }
+
+      const roleHasManage = await prisma.rolePermission.findFirst({
+        where: { roleId, permission: { slug: 'role:manage' } },
+      });
+
+      let affectedUserCount = 0;
+
+      if (roleHasManage) {
+        await adminLockoutService.withAdminGuard(tenantId, { skipRoleId: roleId }, async (tx) => {
+          affectedUserCount = await tx.userRole.count({ where: { roleId } });
+          await tx.userRole.deleteMany({ where: { roleId } });
+          await tx.rolePermission.deleteMany({ where: { roleId } });
+          await tx.role.delete({ where: { id: roleId } });
+        });
+      } else {
+        await prisma.$transaction(async (tx) => {
+          affectedUserCount = await tx.userRole.count({ where: { roleId } });
+          await tx.userRole.deleteMany({ where: { roleId } });
+          await tx.rolePermission.deleteMany({ where: { roleId } });
+          await tx.role.delete({ where: { id: roleId } });
+        });
+      }
+
+      try {
+        await auditService.log({
+          tenantId,
+          eventType: 'RoleDeleted',
+          entityType: 'Role',
+          entityId: roleId,
+          actorUserId,
+          actorIp: req.ip,
+          actorUserAgent: req.headers['user-agent'],
+          operation: 'DELETE',
+          payload: { roleName: role.name, affectedUserCount },
+        });
+      } catch (auditErr) {
+        console.error('[AUDIT_DELIVERY_FAILURE]', { eventType: 'RoleDeleted', entityId: roleId, tenantId }, auditErr);
+      }
+
+      await permissionService.invalidatePermissionCache(tenantId);
+      res.json({ success: true, message: 'Role deleted successfully.' });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ─── GET /api/v1/roles/permissions/all ────────────────────────────
   router.get('/permissions/all', permissionMiddleware('role:view'), async (_req: Request, res: Response, next: NextFunction) => {
     try {
