@@ -239,15 +239,21 @@ export class InvitationService {
           throw new BusinessRuleViolationError('Password must be at least 8 characters.');
         }
 
-        user = await tx.user.create({
-          data: {
-            email: inv.email,
-            tenantId: inv.tenantId,
-            password: passwordHash!,
-            status: 'ACTIVE',
-            emailVerified: new Date() // CRITICAL: prevents login rejection at login
-          }
-        });
+        try {
+          user = await tx.user.create({
+            data: {
+              email: inv.email,
+              tenantId: inv.tenantId,
+              password: passwordHash!,
+              status: 'ACTIVE',
+              emailVerified: new Date() // CRITICAL: prevents login rejection at login
+            }
+          });
+        } catch (e: any) {
+          // P2002 = unique constraint: concurrent acceptance won the race
+          if (e?.code === 'P2002') throw new InvitationAlreadyAcceptedError();
+          throw e;
+        }
       }
 
       await tx.userRole.upsert({

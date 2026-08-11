@@ -1,5 +1,6 @@
-import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency, UserStatus } from '@prisma/client';
+import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency, UserStatus, NotificationType } from '@prisma/client';
 import { AuditService } from './audit.service';
+import { NotificationService } from './notification.service';
 import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, ResourceNotFoundError } from '../types/exceptions';
 import { AuthorizationDecision } from '../types/authorization';
 
@@ -100,9 +101,11 @@ export interface DuplicateCheckInput {
 
 export class LeadService {
   private readonly audit: AuditService;
+  private readonly notifications: NotificationService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.audit = new AuditService(prisma);
+    this.notifications = new NotificationService(prisma);
   }
 
   /** Resolve tag names to tag IDs within a transaction, creating missing tags. */
@@ -199,8 +202,8 @@ export class LeadService {
 
   /** Get a single lead by ID, including tags */
   async getLeadById(ctx: TenantContext, leadId: string) {
-    const lead = await this.prisma.lead.findUnique({
-      where: { id: leadId },
+    const lead = await this.prisma.lead.findFirst({
+      where: { id: leadId, tenantId: ctx.tenantId },
     });
     if (!lead) throw new ResourceNotFoundError();
     return lead;
@@ -208,8 +211,8 @@ export class LeadService {
 
   /** Get lead with tag assignments */
   private async getLeadWithTags(ctx: TenantContext, leadId: string) {
-    const lead = await (this.prisma as any).lead.findUnique({
-      where: { id: leadId },
+    const lead = await (this.prisma as any).lead.findFirst({
+      where: { id: leadId, tenantId: ctx.tenantId },
       include: {
         tags: {
           include: { tag: true },
@@ -574,8 +577,8 @@ export class LeadService {
 
   /** Permanently delete a lead */
   async permanentDeleteLead(ctx: TenantContext, leadId: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead || lead.tenantId !== ctx.tenantId) throw new ResourceNotFoundError();
+    const lead = await this.prisma.lead.findFirst({ where: { id: leadId, tenantId: ctx.tenantId } });
+    if (!lead) throw new ResourceNotFoundError();
     if (!lead.deletedAt) throw new ValidationError('Lead must be soft-deleted before permanent deletion.');
 
     await this.prisma.lead.delete({ where: { id: leadId } });
@@ -719,6 +722,17 @@ export class LeadService {
         payload: { mode: 'MANUAL', targetUserId: input.userId, count: result.count },
       });
 
+      // Notify the new assignee (fire-and-forget — never block the response)
+      if (input.userId !== ctx.userId) {
+        this.notifications.create({
+          tenantId: ctx.tenantId,
+          recipientUserId: input.userId,
+          type: NotificationType.LEAD_ASSIGNED,
+          title: 'Leads Assigned',
+          message: `${result.count} lead${result.count !== 1 ? 's' : ''} have been assigned to you.`,
+        }).catch(() => {/* non-fatal */});
+      }
+
       return { count: result.count };
     }
 
@@ -747,6 +761,25 @@ export class LeadService {
       operation: 'UPDATE',
       payload: { mode: 'AUTO', departmentId: input.departmentId, count },
     });
+
+    // Notify each newly assigned user — fire-and-forget
+    const assignedResult = await this.prisma.lead.findMany({
+      where: { id: { in: input.leadIds }, tenantId: ctx.tenantId, deletedAt: null },
+      select: { ownerId: true },
+    });
+    const countsPerAssignee: Record<string, number> = {};
+    for (const { ownerId } of assignedResult) {
+      if (ownerId && ownerId !== ctx.userId) countsPerAssignee[ownerId] = (countsPerAssignee[ownerId] ?? 0) + 1;
+    }
+    this.notifications.createMany(
+      Object.entries(countsPerAssignee).map(([uid, n]) => ({
+        tenantId: ctx.tenantId,
+        recipientUserId: uid,
+        type: NotificationType.LEAD_ASSIGNED,
+        title: 'Leads Assigned',
+        message: `${n} lead${n !== 1 ? 's' : ''} have been assigned to you.`,
+      }))
+    ).catch(() => {/* non-fatal */});
 
     return { count };
   }

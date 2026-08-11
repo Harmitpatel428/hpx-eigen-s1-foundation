@@ -356,9 +356,20 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           prisma.lead.count({ where: whereClause }),
         ]);
 
+        // Batch-load owner names to avoid N+1
+        const ownerIds = [...new Set(data.filter((l: any) => l.ownerId).map((l: any) => l.ownerId as string))];
+        const owners = ownerIds.length > 0
+          ? await prisma.user.findMany({
+              where: { id: { in: ownerIds }, tenantId },
+              select: { id: true, firstName: true, lastName: true },
+            })
+          : [];
+        const ownerMap = Object.fromEntries(owners.map((u: any) => [u.id, u]));
+
         const enriched = data.map((l: any) => ({
           ...l,
           tags: (l.tags ?? []).map((a: any) => a.tag),
+          owner: l.ownerId ? (ownerMap[l.ownerId] ?? null) : null,
         }));
 
         res.json({ data: enriched, total, page, pageSize });

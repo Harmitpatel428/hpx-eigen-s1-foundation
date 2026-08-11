@@ -47,8 +47,9 @@ const PERMISSIONS = [
   { slug: 'role:manage', module: 'Admin', description: 'Create, edit, and delete roles' },
   { slug: 'audit:view',  module: 'Admin', description: 'View immutable audit logs' },
   // Users
-  { slug: 'user:view',   module: 'Admin', description: 'View users' },
-  { slug: 'user:manage', module: 'Admin', description: 'Invite, suspend, and manage users' },
+  { slug: 'user:view',        module: 'Admin', description: 'View users' },
+  { slug: 'user:manage',      module: 'Admin', description: 'Invite, suspend, and manage users' },
+  { slug: 'user:impersonate', module: 'Admin', description: 'Impersonate another user (admin only)' },
   // Departments & Teams
   { slug: 'department:view',   module: 'Admin', description: 'View departments' },
   { slug: 'department:manage', module: 'Admin', description: 'Create, edit, delete departments' },

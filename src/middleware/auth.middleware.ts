@@ -19,6 +19,8 @@ export interface AuthenticatedRequest extends Request {
     teamId: string | null;
     departmentId: string | null;
     permissions: PermissionManifest;
+    /** Set when this session was created via admin impersonation */
+    impersonatedByUserId: string | null;
     /** Injected by permissionMiddleware — the resolved ABAC scope for the current route */
     scope?: string;
     /** Injected by permissionMiddleware in V2 mode — the full authorization decision */
@@ -137,6 +139,7 @@ export async function authMiddleware(
       teamId: userRecord?.teamId ?? null,
       departmentId: userRecord?.departmentId ?? null,
       permissions,
+      impersonatedByUserId: (session as any).impersonatedByUserId ?? null,
     };
 
     const requestContext: RequestContext = {

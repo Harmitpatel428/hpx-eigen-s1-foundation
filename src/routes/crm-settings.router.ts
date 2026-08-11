@@ -16,9 +16,36 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const row = await db.tenantSettings.findUnique({ where: { tenantId } });
-      res.json({ leadHeaderPreference: row?.leadHeaderPreference ?? null });
+      res.json({
+        leadHeaderPreference: row?.leadHeaderPreference ?? null,
+        allowImpersonation: row?.allowImpersonation ?? false,
+      });
     } catch (err) { next(err); }
   });
+
+  // POST /api/v1/settings/crm/impersonation — toggle admin impersonation; role:manage required
+  router.post(
+    '/impersonation',
+    authMiddleware,
+    permissionMiddleware('role:manage'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId } = (req as AuthenticatedRequest).user;
+        const { enabled } = req.body as { enabled?: boolean };
+        if (typeof enabled !== 'boolean') {
+          throw new ValidationError('enabled must be a boolean.');
+        }
+
+        await db.tenantSettings.upsert({
+          where: { tenantId },
+          create: { tenantId, allowImpersonation: enabled },
+          update: { allowImpersonation: enabled },
+        });
+
+        res.json({ success: true, allowImpersonation: enabled });
+      } catch (err) { next(err); }
+    }
+  );
 
   // POST /api/v1/settings/crm/lead-header — org-level setting; role:manage gate, freely mutable
   router.post(

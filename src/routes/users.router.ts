@@ -53,6 +53,8 @@ export function createUsersRouter(prisma: PrismaClient): Router {
 
       const fullName = [user.firstName, user.lastName].filter(Boolean).join(' ') || null;
 
+      const { impersonatedByUserId } = (req as AuthenticatedRequest).user;
+
       const transformedUser = {
         id: user.id,
         email: user.email,
@@ -65,7 +67,9 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         department: user.department,
         team: user.team,
         permissions,
-        roles: user.userRoles.map((ur: any) => ur.role.name)
+        roles: user.userRoles.map((ur: any) => ur.role.name),
+        isImpersonated: !!impersonatedByUserId,
+        impersonatedByUserId: impersonatedByUserId ?? null,
       };
 
       res.json({

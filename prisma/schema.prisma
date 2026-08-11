@@ -304,6 +304,9 @@ model Session {
   updatedAt         DateTime      @updatedAt
   deletedAt         DateTime?
 
+  // Populated only during admin impersonation; null = normal session
+  impersonatedByUserId String?   @db.Uuid
+
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1124,6 +1127,7 @@ model TenantSettings {
   sessionLifetimeDays   Int      @default(30)
   mfaRequired           Boolean  @default(false)
   allowedIpRanges       String[] @default([])
+  allowImpersonation    Boolean  @default(false)
   version               Int      @default(1)
   updatedAt             DateTime @updatedAt
   // 'name' | 'company' — org-level setting, mutable by role:manage; default 'name'
