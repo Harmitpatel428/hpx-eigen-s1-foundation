@@ -82,6 +82,21 @@ enum OrganizationStatus {
 
 // Removed assignment/domain event enums
 
+enum NotificationType {
+  ROLE_ASSIGNED
+  ROLE_CHANGED
+  USER_INVITED
+  USER_ACTIVATED
+  PASSWORD_CHANGED
+  PASSWORD_RESET_COMPLETED
+  LEAD_ASSIGNED
+  LEAD_STATUS_CHANGED
+  IMPORT_COMPLETED
+  IMPORT_FAILED
+  EXPORT_COMPLETED
+  SYSTEM_ANNOUNCEMENT
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // S1 FOUNDATION — AUTH, USERS, ROLES, SESSIONS
 // ═══════════════════════════════════════════════════════════════════
@@ -203,6 +218,10 @@ model User {
   id                String     @id @default(uuid()) @db.Uuid
   tenantId          String     @db.Uuid
   email             String
+  firstName         String?
+  lastName          String?
+  phone             String?
+  avatarUrl         String?
   emailVerified     DateTime?
   verifiedAt        DateTime?
   password          String
@@ -224,6 +243,7 @@ model User {
   verificationTokens  VerificationToken[]
   passwordResetTokens PasswordResetToken[]
   userRoles           UserRole[]
+  notifications       Notification[]
   invitedUsers        UserInvitation[]     @relation("InvitedBy")
   acceptedInvitations UserInvitation[]     @relation("AcceptedBy")
 
@@ -317,6 +337,25 @@ model AuditLog {
   @@index([correlationId])
   @@index([entityType, entityId])
   @@index([currentHash])
+}
+
+// ─── Notifications ───────────────────────────────────────────────
+
+model Notification {
+  id              String           @id @default(uuid()) @db.Uuid
+  tenantId        String           @db.Uuid
+  recipientUserId String           @db.Uuid
+  type            NotificationType
+  title           String
+  message         String
+  actionUrl       String?
+  readAt          DateTime?
+  createdAt       DateTime         @default(now())
+
+  recipient User @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, recipientUserId, readAt])
+  @@index([tenantId, recipientUserId, createdAt(sort: Desc)])
 }
 
 // ═══════════════════════════════════════════════════════════════════

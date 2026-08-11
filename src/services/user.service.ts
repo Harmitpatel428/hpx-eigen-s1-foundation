@@ -192,8 +192,11 @@ export class UserService {
       select: {
         id: true,
         email: true,
+        firstName: true,
+        lastName: true,
         status: true,
         createdAt: true,
+        departmentId: true,
         userRoles: {
           select: {
             scopeType: true,

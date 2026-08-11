@@ -14,6 +14,8 @@ import { createRolesRouter } from './routes/roles.router';
 import { createSessionsRouter } from './routes/sessions.router';
 import { createAuditRouter } from './routes/audit.router';
 
+import { createNotificationsRouter } from './routes/notifications.router';
+
 // ─── Route Factories (S2 CRM Domain) ─────────────────────────────────────────
 import { createLeadsRouter } from './routes/leads.router';
 import { createContactsRouter } from './routes/contacts.router';
@@ -96,6 +98,7 @@ app.use('/api/v1/users', createUsersRouter(prisma));
 app.use('/api/v1/roles', createRolesRouter(prisma));
 app.use('/api/v1/sessions', createSessionsRouter(prisma));
 app.use('/api/v1/audit-logs', createAuditRouter(prisma));
+app.use('/api/v1/notifications', createNotificationsRouter(prisma));
 
 // ─── S2 CRM Domain Routers ────────────────────────────────────────────────────
 app.use('/api/v1/leads', createLeadsRouter(prisma));

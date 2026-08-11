@@ -11,6 +11,8 @@ import { PermissionService } from '../services/permission.service';
 import { TokenService } from '../services/auth/TokenService';
 import { checkLoginAttempts, checkResendLimit, checkInviteTokenLookup, checkAcceptAttempts } from '../services/auth/RateLimitService';
 import { InvitationService } from '../services/invitation.service';
+import { NotificationService } from '../services/notification.service';
+import { AuditService } from '../services/audit.service';
 import OrgInitService from '../services/OrgInitService';
 
 export function createAuthRouter(prisma: PrismaClient): Router {
@@ -21,6 +23,8 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   
   const tokenService = new TokenService(prisma);
   const invitationService = new InvitationService(prisma);
+  const notificationService = new NotificationService(prisma);
+  const auditService = new AuditService(prisma);
 
   // ─── POST /api/auth/signup ────────────────────────────────────────
   router.post('/signup', async (req: Request, res: Response, next: NextFunction) => {
@@ -372,7 +376,9 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         }
       });
 
-      // await emailService.sendPasswordResetEmail(user.email, resetToken); // Mock
+      await emailService.sendPasswordResetEmail(user.email, resetToken).catch(e =>
+        console.error('[FORGOT-PASSWORD] Email send failed:', e)
+      );
       res.json({ message: 'If email exists, reset link sent' });
     } catch (err) { next(err); }
   });
@@ -399,8 +405,95 @@ export function createAuthRouter(prisma: PrismaClient): Router {
           data: { status: 'REVOKED', revokedAt: new Date() }
         });
       });
+
+      // Security email + notification (best-effort, after commit)
+      await emailService.sendPasswordChangedEmail(resetToken.user.email).catch(e =>
+        console.error('[RESET-PASSWORD] Security email failed:', e)
+      );
+      await notificationService.create({
+        tenantId: resetToken.user.tenantId,
+        recipientUserId: resetToken.userId,
+        type: 'PASSWORD_RESET_COMPLETED',
+        title: 'Password reset completed',
+        message: 'Your password was reset successfully. All active sessions have been revoked.',
+      }).catch(e => console.error('[RESET-PASSWORD] Notification failed:', e));
+
+      try {
+        await auditService.log({
+          tenantId: resetToken.user.tenantId,
+          eventType: 'PASSWORD_RESET_COMPLETED',
+          entityType: 'User',
+          entityId: resetToken.userId,
+          operation: 'PASSWORD_RESET',
+          payload: { tokenId: resetToken.id },
+        });
+      } catch (e) {
+        console.error('[AUDIT_DELIVERY_FAILURE]', e);
+      }
+
       res.json({ message: 'Password reset successfully. Please login.' });
     } catch (err) { next(err); }
+  });
+
+  // ─── POST /api/auth/change-password ────────────────────────────────
+  router.post('/change-password', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { currentPassword, newPassword } = req.body as { currentPassword?: string; newPassword?: string };
+
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ success: false, code: 'INVALID_INPUT', message: 'currentPassword and newPassword are required.' });
+      }
+      if (newPassword.length < 8) {
+        return res.status(400).json({ success: false, code: 'INVALID_INPUT', message: 'New password must be at least 8 characters.' });
+      }
+
+      const user = await prisma.user.findFirst({
+        where: { id: userId, tenantId, deletedAt: null },
+        select: { id: true, email: true, tenantId: true, password: true },
+      });
+      if (!user) return res.status(404).json({ success: false, code: 'USER_NOT_FOUND' });
+
+      const valid = await bcrypt.compare(currentPassword, user.password);
+      if (!valid) {
+        return res.status(401).json({ success: false, code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' });
+      }
+
+      const hashed = await bcrypt.hash(newPassword, 12);
+      await prisma.user.update({ where: { id: userId }, data: { password: hashed } });
+
+      // Security email + notification (best-effort)
+      await emailService.sendPasswordChangedEmail(user.email).catch(e =>
+        console.error('[CHANGE-PASSWORD] Security email failed:', e)
+      );
+      await notificationService.create({
+        tenantId,
+        recipientUserId: userId,
+        type: 'PASSWORD_CHANGED',
+        title: 'Password changed',
+        message: 'Your password was changed successfully. If you did not do this, contact your administrator immediately.',
+      }).catch(e => console.error('[CHANGE-PASSWORD] Notification failed:', e));
+
+      try {
+        await auditService.log({
+          tenantId,
+          eventType: 'PASSWORD_CHANGED',
+          entityType: 'User',
+          entityId: userId,
+          actorUserId: userId,
+          actorIp: req.ip,
+          actorUserAgent: req.headers['user-agent'],
+          operation: 'PASSWORD_CHANGE',
+          payload: {},
+        });
+      } catch (e) {
+        console.error('[AUDIT_DELIVERY_FAILURE]', e);
+      }
+
+      res.json({ success: true, message: 'Password changed successfully.' });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // ─── POST /api/auth/logout ────────────────────────────────────────

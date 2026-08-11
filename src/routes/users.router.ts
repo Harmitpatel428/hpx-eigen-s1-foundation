@@ -5,6 +5,7 @@ import { UserService } from '../services/user.service';
 import { InvitationService } from '../services/invitation.service';
 import { AdminLockoutService } from '../services/admin-lockout.service';
 import { ValidationError, BusinessRuleViolationError, DuplicateResourceError } from '../types/exceptions';
+import { AuditService } from '../services/audit.service';
 import { checkInviteCreation } from '../services/auth/RateLimitService';
 
 export function createUsersRouter(prisma: PrismaClient): Router {
@@ -12,6 +13,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
   const userService = new UserService(prisma);
   const invitationService = new InvitationService(prisma);
   const adminLockoutService = new AdminLockoutService(prisma);
+  const auditService = new AuditService(prisma);
 
   router.use(authMiddleware);
 
@@ -23,6 +25,8 @@ export function createUsersRouter(prisma: PrismaClient): Router {
       const user = await prisma.user.findFirst({
         where: { id: userId, tenantId, deletedAt: { equals: null } },
         include: {
+          department: { select: { id: true, name: true } },
+          team: { select: { id: true, name: true } },
           userRoles: {
             include: {
               role: {
@@ -47,11 +51,19 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         return acc;
       }, {});
 
+      const fullName = [user.firstName, user.lastName].filter(Boolean).join(' ') || null;
+
       const transformedUser = {
         id: user.id,
         email: user.email,
-        name: (user as any).name || user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        name: fullName || user.email,
+        phone: user.phone,
+        avatarUrl: user.avatarUrl,
         tenantId: user.tenantId,
+        department: user.department,
+        team: user.team,
         permissions,
         roles: user.userRoles.map((ur: any) => ur.role.name)
       };
@@ -60,6 +72,56 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         success: true,
         data: transformedUser
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─── PATCH /api/users/me ───────────────────────────────────────────
+  router.patch('/me', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId, tenantId } = (req as AuthenticatedRequest).user;
+      const { firstName, lastName, phone, avatarUrl } = req.body;
+
+      // Mass-assignment guard: only allow explicit profile fields
+      const data: Record<string, string | null> = {};
+      if (firstName !== undefined) data.firstName = typeof firstName === 'string' ? firstName.trim().slice(0, 100) : null;
+      if (lastName !== undefined) data.lastName = typeof lastName === 'string' ? lastName.trim().slice(0, 100) : null;
+      if (phone !== undefined) data.phone = typeof phone === 'string' ? phone.trim().slice(0, 30) : null;
+      if (avatarUrl !== undefined) data.avatarUrl = typeof avatarUrl === 'string' ? avatarUrl.trim().slice(0, 500) : null;
+
+      if (Object.keys(data).length === 0) {
+        return res.status(400).json({ success: false, code: 'NO_FIELDS', message: 'No updatable fields provided.' });
+      }
+
+      const beforeState = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { firstName: true, lastName: true, phone: true, avatarUrl: true },
+      });
+
+      await prisma.user.update({
+        where: { id: userId },
+        data,
+      });
+
+      try {
+        await auditService.log({
+          tenantId,
+          eventType: 'PROFILE_UPDATED',
+          entityType: 'User',
+          entityId: userId,
+          actorUserId: userId,
+          actorIp: req.ip,
+          actorUserAgent: req.headers['user-agent'],
+          operation: 'UPDATE_PROFILE',
+          payload: data,
+          beforeState: beforeState as Record<string, unknown>,
+        });
+      } catch (e) {
+        console.error('[AUDIT_DELIVERY_FAILURE]', e);
+      }
+
+      res.json({ success: true, message: 'Profile updated.' });
     } catch (err) {
       next(err);
     }
