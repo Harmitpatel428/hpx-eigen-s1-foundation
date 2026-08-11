@@ -89,7 +89,12 @@ app.use(express.json({ limit: '512kb' }));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    commit: process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || 'local',
+    version: process.env.npm_package_version || 'unknown',
+  });
 });
 
 // ─── Domain Routers ───────────────────────────────────────────────────────────
