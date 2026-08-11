@@ -14,8 +14,9 @@
     "test:cov": "jest --coverage",
     "prisma:studio": "prisma studio",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:reset": "prisma migrate reset",
-    "prisma:seed": "ts-node prisma/seed.ts"
+    "prisma:reset": "bash scripts/safe-reset.sh",
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:seed-permissions": "tsx prisma/seed-permissions.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

@@ -183,7 +183,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   router.post(
     '/bulk-assign/preview',
     authMiddleware,
-    permissionMiddleware('lead:edit'),
+    permissionMiddleware('lead:assign'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
@@ -201,7 +201,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   router.post(
     '/bulk-assign',
     authMiddleware,
-    permissionMiddleware('lead:edit'),
+    permissionMiddleware('lead:assign'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;

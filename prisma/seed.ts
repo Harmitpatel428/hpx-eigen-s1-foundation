@@ -4,6 +4,22 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 async function main() {
+  const adminEmail = process.env.SEED_ADMIN_EMAIL;
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD;
+
+  if (!adminEmail || !adminPassword) {
+    console.error(
+      '❌ SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD env vars are required.\n' +
+      '   Never commit credentials. Set these in your shell before running.'
+    );
+    process.exit(1);
+  }
+
+  if (adminPassword.length < 12) {
+    console.error('❌ SEED_ADMIN_PASSWORD must be at least 12 characters.');
+    process.exit(1);
+  }
+
   // Create tenant
   const tenant = await prisma.tenant.upsert({
     where: { id: '00000000-0000-0000-0000-000000000001' },
@@ -36,14 +52,12 @@ async function main() {
     },
   });
 
-  // Hash password
-  const hashedPassword = await bcrypt.hash('Anil@404', 12);
+  const hashedPassword = await bcrypt.hash(adminPassword, 12);
 
-  // Create admin user
   const user = await prisma.user.upsert({
     where: { id: '00000000-0000-0000-0000-000000000002' },
     update: {
-      email: 'anil@v4ubizsolutions.com',
+      email: adminEmail,
       password: hashedPassword,
       status: 'ACTIVE',
       emailVerified: new Date(),
@@ -52,7 +66,7 @@ async function main() {
     },
     create: {
       id: '00000000-0000-0000-0000-000000000002',
-      email: 'anil@v4ubizsolutions.com',
+      email: adminEmail,
       password: hashedPassword,
       tenantId: tenant.id,
       status: 'ACTIVE',

@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test & Build
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: hpx_ci_test
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://ci:ci_password@localhost:5432/hpx_ci_test
+      NODE_ENV: test
+      # JWT secrets for test only — not real credentials
+      JWT_SECRET: ci-test-jwt-secret-not-for-production
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-production
+      JWT_PRIVATE_KEY: ""
+      JWT_PUBLIC_KEY: ""
+      FRONTEND_URL: http://localhost:5173
+      RESEND_API_KEY: re_test_placeholder
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx jest --testPathIgnorePatterns="tests/integration" --passWithNoTests
+
+      - name: Integration tests (real PostgreSQL)
+        run: npx jest --testPathPattern="tests/integration" --passWithNoTests --forceExit
+        # FAIL if DATABASE_URL is missing — never silently skip integration tests
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - name: Build
+        run: npm run build
