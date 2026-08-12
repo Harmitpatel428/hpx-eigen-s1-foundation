@@ -2,6 +2,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import crypto from 'crypto';
 import { AuditWriteFailureError } from '../types/exceptions';
 import { getRequestContext } from '../context/request-context';
+import { logger } from '../utils/logger';
 
 interface AuditLogInput {
   tenantId: string;
@@ -20,14 +21,23 @@ interface AuditLogInput {
 export class AuditService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async log(input: AuditLogInput): Promise<void> {
+  // previousHashOverride: pass the pre-read hash to skip the findFirst inside a long-running
+  // transaction (avoids extra query on held tx connection that caused AUDIT_WRITE_FAILURE at N≥100).
+  // Omit (or pass undefined) to retain the original self-reading behaviour.
+  async log(input: AuditLogInput, previousHashOverride?: string | null): Promise<void> {
     try {
-      // Fetch the last audit record to chain hashes
-      const lastRecord = await this.prisma.auditLog.findFirst({
-        where: { tenantId: input.tenantId },
-        orderBy: { createdAt: 'desc' },
-        select: { currentHash: true }
-      });
+      let previousHash: string | null;
+      if (previousHashOverride !== undefined) {
+        previousHash = previousHashOverride;
+      } else {
+        // Fetch the last audit record to chain hashes
+        const lastRecord = await this.prisma.auditLog.findFirst({
+          where: { tenantId: input.tenantId },
+          orderBy: { createdAt: 'desc' },
+          select: { currentHash: true }
+        });
+        previousHash = lastRecord?.currentHash ?? null;
+      }
 
       let correlationId: string | null = null;
       try {
@@ -36,8 +46,6 @@ export class AuditService {
       } catch {
         // Context unbound
       }
-
-      const previousHash = lastRecord?.currentHash ?? null;
       const timestamp = new Date().toISOString();
 
       // Build the payload string for hashing precisely as instructed
@@ -72,7 +80,9 @@ export class AuditService {
         }
       });
     } catch (err) {
-      // Audit failure must surface — never silently swallowed
+      // Log original error before wrapping — the AppException message is hardcoded,
+      // so without this the underlying Prisma/PostgreSQL cause is permanently lost.
+      logger.error({ err }, 'AuditService.log underlying error');
       throw new AuditWriteFailureError();
     }
   }

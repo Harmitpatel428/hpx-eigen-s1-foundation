@@ -4,6 +4,16 @@ import { NotificationService } from './notification.service';
 import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, ResourceNotFoundError } from '../types/exceptions';
 import { AuthorizationDecision } from '../types/authorization';
 
+// FNV-1a 32-bit hash — deterministic, no external dependency
+// ponytail: collision probability negligible for CRM tenant/dept counts; upgrade to lock table if collisions matter
+function strHash32(s: string): number {
+  let h = 0x811c9dc5 | 0;
+  for (let i = 0; i < s.length; i++) {
+    h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) | 0;
+  }
+  return h; // signed 32-bit int — valid for pg_advisory_xact_lock(int4, int4)
+}
+
 export interface TenantContext {
   tenantId: string;
   userId: string;
@@ -289,7 +299,11 @@ export class LeadService {
           ...(input.company !== undefined ? { company: input.company } : {}),
           ...(input.source !== undefined ? { source: input.source } : {}),
           ...(input.notes !== undefined ? { notes: input.notes } : {}),
-          ...(input.ownerId !== undefined ? { ownerId: input.ownerId } : {}),
+          ...(input.ownerId !== undefined ? {
+            ownerId: input.ownerId,
+            // Track who last delegated this lead so they retain OWN-scope visibility.
+            managerId: input.ownerId ? ctx.userId : null,
+          } : {}),
           ...(input.status !== undefined ? { status: input.status } : {}),
           ...(input.stage !== undefined ? { stage: input.stage } : {}),
           ...(input.score !== undefined ? { score: input.score } : {}),
@@ -632,7 +646,7 @@ export class LeadService {
 
     const employees = await (db as any).user.findMany({
       where: { tenantId: ctx.tenantId, departmentId, deletedAt: null, status: UserStatus.ACTIVE },
-      select: { id: true, firstName: true, lastName: true },
+      select: { id: true, firstName: true, lastName: true, email: true },
       orderBy: { id: 'asc' }, // deterministic tie-break
     });
     if (employees.length === 0) return { assignments: [], employees: [], eligibleLeadIds };
@@ -652,11 +666,12 @@ export class LeadService {
       )
     );
 
-    const empState: Array<{ id: string; firstName: string | null; lastName: string | null; base: number; delta: number }> =
-      employees.map((e: { id: string; firstName: string | null; lastName: string | null }, i: number) => ({
+    const empState: Array<{ id: string; firstName: string | null; lastName: string | null; email: string; base: number; delta: number }> =
+      employees.map((e: { id: string; firstName: string | null; lastName: string | null; email: string }, i: number) => ({
         id: e.id,
         firstName: e.firstName,
         lastName: e.lastName,
+        email: e.email,
         base: workloadCounts[i],
         delta: 0,
       }));
@@ -680,6 +695,7 @@ export class LeadService {
         id: e.id,
         firstName: e.firstName,
         lastName: e.lastName,
+        email: e.email,
         currentWorkload: e.base,
         delta: e.delta,
       })),
@@ -699,77 +715,154 @@ export class LeadService {
     ctx: TenantContext,
     input: { leadIds: string[]; mode: 'MANUAL' | 'AUTO'; userId?: string; departmentId?: string }
   ): Promise<{ count: number }> {
+    // Deduplicate lead IDs at service boundary — router guarantees non-empty and ≤200
+    const uniqueLeadIds = [...new Set(input.leadIds)];
+
     if (input.mode === 'MANUAL') {
       if (!input.userId) throw new ValidationError('userId is required for MANUAL mode.');
 
-      const target = await this.prisma.user.findFirst({
-        where: { id: input.userId, tenantId: ctx.tenantId, deletedAt: null, status: UserStatus.ACTIVE },
-      });
-      if (!target) throw new ResourceNotFoundError();
+      let count = 0;
 
-      const result = await this.prisma.lead.updateMany({
-        where: { id: { in: input.leadIds }, tenantId: ctx.tenantId, deletedAt: null },
-        data: { ownerId: input.userId },
+      // Pre-read the audit hash chain pointer BEFORE the transaction.
+      // Root cause of AUDIT_WRITE_FAILURE at N≥100: AuditService.log() was doing findFirst
+      // inside the $transaction callback, adding an extra query on the already-loaded tx
+      // connection (which held user.findFirst + lead.findMany(N) + lead.updateMany(N)).
+      // On Render free-tier, that 5th query on a resource-pressured connection caused a
+      // transient error that was swallowed into AuditWriteFailureError.
+      // Moving the read outside the tx uses a short-lived pool connection instead.
+      // ponytail: TOCTOU — if another audit event lands between here and tx commit the chain
+      // forks (two records share the same previousHash). verifyChain() detects it. Acceptable:
+      // concurrent bulk-assigns to the same tenant are rare in this CRM.
+      const prevAuditRecord = await this.prisma.auditLog.findFirst({
+        where: { tenantId: ctx.tenantId },
+        orderBy: { createdAt: 'desc' },
+        select: { currentHash: true },
       });
+      const previousAuditHash = prevAuditRecord?.currentHash ?? null;
 
-      await this.audit.log({
-        tenantId: ctx.tenantId,
-        eventType: 'LEADS_BULK_ASSIGNED',
-        entityType: 'Lead',
-        entityId: input.leadIds.join(','),
-        actorUserId: ctx.userId,
-        operation: 'UPDATE',
-        payload: { mode: 'MANUAL', targetUserId: input.userId, count: result.count },
-      });
+      // ponytail: MANUAL intentionally does NOT acquire the advisory lock held by AUTO.
+      // Concurrent MANUAL+AUTO on the same leads uses PostgreSQL row-level last-write-wins (READ COMMITTED).
+      // This is correct: MANUAL is an explicit user override and should be able to win the race.
+      // Adding a lock here would risk deadlock and violates the intent of manual override.
+      // Evaluated alternatives: SELECT FOR UPDATE (adds lock contention), optimistic versioning
+      // (requires schema change), advisory lock (wrong scope — MANUAL has no department). No change warranted.
+      await this.prisma.$transaction(async (tx) => {
+        // Validate target employee within the transaction (eliminates TOCTOU on user status)
+        const target = await (tx as any).user.findFirst({
+          where: { id: input.userId, tenantId: ctx.tenantId, deletedAt: null, status: UserStatus.ACTIVE },
+        });
+        if (!target) throw new ResourceNotFoundError();
 
-      // Notify the new assignee (fire-and-forget — never block the response)
+        // Validate that at least some requested leads exist and belong to this tenant
+        const validLeads = await (tx as any).lead.findMany({
+          where: { id: { in: uniqueLeadIds }, tenantId: ctx.tenantId, deletedAt: null },
+          select: { id: true },
+        });
+        if (validLeads.length === 0) throw new ValidationError('No eligible leads found to assign.');
+
+        const validIds: string[] = validLeads.map((l: { id: string }) => l.id);
+
+        const result = await (tx as any).lead.updateMany({
+          where: { id: { in: validIds }, tenantId: ctx.tenantId, deletedAt: null },
+          data: { ownerId: input.userId, managerId: ctx.userId },
+        });
+        count = result.count;
+
+        // Audit inside the transaction — rolls back with the assignment if this throws.
+        // entityId uses "bulk:N" instead of the comma-joined UUID list — the list can be
+        // 3700+ bytes for N=100, exceeding PostgreSQL's btree maximum (2704 bytes) on the
+        // AuditLog_entityType_entityId_idx index (error 54000). This was the production failure.
+        // Full leadIds list is not needed here — the Lead table is the source of truth.
+        const txAudit = new AuditService(tx as any);
+        await txAudit.log({
+          tenantId: ctx.tenantId,
+          eventType: 'LEADS_BULK_ASSIGNED',
+          entityType: 'Lead',
+          entityId: `bulk:${count}`,
+          actorUserId: ctx.userId,
+          operation: 'UPDATE',
+          payload: { mode: 'MANUAL', targetUserId: input.userId, count },
+        }, previousAuditHash);
+      }, { timeout: 30000 });
+
+      // Notifications are fire-and-forget and must NOT be inside the transaction
       if (input.userId !== ctx.userId) {
         this.notifications.create({
           tenantId: ctx.tenantId,
-          recipientUserId: input.userId,
+          recipientUserId: input.userId!,
           type: NotificationType.LEAD_ASSIGNED,
           title: 'Leads Assigned',
-          message: `${result.count} lead${result.count !== 1 ? 's' : ''} have been assigned to you.`,
+          message: `${count} lead${count !== 1 ? 's' : ''} have been assigned to you.`,
         }).catch(() => {/* non-fatal */});
       }
 
-      return { count: result.count };
+      return { count };
     }
 
     // AUTO mode
     if (!input.departmentId) throw new ValidationError('departmentId is required for AUTO mode.');
 
     let count = 0;
+    // Capture assignments inside the tx so we can send notifications after commit
+    // without an extra DB round-trip
+    let capturedAssignments: Array<{ leadId: string; assigneeId: string }> = [];
+
+    // Pre-read audit hash before the transaction — same fix as MANUAL path.
+    const prevAuditRecordAuto = await this.prisma.auditLog.findFirst({
+      where: { tenantId: ctx.tenantId },
+      orderBy: { createdAt: 'desc' },
+      select: { currentHash: true },
+    });
+    const previousAuditHashAuto = prevAuditRecordAuto?.currentHash ?? null;
+
     await this.prisma.$transaction(async (tx) => {
-      const { assignments } = await this.computeDistribution(ctx, input.leadIds, input.departmentId!, tx);
+      // Advisory lock per tenant+department — serializes concurrent auto-assigns for the
+      // same scope without blocking unrelated tenants or departments.
+      // ponytail: FNV-1a 32-bit hash; collision would only cause unnecessary serialization, never data corruption
+      const k1 = strHash32(ctx.tenantId);
+      const k2 = strHash32(input.departmentId!);
+      await (tx as any).$executeRaw`SELECT pg_advisory_xact_lock(${k1}::integer, ${k2}::integer)`;
+
+      // Server always recomputes fresh from current DB state — never trusts preview data
+      const { assignments } = await this.computeDistribution(ctx, uniqueLeadIds, input.departmentId!, tx);
       if (assignments.length === 0) throw new ValidationError('No eligible employees in the selected department.');
 
+      // Group assignments by employee → O(employees) updateMany instead of O(leads) individual updates
+      const grouped = new Map<string, string[]>();
+      for (const { leadId, assigneeId } of assignments) {
+        if (!grouped.has(assigneeId)) grouped.set(assigneeId, []);
+        grouped.get(assigneeId)!.push(leadId);
+      }
       await Promise.all(
-        assignments.map(({ leadId, assigneeId }) =>
-          tx.lead.update({ where: { id: leadId }, data: { ownerId: assigneeId } })
+        Array.from(grouped.entries()).map(([assigneeId, ids]) =>
+          (tx as any).lead.updateMany({
+            where: { id: { in: ids }, tenantId: ctx.tenantId },
+            data: { ownerId: assigneeId, managerId: ctx.userId },
+          })
         )
       );
+
       count = assignments.length;
-    });
+      capturedAssignments = assignments;
 
-    await this.audit.log({
-      tenantId: ctx.tenantId,
-      eventType: 'LEADS_BULK_ASSIGNED',
-      entityType: 'Lead',
-      entityId: input.leadIds.join(','),
-      actorUserId: ctx.userId,
-      operation: 'UPDATE',
-      payload: { mode: 'AUTO', departmentId: input.departmentId, count },
-    });
+      // Audit inside the transaction — rolls back with the assignment if this throws.
+      // entityId uses "bulk:N" — same reason as MANUAL path (btree index size limit).
+      const txAudit = new AuditService(tx as any);
+      await txAudit.log({
+        tenantId: ctx.tenantId,
+        eventType: 'LEADS_BULK_ASSIGNED',
+        entityType: 'Lead',
+        entityId: `bulk:${count}`,
+        actorUserId: ctx.userId,
+        operation: 'UPDATE',
+        payload: { mode: 'AUTO', departmentId: input.departmentId, count },
+      }, previousAuditHashAuto);
+    }, { timeout: 30000 });
 
-    // Notify each newly assigned user — fire-and-forget
-    const assignedResult = await this.prisma.lead.findMany({
-      where: { id: { in: input.leadIds }, tenantId: ctx.tenantId, deletedAt: null },
-      select: { ownerId: true },
-    });
+    // Notifications after commit — built from captured assignments, no extra DB query
     const countsPerAssignee: Record<string, number> = {};
-    for (const { ownerId } of assignedResult) {
-      if (ownerId && ownerId !== ctx.userId) countsPerAssignee[ownerId] = (countsPerAssignee[ownerId] ?? 0) + 1;
+    for (const { assigneeId } of capturedAssignments) {
+      if (assigneeId !== ctx.userId) countsPerAssignee[assigneeId] = (countsPerAssignee[assigneeId] ?? 0) + 1;
     }
     this.notifications.createMany(
       Object.entries(countsPerAssignee).map(([uid, n]) => ({

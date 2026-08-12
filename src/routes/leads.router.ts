@@ -280,6 +280,159 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     }
   );
 
+  // ─── POST /api/v1/leads/import ───────────────────────────────────
+  // Must be defined before /:id to avoid route conflict
+  router.post(
+    '/import',
+    authMiddleware,
+    permissionMiddleware('lead:create'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { rows, onDuplicates = 'skip' } = req.body as {
+          rows: Array<{
+            firstName: string; lastName: string; email?: string; phone?: string;
+            company?: string; source?: string; stage?: string; priority?: string;
+            notes?: string; score?: number; expectedValue?: number | string;
+            expectedCloseDate?: string; country?: string; state?: string; city?: string;
+            area?: string; postalCode?: string; freeformAddress?: string; ownerId?: string;
+          }>;
+          onDuplicates?: 'skip' | 'overwrite';
+        };
+
+        if (!Array.isArray(rows) || rows.length === 0) throw new ValidationError('rows must be a non-empty array.');
+        if (rows.length > 5000) throw new ValidationError('Maximum 5,000 rows per import.');
+        if (onDuplicates !== 'skip' && onDuplicates !== 'overwrite') throw new ValidationError('onDuplicates must be "skip" or "overwrite".');
+
+        // Batch duplicate detection — one query for all emails + phones
+        const emails = rows.map(r => r.email).filter(Boolean) as string[];
+        const phones = rows.map(r => r.phone).filter(Boolean) as string[];
+        const dupeWhere: any[] = [];
+        if (emails.length) dupeWhere.push({ email: { in: emails } });
+        if (phones.length) dupeWhere.push({ phone: { in: phones } });
+
+        const existing = dupeWhere.length
+          ? await prisma.lead.findMany({
+              where: { tenantId, deletedAt: null, OR: dupeWhere },
+              select: { id: true, email: true, phone: true },
+            })
+          : [];
+
+        const existingEmails = new Set(existing.map(e => e.email).filter(Boolean));
+        const existingPhones = new Set(existing.map(e => e.phone).filter(Boolean));
+
+        const toCreate: typeof rows = [];
+        const toUpdate: Array<{ id: string; row: typeof rows[0] }> = [];
+        const duplicates: Array<{ row: number; email?: string; phone?: string }> = [];
+
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i]!;
+          const isDuplicate =
+            (row.email && existingEmails.has(row.email)) ||
+            (row.phone && existingPhones.has(row.phone));
+          if (isDuplicate) {
+            duplicates.push({ row: i + 1, email: row.email, phone: row.phone });
+            if (onDuplicates === 'overwrite') {
+              const ex = existing.find(e =>
+                (row.email && e.email === row.email) || (row.phone && e.phone === row.phone)
+              );
+              if (ex) toUpdate.push({ id: ex.id, row });
+            }
+          } else {
+            toCreate.push(row);
+          }
+        }
+
+        // Create in 100-row chunks via createMany
+        // ponytail: createMany skips tagNames/customFieldValues — acceptable for CSV import
+        let imported = 0;
+        const errors: Array<{ row: number; message: string }> = [];
+        const CHUNK = 100;
+        for (let start = 0; start < toCreate.length; start += CHUNK) {
+          const chunk = toCreate.slice(start, start + CHUNK);
+          try {
+            const result = await prisma.lead.createMany({
+              data: chunk.map(row => ({
+                tenantId,
+                ownerId: row.ownerId || null,
+                firstName: row.firstName,
+                lastName: row.lastName,
+                email: row.email ?? null,
+                phone: row.phone ?? null,
+                company: row.company ?? null,
+                source: (row.source as LeadSource | undefined) ?? LeadSource.OTHER,
+                status: LeadStatus.NEW,
+                stage: (row.stage as LeadStage | undefined) ?? LeadStage.NEW,
+                priority: (row.priority as LeadPriority | undefined) ?? LeadPriority.MEDIUM,
+                notes: row.notes ?? null,
+                score: typeof row.score === 'number' ? row.score : 0,
+                expectedValue: row.expectedValue !== undefined
+                  ? new Prisma.Decimal(Number(row.expectedValue))
+                  : new Prisma.Decimal(0),
+                expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : null,
+                country: row.country ?? null,
+                state: row.state ?? null,
+                city: row.city ?? null,
+                area: row.area ?? null,
+                postalCode: row.postalCode ?? null,
+                freeformAddress: row.freeformAddress ?? null,
+                customFieldValues: [],
+              })),
+              skipDuplicates: false,
+            });
+            imported += result.count;
+          } catch (err: any) {
+            errors.push({ row: start + 1, message: err.message ?? 'Chunk insert failed' });
+          }
+        }
+
+        // Overwrite duplicates individually
+        for (const { id, row } of toUpdate) {
+          try {
+            await prisma.lead.update({
+              where: { id },
+              data: {
+                firstName: row.firstName,
+                lastName: row.lastName,
+                company: row.company ?? null,
+                source: row.source as LeadSource | undefined,
+                stage: row.stage as LeadStage | undefined,
+                priority: row.priority as LeadPriority | undefined,
+                notes: row.notes ?? null,
+                score: typeof row.score === 'number' ? row.score : undefined,
+                expectedValue: row.expectedValue !== undefined
+                  ? new Prisma.Decimal(Number(row.expectedValue))
+                  : undefined,
+                expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : undefined,
+                country: row.country ?? null,
+                state: row.state ?? null,
+                city: row.city ?? null,
+                area: row.area ?? null,
+                postalCode: row.postalCode ?? null,
+                freeformAddress: row.freeformAddress ?? null,
+              },
+            });
+            imported++;
+          } catch (err: any) {
+            errors.push({ row: -1, message: err.message ?? 'Update failed' });
+          }
+        }
+
+        res.json({
+          data: {
+            imported,
+            skipped: onDuplicates === 'skip' ? duplicates.length : 0,
+            duplicates,
+            failed: errors.length,
+            errors,
+          },
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
   // ─── GET /api/v1/leads ────────────────────────────────────────────
   router.get(
     '/',
@@ -320,7 +473,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           userId,
           teamId,
           departmentId,
-          prisma
+          prisma,
+          true  // Lead has managerId; include delegation-chain visibility in OWN scope
         );
 
         const whereClause: Prisma.LeadWhereInput = {
@@ -330,7 +484,9 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         };
 
         if (status) whereClause.status = status;
-        if (ownerId && !ownerFilter.hasOwnProperty('ownerId')) {
+        // Only let ORGANIZATION-scope users (admins) filter by an arbitrary ownerId.
+        // Scoped users already have their visibility constrained by ownerFilter.
+        if (ownerId && Object.keys(ownerFilter).length === 0) {
           whereClause.ownerId = ownerId;
         }
         if (search) {

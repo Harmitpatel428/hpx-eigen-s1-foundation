@@ -13,10 +13,16 @@ import { PrismaClient } from '@prisma/client';
 
 export type ScopeType = 'OWN' | 'TEAM' | 'DEPARTMENT' | 'ORGANIZATION';
 
+// Base filter — works for all CRM models (Contact, Opportunity, Lead without delegation)
 export type OwnerFilter =
   | { ownerId: string }
   | { ownerId: { in: string[] } }
   | Record<string, never>;
+
+// Lead-only extension — includes managerId for delegation-chain visibility
+export type LeadOwnerFilter =
+  | OwnerFilter
+  | { OR: Array<{ ownerId: string } | { managerId: string }> };
 
 /**
  * Build the ownerId where-clause fragment for a given ABAC scope.
@@ -25,17 +31,31 @@ export type OwnerFilter =
  * These results are NOT cached — they're expected to be small sets in practice
  * (<100 users per team/department). Add a Redis cache here in a future phase
  * if query profiling identifies this as a hot path.
+ *
+ * Pass includeManagerId=true only for Lead queries — Lead is the only model with
+ * a managerId field (delegation chain visibility for OWN scope).
  */
+export async function buildOwnerFilter(
+  scope: ScopeType, userId: string, teamId: string | null,
+  departmentId: string | null, prisma: PrismaClient, includeManagerId: true
+): Promise<LeadOwnerFilter>;
+export async function buildOwnerFilter(
+  scope: ScopeType, userId: string, teamId: string | null,
+  departmentId: string | null, prisma: PrismaClient, includeManagerId?: false
+): Promise<OwnerFilter>;
 export async function buildOwnerFilter(
   scope: ScopeType,
   userId: string,
   teamId: string | null,
   departmentId: string | null,
-  prisma: PrismaClient
-): Promise<OwnerFilter> {
+  prisma: PrismaClient,
+  includeManagerId = false
+): Promise<LeadOwnerFilter> {
   switch (scope) {
     case 'OWN':
-      return { ownerId: userId };
+      return includeManagerId
+        ? { OR: [{ ownerId: userId }, { managerId: userId }] }
+        : { ownerId: userId };
 
     case 'TEAM': {
       if (!teamId) {

@@ -445,6 +445,9 @@ model Lead {
   postalCode        String?
   freeformAddress   String?
   ownerId           String?      @db.Uuid
+  // Tracks who last assigned this lead (delegation chain). Set to ctx.userId on every ownerId change.
+  // Enables OWN-scope users to retain visibility of leads they delegated downward.
+  managerId         String?      @db.Uuid
   notes             String?
   customFieldValues Json         @default("[]")
   createdAt         DateTime     @default(now())
@@ -461,6 +464,7 @@ model Lead {
   @@index([tenantId, status])
   @@index([tenantId, priority])
   @@index([tenantId, ownerId])
+  @@index([tenantId, managerId])
   @@index([deletedAt])
 }
 

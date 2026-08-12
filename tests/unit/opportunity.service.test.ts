@@ -1,7 +1,7 @@
 /**
  * Unit tests for OpportunityService
  */
-import { OpportunityService } from '../../../src/services/opportunity.service';
+import { OpportunityService } from '../../src/services/opportunity.service';
 import { OpportunityStage, OpportunityCurrency } from '@prisma/client';
 
 function makePrismaMock() {

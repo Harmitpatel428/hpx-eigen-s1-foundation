@@ -3,33 +3,35 @@
  * 
  * Strategy: mock PrismaClient, verify business logic in isolation.
  */
-import { LeadService } from '../../../src/services/lead.service';
+import { LeadService } from '../../src/services/lead.service';
 import { LeadStatus, LeadSource, OpportunityStage, OpportunityCurrency } from '@prisma/client';
 
 // ─── Prisma mock factory ───────────────────────────────────────────────────────
 function makePrismaMock() {
-  return {
+  const mock: any = {
     lead: {
       create: jest.fn(),
       findFirst: jest.fn(),
       findMany: jest.fn(),
-      update: jest.fn()
+      update: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
     },
-    contact: {
-      create: jest.fn()
-    },
-    opportunity: {
-      create: jest.fn()
-    },
-    pipeline: {
-      create: jest.fn()
-    },
+    contact: { create: jest.fn() },
+    opportunity: { create: jest.fn() },
+    pipeline: { create: jest.fn() },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({})
+      create: jest.fn().mockResolvedValue({}),
     },
-    $transaction: jest.fn()
+    notification: {
+      create: jest.fn().mockResolvedValue({}),
+      createMany: jest.fn().mockResolvedValue({}),
+    },
+    // Default $transaction implementation calls the callback with a copy of the mock itself
+    $transaction: jest.fn(),
   };
+  mock.$transaction.mockImplementation((fn: any) => fn(mock));
+  return mock;
 }
 
 const CTX = { tenantId: 'tenant-1', userId: 'user-1' };
@@ -62,9 +64,12 @@ describe('LeadService', () => {
         phone: null,
         company: null,
         notes: null,
-        ownerId: null
+        ownerId: null,
+        tags: [], // getLeadWithTags adds this
       };
       prisma.lead.create.mockResolvedValue(lead);
+      // getLeadWithTags uses findFirst with include — return lead with tags
+      prisma.lead.findFirst.mockResolvedValue({ ...lead, tags: [] });
 
       const result = await service.createLead(CTX, {
         firstName: 'John',
@@ -73,7 +78,7 @@ describe('LeadService', () => {
         source: LeadSource.WEBSITE
       });
 
-      expect(result).toEqual(lead);
+      expect(result).toMatchObject({ id: 'lead-1', firstName: 'John', tags: [] });
       expect(prisma.lead.create).toHaveBeenCalledTimes(1);
       expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     });
@@ -111,6 +116,7 @@ describe('LeadService', () => {
   });
 
   // ─── listLeads ───────────────────────────────────────────────────────────────
+  // listLeads(ctx, decision, options?) — decision=undefined means no auth check
   describe('listLeads', () => {
     it('returns all leads for tenant', async () => {
       const leads = [
@@ -118,14 +124,16 @@ describe('LeadService', () => {
         { id: 'lead-2', status: LeadStatus.QUALIFIED }
       ];
       prisma.lead.findMany.mockResolvedValue(leads);
+      prisma.lead.count.mockResolvedValue(2);
 
-      const result = await service.listLeads(CTX);
-      expect(result).toHaveLength(2);
+      const result = await service.listLeads(CTX, undefined);
+      expect(result.data).toHaveLength(2);
     });
 
     it('passes status filter to repository', async () => {
       prisma.lead.findMany.mockResolvedValue([]);
-      await service.listLeads(CTX, { status: LeadStatus.QUALIFIED });
+      prisma.lead.count.mockResolvedValue(0);
+      await service.listLeads(CTX, undefined, { status: LeadStatus.QUALIFIED });
       expect(prisma.lead.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ status: LeadStatus.QUALIFIED })
@@ -135,14 +143,17 @@ describe('LeadService', () => {
   });
 
   // ─── updateLead ──────────────────────────────────────────────────────────────
+  // updateLead(ctx, decision, leadId, input)
   describe('updateLead', () => {
     it('updates lead and returns updated record', async () => {
       const existing = { id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null };
-      const updated = { ...existing, firstName: 'Jane' };
-      prisma.lead.findFirst.mockResolvedValue(existing);
+      const updated = { ...existing, firstName: 'Jane', tags: [] };
+      prisma.lead.findFirst
+        .mockResolvedValueOnce(existing) // getLeadById for beforeLead
+        .mockResolvedValueOnce(updated); // getLeadWithTags after update
       prisma.lead.update.mockResolvedValue(updated);
 
-      const result = await service.updateLead(CTX, 'lead-1', { firstName: 'Jane' });
+      const result = await service.updateLead(CTX, undefined, 'lead-1', { firstName: 'Jane' });
       expect(result.firstName).toBe('Jane');
       expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     });

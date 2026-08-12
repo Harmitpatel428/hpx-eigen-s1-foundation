@@ -5,7 +5,8 @@ import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../m
 import { ResourceNotFoundError, AuthorizationError, BusinessRuleViolationError, ValidationError } from '../types/exceptions';
 import { AuditService } from '../services/audit.service';
 
-const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — normal sessions
+const IMPERSONATION_SESSION_MS = 60 * 60 * 1000;      // 1h — matches JWT expiry; no refresh for impersonation
 
 export function createSessionsRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -141,8 +142,8 @@ export function createSessionsRouter(prisma: PrismaClient): Router {
           throw new BusinessRuleViolationError('Cannot impersonate an inactive user.');
         }
 
-        // Create impersonation session
-        const expiresAt = new Date(Date.now() + SESSION_LIFETIME_MS);
+        // Create impersonation session — expires with the JWT (1h); no refresh token
+        const expiresAt = new Date(Date.now() + IMPERSONATION_SESSION_MS);
         const impersonationSession = await (prisma as any).session.create({
           data: {
             tenantId,
