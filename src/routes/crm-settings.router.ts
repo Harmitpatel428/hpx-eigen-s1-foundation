@@ -1,23 +1,22 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { AuditService } from '../services/audit.service';
 import { ValidationError } from '../types/exceptions';
 
 const VALID_PREFS = new Set(['name', 'company']);
 
 export function createCrmSettingsRouter(prisma: PrismaClient): Router {
   const router = Router();
-
-  // ponytail: 'as any' cast — Prisma client locked by running server; regenerate on next restart
-  const db = prisma as any;
+  const auditService = new AuditService(prisma);
 
   // GET /api/v1/settings/crm — returns CRM config for this tenant (auth only, no RBAC)
   router.get('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
-      const row = await db.tenantSettings.findUnique({ where: { tenantId } });
+      const row = await prisma.tenantSettings.findUnique({ where: { tenantId } });
       res.json({
-        leadHeaderPreference: row?.leadHeaderPreference ?? null,
+        leadHeaderPreference: row?.leadHeaderPreference ?? 'name',
         allowImpersonation: row?.allowImpersonation ?? false,
       });
     } catch (err) { next(err); }
@@ -36,7 +35,7 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
           throw new ValidationError('enabled must be a boolean.');
         }
 
-        await db.tenantSettings.upsert({
+        await prisma.tenantSettings.upsert({
           where: { tenantId },
           create: { tenantId, allowImpersonation: enabled },
           update: { allowImpersonation: enabled },
@@ -54,18 +53,37 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('role:manage'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { tenantId } = (req as AuthenticatedRequest).user;
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
         const { preference } = req.body as { preference?: string };
 
         if (!preference || !VALID_PREFS.has(preference)) {
           throw new ValidationError('preference must be one of: name, company');
         }
 
-        await db.tenantSettings.upsert({
+        const before = await prisma.tenantSettings.findUnique({ where: { tenantId } });
+
+        await prisma.tenantSettings.upsert({
           where: { tenantId },
           create: { tenantId, leadHeaderPreference: preference },
           update: { leadHeaderPreference: preference },
         });
+
+        try {
+          await auditService.log({
+            tenantId,
+            eventType: 'TENANT_SETTINGS_UPDATED',
+            entityType: 'TenantSettings',
+            entityId: tenantId,
+            actorUserId: userId,
+            actorIp: req.ip,
+            actorUserAgent: req.headers['user-agent'],
+            operation: 'UPDATE_LEAD_HEADER_PREFERENCE',
+            payload: { leadHeaderPreference: preference },
+            beforeState: { leadHeaderPreference: before?.leadHeaderPreference ?? 'name' },
+          });
+        } catch (e) {
+          console.error('[AUDIT_DELIVERY_FAILURE]', e);
+        }
 
         res.json({ success: true, leadHeaderPreference: preference });
       } catch (err) { next(err); }
