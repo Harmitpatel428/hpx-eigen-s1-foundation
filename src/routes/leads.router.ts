@@ -297,7 +297,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             firstName: string; lastName: string; email?: string; phone?: string;
             company?: string; source?: string; stage?: string; priority?: string;
             notes?: string; score?: number; expectedValue?: number | string;
-            expectedCloseDate?: string; country?: string; state?: string; city?: string;
+            followUpDate?: string; expectedCloseDate?: string;
+            country?: string; state?: string; city?: string;
             area?: string; postalCode?: string; freeformAddress?: string; ownerId?: string;
           }>;
           onDuplicates?: 'skip' | 'overwrite';
@@ -306,6 +307,27 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         if (!Array.isArray(rows) || rows.length === 0) throw new ValidationError('rows must be a non-empty array.');
         if (rows.length > 5000) throw new ValidationError('Maximum 5,000 rows per import.');
         if (onDuplicates !== 'skip' && onDuplicates !== 'overwrite') throw new ValidationError('onDuplicates must be "skip" or "overwrite".');
+
+        // Stage validation: reject legacy-only stages and enforce followUpDate requirement
+        const FOLLOW_UP_REQUIRED_STAGES_IMPORT = new Set<string>([LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED]);
+        const SELECTABLE_STAGES_IMPORT = new Set<string>([LeadStage.NEW, LeadStage.QUALIFIED, LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED, LeadStage.OTHER, LeadStage.DISQUALIFIED]);
+        const rowErrors: Array<{ row: number; message: string }> = [];
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i]!;
+          if (!row.firstName || !row.lastName) {
+            rowErrors.push({ row: i + 1, message: 'firstName and lastName are required.' });
+            continue;
+          }
+          if (row.stage && !SELECTABLE_STAGES_IMPORT.has(row.stage)) {
+            rowErrors.push({ row: i + 1, message: `Stage "${row.stage}" is not valid for import. Use one of: ${[...SELECTABLE_STAGES_IMPORT].join(', ')}.` });
+          }
+          if (row.stage && FOLLOW_UP_REQUIRED_STAGES_IMPORT.has(row.stage) && !row.followUpDate) {
+            rowErrors.push({ row: i + 1, message: `Stage "${row.stage}" requires a followUpDate.` });
+          }
+        }
+        if (rowErrors.length > 0) {
+          return res.status(400).json({ error: { message: 'Import validation failed.', code: 'IMPORT_VALIDATION_FAILED', errors: rowErrors } });
+        }
 
         // Batch duplicate detection — one query for all emails + phones
         const emails = rows.map(r => r.email).filter(Boolean) as string[];
@@ -372,6 +394,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 expectedValue: row.expectedValue !== undefined
                   ? new Prisma.Decimal(Number(row.expectedValue))
                   : new Prisma.Decimal(0),
+                followUpDate: row.followUpDate ? new Date(row.followUpDate) : null,
                 expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : null,
                 country: row.country ?? null,
                 state: row.state ?? null,
