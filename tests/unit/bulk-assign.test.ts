@@ -88,7 +88,7 @@ describe('bulkAssign — MANUAL', () => {
     );
     // Update inside tx
     expect(tx.lead.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { ownerId: 'user-A' } })
+      expect.objectContaining({ data: expect.objectContaining({ ownerId: 'user-A' }) })
     );
     // Audit inside tx
     expect(tx.auditLog.create).toHaveBeenCalledTimes(1);

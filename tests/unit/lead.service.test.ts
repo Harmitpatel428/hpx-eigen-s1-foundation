@@ -27,6 +27,9 @@ function makePrismaMock() {
       create: jest.fn().mockResolvedValue({}),
       createMany: jest.fn().mockResolvedValue({}),
     },
+    leadActivity: {
+      create: jest.fn().mockResolvedValue({}),
+    },
     // Default $transaction implementation calls the callback with a copy of the mock itself
     $transaction: jest.fn(),
   };
