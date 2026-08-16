@@ -381,11 +381,35 @@ enum LeadStatus {
 }
 
 enum LeadStage {
+  // Active selectable stages
   NEW
-  CONTACTED
   QUALIFIED
+  FOLLOW_UP
+  CALL_BACK_REQUESTED
+  CALL_NOT_RECEIVED
+  OTHER
   DISQUALIFIED
+  // Legacy values — kept for historical records, not selectable in UI
+  CONTACTED
   CONVERTED
+}
+
+// ─── LeadActivity — Lead-scoped operational timeline ─────────────
+enum LeadActivityType {
+  STAGE_CHANGE
+  FOLLOW_UP_SCHEDULED
+  CALLBACK_SCHEDULED
+  CALL_NOT_RECEIVED_EVENT
+  ASSIGNMENT_CHANGE
+  LEAD_CREATED
+  NOTE_ADDED
+  OTHER
+}
+
+enum LeadActivityState {
+  PENDING
+  COMPLETED
+  CANCELLED
 }
 
 enum LeadSource {
@@ -449,16 +473,19 @@ model Lead {
   // Enables OWN-scope users to retain visibility of leads they delegated downward.
   managerId         String?      @db.Uuid
   notes             String?
+  // Current scheduling state: required when stage ∈ {FOLLOW_UP, CALL_BACK_REQUESTED, CALL_NOT_RECEIVED}
+  followUpDate      DateTime?
   customFieldValues Json         @default("[]")
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
   deletedAt         DateTime?
 
-  contacts      Contact[]
-  opportunities Opportunity[]
-  docCases      DocCase[]
-  tags          LeadTagAssignment[]
-  leadNotes     LeadNote[] @relation("LeadNotes")
+  contacts       Contact[]
+  opportunities  Opportunity[]
+  docCases       DocCase[]
+  tags           LeadTagAssignment[]
+  leadNotes      LeadNote[]          @relation("LeadNotes")
+  leadActivities LeadActivity[]
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -533,6 +560,31 @@ model LeadTagAssignment {
   @@id([leadId, tagId])
   @@index([leadId])
   @@index([tagId])
+}
+
+// ─── LeadActivity — append-mostly operational timeline per lead ───
+// Separate from Opportunity-scoped Activity; owned at the Lead level.
+model LeadActivity {
+  id          String              @id @default(uuid()) @db.Uuid
+  tenantId    String              @db.Uuid
+  leadId      String              @db.Uuid
+  actorUserId String?             @db.Uuid
+  type        LeadActivityType
+  state       LeadActivityState   @default(COMPLETED)
+  subject     String
+  metadata    Json                @default("{}")
+  scheduledAt DateTime?
+  completedAt DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  deletedAt   DateTime?
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, leadId])
+  @@index([tenantId, leadId, createdAt(sort: Desc)])
+  @@index([leadId, state])
+  @@index([deletedAt])
 }
 
 // ─── Contact ──────────────────────────────────────────────────────

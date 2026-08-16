@@ -36,6 +36,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           ownerId,
           score,
           stage,
+          followUpDate,
           expectedValue,
           priority,
           expectedCloseDate,
@@ -58,6 +59,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           ownerId?: string;
           score?: number;
           stage?: LeadStage;
+          followUpDate?: string | null;
           expectedValue?: number | string;
           priority?: LeadPriority;
           expectedCloseDate?: string;
@@ -107,6 +109,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             ownerId,
             score,
             stage,
+            followUpDate,
             expectedValue,
             priority,
             expectedCloseDate,
@@ -572,6 +575,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           status,
           score,
           stage,
+          followUpDate,
           expectedValue,
           priority,
           expectedCloseDate,
@@ -595,6 +599,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           status?: LeadStatus;
           score?: number;
           stage?: LeadStage;
+          followUpDate?: string | null;
           expectedValue?: number | string;
           priority?: LeadPriority;
           expectedCloseDate?: string | null;
@@ -643,6 +648,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             status,
             score,
             stage,
+            followUpDate,
             expectedValue,
             priority,
             expectedCloseDate,

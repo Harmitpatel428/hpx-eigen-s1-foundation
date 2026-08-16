@@ -41,6 +41,7 @@ import { createLeadTagsRouter } from './routes/lead-tags.router';
 import { createLeadContactsRouter } from './routes/lead-contacts.router';
 import { createLeadFieldsRouter } from './routes/lead-fields.router';
 import { createLeadNotesRouter } from './routes/lead-notes.router';
+import { createLeadActivitiesRouter } from './routes/lead-activities.router';
 
 import * as Sentry from '@sentry/node';
 
@@ -132,6 +133,7 @@ app.use('/api/v1/lead-tags', createLeadTagsRouter(prisma));
 app.use('/api/v1/lead-fields', createLeadFieldsRouter(prisma));
 app.use('/api/v1/leads/:leadId/contacts', createLeadContactsRouter(prisma));
 app.use('/api/v1/leads/:leadId/notes', createLeadNotesRouter(prisma));
+app.use('/api/v1/leads/:leadId/activities', createLeadActivitiesRouter(prisma));
 
 // ─── Dashboard Router ─────────────────────────────────────────────────────────
 import { createDashboardRouter } from './routes/dashboard.router';

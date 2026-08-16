@@ -1,8 +1,26 @@
-import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency, UserStatus, NotificationType } from '@prisma/client';
+import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency, UserStatus, NotificationType, LeadActivityType, LeadActivityState } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { NotificationService } from './notification.service';
 import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, ResourceNotFoundError } from '../types/exceptions';
 import { AuthorizationDecision } from '../types/authorization';
+
+// Stages that require a followUpDate to be set
+const FOLLOW_UP_REQUIRED_STAGES = new Set<LeadStage>([
+  LeadStage.FOLLOW_UP,
+  LeadStage.CALL_BACK_REQUESTED,
+  LeadStage.CALL_NOT_RECEIVED,
+]);
+
+// Stages that are selectable via the UI (legacy CONTACTED/CONVERTED are read-only)
+const ACTIVE_STAGES = new Set<LeadStage>([
+  LeadStage.NEW,
+  LeadStage.QUALIFIED,
+  LeadStage.FOLLOW_UP,
+  LeadStage.CALL_BACK_REQUESTED,
+  LeadStage.CALL_NOT_RECEIVED,
+  LeadStage.OTHER,
+  LeadStage.DISQUALIFIED,
+]);
 
 // FNV-1a 32-bit hash — deterministic, no external dependency
 // ponytail: collision probability negligible for CRM tenant/dept counts; upgrade to lock table if collisions matter
@@ -47,6 +65,7 @@ export interface CreateLeadInput {
   ownerId?: string;
   score?: number;
   stage?: LeadStage;
+  followUpDate?: string | Date | null;
   expectedValue?: number | string;
   priority?: LeadPriority;
   expectedCloseDate?: string | Date;
@@ -72,6 +91,7 @@ export interface UpdateLeadInput {
   status?: LeadStatus;
   score?: number;
   stage?: LeadStage;
+  followUpDate?: string | Date | null;
   expectedValue?: number | string;
   priority?: LeadPriority;
   expectedCloseDate?: string | Date | null;
@@ -142,11 +162,29 @@ export class LeadService {
     return tagIds;
   }
 
+  /** Validate that a stage is selectable (not a legacy read-only value) */
+  private validateStageSelectable(stage: LeadStage) {
+    if (!ACTIVE_STAGES.has(stage)) {
+      throw new ValidationError(`stage '${stage}' is not a valid selection.`);
+    }
+  }
+
+  /** Validate followUpDate requirement for stages that need it */
+  private validateFollowUpDate(stage: LeadStage, followUpDate: string | Date | null | undefined) {
+    if (FOLLOW_UP_REQUIRED_STAGES.has(stage) && !followUpDate) {
+      throw new ValidationError('followUpDate is required for this stage.');
+    }
+  }
+
   /** Create a new lead */
   async createLead(ctx: TenantContext, input: CreateLeadInput) {
     if (!input.firstName?.trim() || !input.lastName?.trim()) {
       throw new ValidationError('firstName and lastName are required.');
     }
+
+    const resolvedStage = input.stage ?? LeadStage.NEW;
+    if (input.stage) this.validateStageSelectable(input.stage);
+    this.validateFollowUpDate(resolvedStage, input.followUpDate ?? null);
 
     const lead = await this.prisma.$transaction(async (tx) => {
       const created = await tx.lead.create({
@@ -159,7 +197,7 @@ export class LeadService {
           company: input.company ?? null,
           source: input.source ?? LeadSource.OTHER,
           status: LeadStatus.NEW,
-          stage: input.stage ?? LeadStage.NEW,
+          stage: resolvedStage,
           score: input.score ?? 0,
           expectedValue: input.expectedValue !== undefined
             ? new Prisma.Decimal(input.expectedValue)
@@ -168,6 +206,7 @@ export class LeadService {
           expectedCloseDate: input.expectedCloseDate
             ? new Date(input.expectedCloseDate)
             : null,
+          followUpDate: input.followUpDate ? new Date(input.followUpDate) : null,
           country: input.country ?? null,
           state: input.state ?? null,
           city: input.city ?? null,
@@ -202,6 +241,20 @@ export class LeadService {
         payload: { firstName: input.firstName, lastName: input.lastName, source: input.source },
         beforeState: null,
         afterState: created as unknown as Record<string, unknown>,
+      });
+
+      // Record initial timeline event
+      await (tx as any).leadActivity.create({
+        data: {
+          tenantId: ctx.tenantId,
+          leadId: created.id,
+          actorUserId: ctx.userId,
+          type: LeadActivityType.LEAD_CREATED,
+          state: LeadActivityState.COMPLETED,
+          subject: 'Lead created',
+          metadata: { stage: resolvedStage },
+          completedAt: new Date(),
+        },
       });
 
       return created;
@@ -288,6 +341,21 @@ export class LeadService {
 
     const beforeLead = await this.getLeadById(ctx, leadId);
 
+    // Server-side business rule validation (before any DB write)
+    if (input.stage !== undefined) {
+      this.validateStageSelectable(input.stage);
+    }
+    // Determine the effective stage after this update (fallback to existing)
+    const effectiveStage: LeadStage = input.stage ?? (beforeLead as any).stage ?? LeadStage.NEW;
+    // followUpDate effective value: explicit in input overrides existing
+    const effectiveFollowUpDate = 'followUpDate' in input
+      ? input.followUpDate
+      : (beforeLead as any).followUpDate;
+    this.validateFollowUpDate(effectiveStage, effectiveFollowUpDate);
+
+    const ownerChanged = input.ownerId !== undefined && input.ownerId !== (beforeLead as any).ownerId;
+    const stageChanged = input.stage !== undefined && input.stage !== (beforeLead as any).stage;
+
     const lead = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.lead.update({
         where: { id: leadId },
@@ -313,6 +381,9 @@ export class LeadService {
           ...(input.priority !== undefined ? { priority: input.priority } : {}),
           ...('expectedCloseDate' in input
             ? { expectedCloseDate: input.expectedCloseDate ? new Date(input.expectedCloseDate) : null }
+            : {}),
+          ...('followUpDate' in input
+            ? { followUpDate: input.followUpDate ? new Date(input.followUpDate) : null }
             : {}),
           ...(input.country !== undefined ? { country: input.country } : {}),
           ...(input.state !== undefined ? { state: input.state } : {}),
@@ -350,6 +421,81 @@ export class LeadService {
         beforeState: beforeLead as unknown as Record<string, unknown>,
         afterState: updated as unknown as Record<string, unknown>,
       });
+
+      const now = new Date();
+
+      // Stage change activity
+      if (stageChanged) {
+        await (tx as any).leadActivity.create({
+          data: {
+            tenantId: ctx.tenantId,
+            leadId,
+            actorUserId: ctx.userId,
+            type: LeadActivityType.STAGE_CHANGE,
+            state: LeadActivityState.COMPLETED,
+            subject: 'Stage changed',
+            metadata: {
+              from: (beforeLead as any).stage,
+              to: input.stage,
+            },
+            completedAt: now,
+          },
+        });
+      }
+
+      // Follow-up scheduling activity for stages requiring a follow-up date
+      if (stageChanged && input.stage && FOLLOW_UP_REQUIRED_STAGES.has(input.stage) && effectiveFollowUpDate) {
+        const actType = input.stage === LeadStage.CALL_BACK_REQUESTED
+          ? LeadActivityType.CALLBACK_SCHEDULED
+          : input.stage === LeadStage.CALL_NOT_RECEIVED
+          ? LeadActivityType.CALL_NOT_RECEIVED_EVENT
+          : LeadActivityType.FOLLOW_UP_SCHEDULED;
+
+        const subject = input.stage === LeadStage.CALL_BACK_REQUESTED
+          ? 'Callback scheduled'
+          : input.stage === LeadStage.CALL_NOT_RECEIVED
+          ? 'Call not received — follow-up scheduled'
+          : 'Follow-up scheduled';
+
+        await (tx as any).leadActivity.create({
+          data: {
+            tenantId: ctx.tenantId,
+            leadId,
+            actorUserId: ctx.userId,
+            type: actType,
+            state: LeadActivityState.PENDING,
+            subject,
+            metadata: {
+              followUpDate: effectiveFollowUpDate instanceof Date
+                ? effectiveFollowUpDate.toISOString()
+                : new Date(effectiveFollowUpDate).toISOString(),
+              stage: input.stage,
+            },
+            scheduledAt: effectiveFollowUpDate instanceof Date
+              ? effectiveFollowUpDate
+              : new Date(effectiveFollowUpDate),
+          },
+        });
+      }
+
+      // Assignment change activity
+      if (ownerChanged) {
+        await (tx as any).leadActivity.create({
+          data: {
+            tenantId: ctx.tenantId,
+            leadId,
+            actorUserId: ctx.userId,
+            type: LeadActivityType.ASSIGNMENT_CHANGE,
+            state: LeadActivityState.COMPLETED,
+            subject: 'Lead assigned',
+            metadata: {
+              fromOwnerId: (beforeLead as any).ownerId,
+              toOwnerId: input.ownerId,
+            },
+            completedAt: now,
+          },
+        });
+      }
 
       return updated;
     });
