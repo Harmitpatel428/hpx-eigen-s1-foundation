@@ -133,10 +133,11 @@ async function main(): Promise<void> {
       update: { isSystem: true, deletedAt: null },
     });
 
-    // Full replace of admin role permissions (this is a system role — full reset is intentional)
+    // Organization Admin gets ALL permissions in the database, not just the seeded subset.
+    const allPerms = await prisma.permission.findMany({ select: { id: true } });
     await prisma.rolePermission.deleteMany({ where: { roleId: adminRole.id } });
     await prisma.rolePermission.createMany({
-      data: createdPermissions.map(p => ({ roleId: adminRole.id, permissionId: p.id })),
+      data: allPerms.map(p => ({ roleId: adminRole.id, permissionId: p.id })),
       skipDuplicates: true,
     });
 

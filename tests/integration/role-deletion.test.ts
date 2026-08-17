@@ -370,7 +370,7 @@ describe('DELETE /api/v1/roles/:id — Role Deletion', () => {
   });
 
   it('T12 — permission cache invalidated: deleted role\'s permissions no longer effective', async () => {
-    const { tenantId } = await makeIsolatedTenant();
+    const { tenantId, token: adminToken } = await makeIsolatedTenant();
 
     // Create a second user whose ONLY role grants role:view
     const viewer = await makeUser(tenantId);
@@ -383,19 +383,6 @@ describe('DELETE /api/v1/roles/:id — Role Deletion', () => {
     // Viewer can GET /roles before deletion
     const before = await api('GET', '/api/v1/roles', { token: viewerToken });
     expect(before.status).toBe(200);
-
-    // Admin (from a separate admin context in same tenant) deletes the viewer's role
-    const adminUser = await prisma.userRole.findFirst({
-      where: { role: { tenantId } },
-      include: { role: { include: { permissions: { include: { permission: true } } } } },
-    });
-    // Find the admin token for this tenant
-    const adminSession = await prisma.session.findFirst({ where: { tenantId, status: 'ACTIVE' } });
-    const adminToken = jwt.sign(
-      { sessionId: adminSession!.id, userId: adminSession!.userId, tenantId },
-      JWT_SECRET,
-      { expiresIn: '1h' }
-    );
 
     const deleteR = await api('DELETE', `/api/v1/roles/${viewerRole.id}`, { token: adminToken });
     expect(deleteR.status).toBe(200);

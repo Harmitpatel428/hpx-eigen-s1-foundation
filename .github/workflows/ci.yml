@@ -56,6 +56,9 @@ jobs:
       - name: Apply migrations
         run: npx prisma migrate deploy
 
+      - name: Seed permissions
+        run: npx tsx prisma/seed-permissions.ts
+
       - name: Typecheck
         run: npx tsc --noEmit
 

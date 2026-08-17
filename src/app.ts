@@ -77,7 +77,10 @@ const allowedOrigins = [
 ];
 
 const corsOptions = {
-  origin: true, // Reflects the request origin, allowing Vercel
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    if (!origin || allowedOrigins.includes(origin) || (origin && /^https:\/\/hpx-eigen-frontend[^.]*\.vercel\.app$/.test(origin))) { callback(null, true); }
+    else { callback(new Error('CORS: origin not allowed')); }
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-tenant-id', 'x-department-id', 'x-department-context'],
   credentials: true,

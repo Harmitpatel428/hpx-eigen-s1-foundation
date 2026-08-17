@@ -16,12 +16,39 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 const service = new LeadNotesService(prisma);
-const ctx = { tenantId: 'test-tenant-1', userId: 'user-1' };
+
+// Deterministic UUIDs for test isolation — no FK on authorId so no User row needed
+const TENANT_ID = '10000000-0000-0000-0000-000000000001';
+const USER_ID   = '10000000-0000-0000-0000-000000000002';
+// lead-notes tests use lead IDs test-lead-1 through test-lead-17
+const LEAD_IDS  = Array.from({ length: 17 }, (_, i) =>
+  `10000000-0000-0000-0001-${String(i + 1).padStart(12, '0')}`
+);
+const ctx = { tenantId: TENANT_ID, userId: USER_ID };
+
+beforeAll(async () => {
+  await prisma.tenant.create({ data: { id: TENANT_ID, name: 'Lead Notes Test Tenant' } });
+  await prisma.lead.createMany({
+    data: LEAD_IDS.map((id, i) => ({
+      id,
+      tenantId: TENANT_ID,
+      firstName: `Lead${i + 1}`,
+      lastName: 'Test',
+    })),
+  });
+});
+
+afterAll(async () => {
+  await prisma.leadNote.deleteMany({ where: { tenantId: TENANT_ID } });
+  await prisma.lead.deleteMany({ where: { tenantId: TENANT_ID } });
+  await prisma.tenant.delete({ where: { id: TENANT_ID } });
+  await prisma.$disconnect();
+});
 
 describe('LeadNotesService', () => {
   describe('TEST 1: Create note', () => {
     it('should create a new lead note', async () => {
-      const leadId = 'test-lead-1';
+      const leadId = LEAD_IDS[0];
       const note = await service.createNote(ctx, leadId, 'Initial note');
 
       expect(note.content).toBe('Initial note');
@@ -33,7 +60,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 2: Multiple notes preservation', () => {
     it('should preserve both notes when adding a second', async () => {
-      const leadId = 'test-lead-2';
+      const leadId = LEAD_IDS[1];
 
       const note1 = await service.createNote(ctx, leadId, 'Note A');
       const note2 = await service.createNote(ctx, leadId, 'Note B');
@@ -48,7 +75,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 3: Original note preservation on edit', () => {
     it('should not modify original when editing a note', async () => {
-      const leadId = 'test-lead-3';
+      const leadId = LEAD_IDS[2];
       const note = await service.createNote(ctx, leadId, 'Original content');
 
       await service.updateNote(ctx, note.id, 'Updated content');
@@ -61,7 +88,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 4: 500-character limit', () => {
     it('should accept exactly 500 characters', async () => {
-      const leadId = 'test-lead-4';
+      const leadId = LEAD_IDS[3];
       const content = 'x'.repeat(500);
 
       const note = await service.createNote(ctx, leadId, content);
@@ -69,7 +96,7 @@ describe('LeadNotesService', () => {
     });
 
     it('should reject 501+ characters', async () => {
-      const leadId = 'test-lead-5';
+      const leadId = LEAD_IDS[4];
       const content = 'x'.repeat(501);
 
       try {
@@ -84,7 +111,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 5: XSS protection', () => {
     it('should safely store and render malicious HTML', async () => {
-      const leadId = 'test-lead-6';
+      const leadId = LEAD_IDS[5];
       const xssPayload = '<script>alert(1)</script>';
 
       const note = await service.createNote(ctx, leadId, xssPayload);
@@ -97,7 +124,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 6: Same-day edit allowed', () => {
     it('should allow editing on creation date', async () => {
-      const leadId = 'test-lead-7';
+      const leadId = LEAD_IDS[6];
       const note = await service.createNote(ctx, leadId, 'Original');
 
       // Edit on same day
@@ -108,7 +135,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 7: Next-day edit rejected', () => {
     it('should reject edit after calendar date changes', async () => {
-      const leadId = 'test-lead-8';
+      const leadId = LEAD_IDS[7];
 
       // Create note today
       const note = await service.createNote(ctx, leadId, 'Created today');
@@ -136,7 +163,7 @@ describe('LeadNotesService', () => {
       // Attempt: 09 Aug 11:30 PM (23.5 hours later, but different calendar day)
       // Result: REJECTED
       // (This is the critical business rule test)
-      const leadId = 'test-lead-9';
+      const leadId = LEAD_IDS[8];
 
       // Documented expected behavior:
       // Same-day rule is CALENDAR-DAY based, not 24-hour rolling window
@@ -145,7 +172,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 10: createdAt immutability', () => {
     it('should never change createdAt when editing', async () => {
-      const leadId = 'test-lead-10';
+      const leadId = LEAD_IDS[9];
       const note = await service.createNote(ctx, leadId, 'Original');
       const originalCreatedAt = note.createdAt;
 
@@ -159,7 +186,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 11: Follow-up date/time persistence', () => {
     it('should persist exact follow-up values', async () => {
-      const leadId = 'test-lead-11';
+      const leadId = LEAD_IDS[10];
       const followUpDate = new Date('2026-08-15');
       const followUpTime = '14:30';
 
@@ -178,7 +205,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 12: Empty follow-up', () => {
     it('should handle missing follow-up gracefully', async () => {
-      const leadId = 'test-lead-12';
+      const leadId = LEAD_IDS[11];
       const note = await service.createNote(ctx, leadId, 'No follow-up');
 
       expect(note.followUpDate).toBeNull();
@@ -188,10 +215,10 @@ describe('LeadNotesService', () => {
 
   describe('TEST 13: Tenant isolation', () => {
     it('should not allow Tenant A to access Tenant B notes', async () => {
-      const leadId = 'test-lead-13';
+      const leadId = LEAD_IDS[12];
       const note = await service.createNote(ctx, leadId, 'Tenant A note');
 
-      const otherTenant = { tenantId: 'tenant-b', userId: 'user-b' };
+      const otherTenant = { tenantId: '20000000-0000-0000-0000-000000000001', userId: '20000000-0000-0000-0000-000000000002' };
       const notes = await service.listNotes(otherTenant, leadId);
 
       expect(notes.length).toBe(0);
@@ -200,10 +227,10 @@ describe('LeadNotesService', () => {
 
   describe('TEST 14: IDOR protection', () => {
     it('should reject update of note from unauthorized tenant', async () => {
-      const leadId = 'test-lead-14';
+      const leadId = LEAD_IDS[13];
       const note = await service.createNote(ctx, leadId, 'Original');
 
-      const attacker = { tenantId: 'attacker-tenant', userId: 'attacker' };
+      const attacker = { tenantId: '30000000-0000-0000-0000-000000000001', userId: '30000000-0000-0000-0000-000000000002' };
 
       try {
         await service.updateNote(attacker, note.id, 'Hacked');
@@ -216,7 +243,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 15: Note soft-delete', () => {
     it('should soft-delete without losing historical record', async () => {
-      const leadId = 'test-lead-15';
+      const leadId = LEAD_IDS[14];
       const note = await service.createNote(ctx, leadId, 'Will delete');
 
       await service.deleteNote(ctx, note.id);
@@ -234,7 +261,7 @@ describe('LeadNotesService', () => {
 
   describe('TEST 17: Lead delete/restore preserves notes', () => {
     it('should preserve notes when lead is soft-deleted', async () => {
-      const leadId = 'test-lead-17';
+      const leadId = LEAD_IDS[16];
       const note = await service.createNote(ctx, leadId, 'Note on deleted lead');
 
       // Soft-delete lead

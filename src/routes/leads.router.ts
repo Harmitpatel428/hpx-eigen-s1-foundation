@@ -11,6 +11,7 @@ import {
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { LeadService } from '../services/lead.service';
 import { ValidationError } from '../types/exceptions';
+import { checkImportRateLimit, checkBulkOperationLimit } from '../services/auth/RateLimitService';
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
 
 export function createLeadsRouter(prisma: PrismaClient): Router {
@@ -217,6 +218,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         if (!Array.isArray(leadIds) || leadIds.length === 0) throw new ValidationError('leadIds array is required.');
         if (leadIds.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
         if (mode !== 'MANUAL' && mode !== 'AUTO') throw new ValidationError('mode must be MANUAL or AUTO.');
+        await checkBulkOperationLimit(userId, tenantId);
         const result = await leadService.bulkAssign({ tenantId, userId }, { leadIds, mode, userId: targetUserId, departmentId });
         res.json({ data: result });
       } catch (err) { next(err); }
@@ -292,6 +294,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        await checkImportRateLimit(tenantId, req.ip ?? '');
         const { rows, onDuplicates = 'skip' } = req.body as {
           rows: Array<{
             firstName: string; lastName: string; email?: string; phone?: string;
@@ -308,30 +311,35 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         if (rows.length > 5000) throw new ValidationError('Maximum 5,000 rows per import.');
         if (onDuplicates !== 'skip' && onDuplicates !== 'overwrite') throw new ValidationError('onDuplicates must be "skip" or "overwrite".');
 
-        // Stage validation: reject legacy-only stages and enforce followUpDate requirement
+        // Per-row validation: skip invalid rows, import valid ones
         const FOLLOW_UP_REQUIRED_STAGES_IMPORT = new Set<string>([LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED]);
         const SELECTABLE_STAGES_IMPORT = new Set<string>([LeadStage.NEW, LeadStage.QUALIFIED, LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED, LeadStage.OTHER, LeadStage.DISQUALIFIED]);
         const rowErrors: Array<{ row: number; message: string }> = [];
+        const invalidRowIndices = new Set<number>();
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i]!;
           if (!row.firstName || !row.lastName) {
             rowErrors.push({ row: i + 1, message: 'firstName and lastName are required.' });
+            invalidRowIndices.add(i);
             continue;
           }
           if (row.stage && !SELECTABLE_STAGES_IMPORT.has(row.stage)) {
             rowErrors.push({ row: i + 1, message: `Stage "${row.stage}" is not valid for import. Use one of: ${[...SELECTABLE_STAGES_IMPORT].join(', ')}.` });
+            invalidRowIndices.add(i);
+            continue;
           }
           if (row.stage && FOLLOW_UP_REQUIRED_STAGES_IMPORT.has(row.stage) && !row.followUpDate) {
             rowErrors.push({ row: i + 1, message: `Stage "${row.stage}" requires a followUpDate.` });
+            invalidRowIndices.add(i);
           }
         }
-        if (rowErrors.length > 0) {
-          return res.status(400).json({ error: { message: 'Import validation failed.', code: 'IMPORT_VALIDATION_FAILED', errors: rowErrors } });
+        if (invalidRowIndices.size === rows.length) {
+          return res.status(400).json({ error: { message: 'All rows failed validation.', code: 'IMPORT_VALIDATION_FAILED', errors: rowErrors } });
         }
 
-        // Batch duplicate detection — one query for all emails + phones
-        const emails = rows.map(r => r.email).filter(Boolean) as string[];
-        const phones = rows.map(r => r.phone).filter(Boolean) as string[];
+        // Batch duplicate detection — one query for all emails + phones (valid rows only)
+        const emails = rows.filter((_, i) => !invalidRowIndices.has(i)).map(r => r.email).filter(Boolean) as string[];
+        const phones = rows.filter((_, i) => !invalidRowIndices.has(i)).map(r => r.phone).filter(Boolean) as string[];
         const dupeWhere: any[] = [];
         if (emails.length) dupeWhere.push({ email: { in: emails } });
         if (phones.length) dupeWhere.push({ phone: { in: phones } });
@@ -351,6 +359,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         const duplicates: Array<{ row: number; email?: string; phone?: string }> = [];
 
         for (let i = 0; i < rows.length; i++) {
+          if (invalidRowIndices.has(i)) continue;
           const row = rows[i]!;
           const isDuplicate =
             (row.email && existingEmails.has(row.email)) ||
@@ -371,6 +380,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         // Create in 100-row chunks via createMany
         // ponytail: createMany skips tagNames/customFieldValues — acceptable for CSV import
         let imported = 0;
+        let raceSkipped = 0; // rows silently dropped by DB unique constraint (TOCTOU race)
         const errors: Array<{ row: number; message: string }> = [];
         const CHUNK = 100;
         for (let start = 0; start < toCreate.length; start += CHUNK) {
@@ -382,9 +392,11 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 ownerId: row.ownerId || null,
                 firstName: row.firstName,
                 lastName: row.lastName,
-                email: row.email ?? null,
-                phone: row.phone ?? null,
-                company: row.company ?? null,
+                // Normalize empty strings to null so the partial unique index treats them
+                // as absent rather than as a (tenantId, '') unique constraint value.
+                email: row.email || null,
+                phone: row.phone || null,
+                company: row.company || null,
                 source: (row.source as LeadSource | undefined) ?? LeadSource.OTHER,
                 status: LeadStatus.NEW,
                 stage: (row.stage as LeadStage | undefined) ?? LeadStage.NEW,
@@ -404,9 +416,11 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 freeformAddress: row.freeformAddress ?? null,
                 customFieldValues: [],
               })),
-              skipDuplicates: false,
+              skipDuplicates: true,
             });
             imported += result.count;
+            // Count rows the DB skipped due to concurrent import racing the same unique key
+            raceSkipped += chunk.length - result.count;
           } catch (err: any) {
             errors.push({ row: start + 1, message: err.message ?? 'Chunk insert failed' });
           }
@@ -415,8 +429,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         // Overwrite duplicates individually
         for (const { id, row } of toUpdate) {
           try {
-            await prisma.lead.update({
-              where: { id },
+            const updateResult = await prisma.lead.updateMany({
+              where: { id, tenantId, deletedAt: null },
               data: {
                 firstName: row.firstName,
                 lastName: row.lastName,
@@ -438,19 +452,25 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 freeformAddress: row.freeformAddress ?? null,
               },
             });
-            imported++;
+            if (updateResult.count > 0) {
+              imported++;
+            } else {
+              // Row was deleted or moved to another tenant between detection and update
+              errors.push({ row: -1, message: 'Overwrite target no longer exists or is inaccessible' });
+            }
           } catch (err: any) {
             errors.push({ row: -1, message: err.message ?? 'Update failed' });
           }
         }
 
+        const allErrors = [...rowErrors, ...errors];
         res.json({
           data: {
             imported,
-            skipped: onDuplicates === 'skip' ? duplicates.length : 0,
+            skipped: (onDuplicates === 'skip' ? duplicates.length : 0) + raceSkipped + invalidRowIndices.size,
             duplicates,
-            failed: errors.length,
-            errors,
+            failed: allErrors.length,
+            errors: allErrors,
           },
         });
       } catch (err) {

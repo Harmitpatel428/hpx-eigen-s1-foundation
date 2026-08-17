@@ -562,11 +562,28 @@ describe('Phase 2b — Documents department: explicit assignment verification', 
       expect([empA.id, empB.id]).toContain(l.ownerId);
     }
 
-    // empB (0 workload) should receive all 3 new leads — greedy always picks lowest first
+    // Greedy trace (A starts at 2 existing leads, B at 0):
+    //   round 1: B(0) < A(2) → B. B=1 A=2
+    //   round 2: B(1) < A(2) → B. B=2 A=2
+    //   round 3: TIE (both=2) → tie-break by UUID localeCompare (deterministic per
+    //            run, but not predictable across runs since UUIDs are random)
+    //
+    // Outcome A (A wins tie): A_new=1 B_new=2. Totals: A=3, B=2. Diff=1.
+    // Outcome B (B wins tie): A_new=0 B_new=3. Totals: A=2, B=3. Diff=1.
+    //
+    // Invariants:
+    //   1. B gets at least 2 of the 3 new leads (rounds 1+2 are not ties).
+    //   2. Total workloads differ by at most 1 (the algorithm's actual guarantee).
+    const wBNew = assigned.filter((l: any) => l.ownerId === empB.id).length;
+    expect(wBNew).toBeGreaterThanOrEqual(2); // rounds 1+2 deterministically go to B
+
     const wB = await (prisma as any).lead.count({
       where: { ownerId: empB.id, tenantId, deletedAt: null, status: { in: [LeadStatus.NEW, LeadStatus.CONTACTED, LeadStatus.QUALIFIED] } },
     });
-    expect(wB).toBe(3); // B had 0, gets all 3 before A (who had 2)
+    const wA = await (prisma as any).lead.count({
+      where: { ownerId: empA.id, tenantId, deletedAt: null, status: { in: [LeadStatus.NEW, LeadStatus.CONTACTED, LeadStatus.QUALIFIED] } },
+    });
+    expect(Math.abs(wA - wB)).toBeLessThanOrEqual(1); // total workloads balanced
 
     const auditLogs = await (prisma as any).auditLog.findMany({
       where: { tenantId, eventType: 'LEADS_BULK_ASSIGNED' },
