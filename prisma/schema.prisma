@@ -412,6 +412,39 @@ enum LeadActivityState {
   CANCELLED
 }
 
+enum WhatsAppChannelType {
+  INDIVIDUAL_NUMBER
+  GROUP
+  USERNAME
+  BUSINESS_ACCOUNT
+}
+
+enum WhatsAppChannelStatus {
+  ACTIVE
+  INVALID
+  ARCHIVED
+}
+
+enum ConversationStatus {
+  OPEN
+  RESOLVED
+  ARCHIVED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  AUDIO
+  VIDEO
+  TEMPLATE
+}
+
 enum LeadSource {
   WEBSITE
   REFERRAL
@@ -486,6 +519,8 @@ model Lead {
   tags           LeadTagAssignment[]
   leadNotes      LeadNote[]          @relation("LeadNotes")
   leadActivities LeadActivity[]
+  waChannels     LeadWhatsAppChannel[]
+  conversations  Conversation[]
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -1190,4 +1225,83 @@ model TenantSettings {
   leadHeaderPreference  String   @default("name")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// WHATSAPP CHANNELS
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── WhatsAppChannel — a WhatsApp destination (number/group/etc.) ──
+model WhatsAppChannel {
+  id          String                @id @default(uuid()) @db.Uuid
+  tenantId    String                @db.Uuid
+  channelType WhatsAppChannelType   @default(INDIVIDUAL_NUMBER)
+  identifier  String
+  displayName String
+  status      WhatsAppChannelStatus @default(ACTIVE)
+  metadata    Json                  @default("{}")
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  leads         LeadWhatsAppChannel[]
+  conversations Conversation[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+}
+
+// ─── LeadWhatsAppChannel — lead ↔ WhatsApp channel junction ─────────
+model LeadWhatsAppChannel {
+  leadId    String  @db.Uuid
+  channelId String  @db.Uuid
+  isPrimary Boolean @default(false)
+  role      String  @default("primary")
+  label     String?
+
+  lead    Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  channel WhatsAppChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@id([leadId, channelId])
+  @@index([leadId])
+  @@index([channelId])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CONVERSATIONS + MESSAGES
+// ═══════════════════════════════════════════════════════════════════
+
+model Conversation {
+  id        String             @id @default(uuid()) @db.Uuid
+  tenantId  String             @db.Uuid
+  leadId    String             @db.Uuid
+  channelId String             @db.Uuid
+  status    ConversationStatus @default(OPEN)
+  metadata  Json               @default("{}")
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  lead     Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  channel  WhatsAppChannel @relation(fields: [channelId], references: [id])
+  messages Message[]
+
+  @@unique([leadId, channelId])
+  @@index([tenantId])
+  @@index([leadId])
+  @@index([channelId])
+}
+
+model Message {
+  id             String           @id @default(uuid()) @db.Uuid
+  conversationId String           @db.Uuid
+  direction      MessageDirection
+  type           MessageType      @default(TEXT)
+  body           String
+  externalId     String?
+  sentAt         DateTime?
+  createdAt      DateTime         @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
 }

@@ -42,6 +42,8 @@ import { createLeadContactsRouter } from './routes/lead-contacts.router';
 import { createLeadFieldsRouter } from './routes/lead-fields.router';
 import { createLeadNotesRouter } from './routes/lead-notes.router';
 import { createLeadActivitiesRouter } from './routes/lead-activities.router';
+import { createLeadWaChannelsRouter } from './routes/lead-wa-channels.router';
+import { createWhatsAppRouter } from './routes/whatsapp.router';
 
 import * as Sentry from '@sentry/node';
 
@@ -137,6 +139,8 @@ app.use('/api/v1/lead-fields', createLeadFieldsRouter(prisma));
 app.use('/api/v1/leads/:leadId/contacts', createLeadContactsRouter(prisma));
 app.use('/api/v1/leads/:leadId/notes', createLeadNotesRouter(prisma));
 app.use('/api/v1/leads/:leadId/activities', createLeadActivitiesRouter(prisma));
+app.use('/api/v1/leads/:leadId/wa-channels', createLeadWaChannelsRouter(prisma));
+app.use('/api/v1/whatsapp', createWhatsAppRouter(prisma));
 
 // ─── Dashboard Router ─────────────────────────────────────────────────────────
 import { createDashboardRouter } from './routes/dashboard.router';
