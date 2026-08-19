@@ -479,6 +479,44 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     }
   );
 
+  // ─── GET /api/v1/leads/stage-counts ──────────────────────────────
+  router.get(
+    '/stage-counts',
+    authMiddleware,
+    permissionMiddleware('lead:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
+
+        const ownerFilter = await buildOwnerFilter(
+          (scope ?? 'OWN') as ScopeType,
+          userId, teamId, departmentId, prisma, true
+        );
+
+        const where: Prisma.LeadWhereInput = {
+          tenantId,
+          deletedAt: { equals: null },
+          ...ownerFilter,
+        };
+
+        const grouped = await prisma.lead.groupBy({
+          by: ['stage'],
+          where,
+          _count: { id: true },
+        });
+
+        const counts: Record<string, number> = {};
+        for (const g of grouped) {
+          if (g.stage) counts[g.stage] = g._count.id;
+        }
+
+        res.json({ data: counts });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
   // ─── GET /api/v1/leads ────────────────────────────────────────────
   router.get(
     '/',
@@ -495,6 +533,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         } = (req as AuthenticatedRequest).user;
 
         const status = req.query.status as LeadStatus | undefined;
+        const stage = req.query.stage as LeadStage | undefined;
         const ownerId = req.query.ownerId as string | undefined;
         const search = req.query.search as string | undefined;
         const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
@@ -505,6 +544,11 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         if (status && !Object.values(LeadStatus).includes(status)) {
           throw new ValidationError(
             `status must be one of: ${Object.values(LeadStatus).join(', ')}`
+          );
+        }
+        if (stage && !Object.values(LeadStage).includes(stage)) {
+          throw new ValidationError(
+            `stage must be one of: ${Object.values(LeadStage).join(', ')}`
           );
         }
         if (page < 1 || isNaN(page)) {
@@ -530,6 +574,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         };
 
         if (status) whereClause.status = status;
+        if (stage) whereClause.stage = stage;
         // Only let ORGANIZATION-scope users (admins) filter by an arbitrary ownerId.
         // Scoped users already have their visibility constrained by ownerFilter.
         if (ownerId && Object.keys(ownerFilter).length === 0) {
@@ -568,10 +613,24 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           : [];
         const ownerMap = Object.fromEntries(owners.map((u: any) => [u.id, u]));
 
+        // Batch-load last meaningful activity per lead (single groupBy, no N+1)
+        const leadIds = data.map((l: any) => l.id as string);
+        const activityMaxes = leadIds.length > 0
+          ? await (prisma as any).leadActivity.groupBy({
+              by: ['leadId'],
+              where: { leadId: { in: leadIds }, deletedAt: null },
+              _max: { createdAt: true },
+            })
+          : [];
+        const activityMap: Record<string, string | null> = Object.fromEntries(
+          activityMaxes.map((a: any) => [a.leadId, a._max.createdAt ? new Date(a._max.createdAt).toISOString() : null])
+        );
+
         const enriched = data.map((l: any) => ({
           ...l,
           tags: (l.tags ?? []).map((a: any) => a.tag),
           owner: l.ownerId ? (ownerMap[l.ownerId] ?? null) : null,
+          lastMeaningfulActivityAt: activityMap[l.id] ?? null,
         }));
 
         res.json({ data: enriched, total, page, pageSize });

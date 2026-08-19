@@ -524,6 +524,7 @@ model Lead {
 
   @@index([tenantId])
   @@index([tenantId, status])
+  @@index([tenantId, stage])
   @@index([tenantId, priority])
   @@index([tenantId, ownerId])
   @@index([tenantId, managerId])
