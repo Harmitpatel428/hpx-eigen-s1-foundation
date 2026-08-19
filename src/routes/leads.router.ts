@@ -618,7 +618,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         const activityMaxes = leadIds.length > 0
           ? await (prisma as any).leadActivity.groupBy({
               by: ['leadId'],
-              where: { leadId: { in: leadIds }, deletedAt: null },
+              where: { leadId: { in: leadIds }, deletedAt: { equals: null } },
               _max: { createdAt: true },
             })
           : [];
