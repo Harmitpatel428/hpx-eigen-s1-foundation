@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, LeadActivityType } from '@prisma/client';
 
 interface TenantContext { tenantId: string; userId: string; }
 
@@ -75,7 +75,7 @@ export class LeadNotesService {
       throw { code: 'VALIDATION_ERROR', message: 'Invalid follow-up time format (HH:mm)' };
     }
 
-    return this.prisma.leadNote.create({
+    const note = await this.prisma.leadNote.create({
       data: {
         tenantId: ctx.tenantId,
         leadId,
@@ -85,6 +85,18 @@ export class LeadNotesService {
         followUpTime,
       },
     });
+
+    await this.prisma.leadActivity.create({
+      data: {
+        tenantId: ctx.tenantId,
+        leadId,
+        actorUserId: ctx.userId,
+        type: LeadActivityType.NOTE_ADDED,
+        subject: 'Note added',
+      },
+    }).catch(() => {});
+
+    return note;
   }
 
   /**
