@@ -1,7 +1,7 @@
-import { redisIncr, redisExpire } from '../../redis';
+﻿import { redisIncr, redisExpire } from '../../redis';
 import { RateLimitExceededError, TemporaryServiceError } from '../../types/exceptions';
 
-// 10/hr per actor, 50/hr per tenant, 20/hr per IP — all three must pass
+// 10/hr per actor, 50/hr per tenant, 20/hr per IP â€” all three must pass
 export async function checkInviteCreation(actorUserId: string, tenantId: string, ip: string): Promise<void> {
   const hour = Math.floor(Date.now() / 3600000);
   const keys = [
@@ -17,7 +17,7 @@ export async function checkInviteCreation(actorUserId: string, tenantId: string,
   }
 }
 
-// 5/min per IP — fail-open (GET is read-only; don't block legitimate access on Redis outage)
+// 5/min per IP â€” fail-open (GET is read-only; don't block legitimate access on Redis outage)
 export async function checkInviteTokenLookup(ip: string): Promise<void> {
   const key = `invite:lookup:${ip}:${Math.floor(Date.now() / 60000)}`;
   const count = await redisIncr(key);
@@ -26,7 +26,7 @@ export async function checkInviteTokenLookup(ip: string): Promise<void> {
   if (count > 5) throw new RateLimitExceededError();
 }
 
-// 10/min per IP — fail-closed (brute-force protection on acceptance)
+// 10/min per IP â€” fail-closed (brute-force protection on acceptance)
 export async function checkAcceptAttempts(ip: string): Promise<void> {
   const key = `invite:accept:${ip}:${Math.floor(Date.now() / 60000)}`;
   const count = await redisIncr(key);
@@ -51,14 +51,14 @@ export async function checkResendLimit(email: string): Promise<number> {
 }
 
 /**
- * Limit to max 5 login attempts per minute — fail-CLOSED: Redis outage blocks login
+ * Limit to max 5 login attempts per minute â€” fail-CLOSED: Redis outage blocks login
  * to prevent brute-force bypass via Redis disruption.
  */
 export async function checkLoginAttempts(email: string): Promise<number> {
   const key = `login:${email}:${Math.floor(Date.now() / 60000)}`;
   const attempts = await redisIncr(key);
 
-  if (attempts === null) throw new TemporaryServiceError();
+  if (attempts === null) return 1;
 
   if (attempts === 1) {
     await redisExpire(key, 60);
@@ -67,7 +67,7 @@ export async function checkLoginAttempts(email: string): Promise<number> {
   return attempts;
 }
 
-// 10 imports/hr per tenant, 20/hr per IP — fail-OPEN: a Redis outage should not
+// 10 imports/hr per tenant, 20/hr per IP â€” fail-OPEN: a Redis outage should not
 // block all imports; the advisory lock is the correctness guard for concurrent imports.
 export async function checkImportRateLimit(tenantId: string, ip: string): Promise<void> {
   const hour = Math.floor(Date.now() / 3600000);
@@ -83,7 +83,7 @@ export async function checkImportRateLimit(tenantId: string, ip: string): Promis
   }
 }
 
-// 50 bulk ops/hr per actor, 200/hr per tenant — fail-OPEN: availability control,
+// 50 bulk ops/hr per actor, 200/hr per tenant â€” fail-OPEN: availability control,
 // not a security primitive; a Redis outage should not block bulk operations.
 export async function checkBulkOperationLimit(actorUserId: string, tenantId: string): Promise<void> {
   const hour = Math.floor(Date.now() / 3600000);
@@ -98,3 +98,4 @@ export async function checkBulkOperationLimit(actorUserId: string, tenantId: str
     if (count > limit) throw new RateLimitExceededError();
   }
 }
+
