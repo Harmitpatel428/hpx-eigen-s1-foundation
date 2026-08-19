@@ -73,6 +73,7 @@ app.use(correlationMiddleware);
 const allowedOrigins = [
   'https://hpx-eigen-frontend.vercel.app', // Production frontend
   'http://localhost:5173',                  // Local Vite dev server
+  'http://127.0.0.1:5173',                 // Local Vite dev server (IP)
   'http://localhost:3000',                  // Local backend testing (if applicable)
   'https://hpxeigen.com',                   // Custom production domain
   'https://www.hpxeigen.com'                // Custom production domain (www)
