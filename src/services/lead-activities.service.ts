@@ -93,15 +93,46 @@ export class LeadActivitiesService {
     return activity;
   }
 
-  async markComplete(ctx: TenantContext, activityId: string) {
+  async markComplete(ctx: TenantContext, activityId: string, opts?: { note?: string; nextFollowUp?: string }) {
     const activity = await (this.prisma as any).leadActivity.findFirst({
       where: { id: activityId, tenantId: ctx.tenantId, deletedAt: null },
     });
     if (!activity) throw new ResourceNotFoundError();
-    return (this.prisma as any).leadActivity.update({
-      where: { id: activityId },
+
+    const metadata = { ...(activity.metadata ?? {}), ...(opts?.note ? { completionNote: opts.note } : {}) };
+
+    return this.prisma.$transaction(async (tx: any) => {
+      const updated = await tx.leadActivity.update({
+        where: { id: activityId },
+        data: { state: 'COMPLETED', completedAt: new Date(), metadata },
+      });
+
+      if (opts?.nextFollowUp) {
+        await tx.leadActivity.create({
+          data: {
+            tenantId: ctx.tenantId,
+            leadId: activity.leadId,
+            actorUserId: ctx.userId,
+            type: 'FOLLOW_UP_SCHEDULED',
+            subject: 'Follow-up',
+            state: 'PENDING',
+            scheduledAt: new Date(opts.nextFollowUp),
+            metadata: {},
+          },
+        });
+      }
+
+      return updated;
+    });
+  }
+
+  async bulkComplete(ctx: TenantContext, ids: string[]) {
+    if (!ids.length) throw new ValidationError('ids must not be empty.');
+    const result = await (this.prisma as any).leadActivity.updateMany({
+      where: { id: { in: ids }, tenantId: ctx.tenantId, deletedAt: null },
       data: { state: 'COMPLETED', completedAt: new Date() },
     });
+    return { count: result.count };
   }
 
   async listByLead(ctx: TenantContext, leadId: string, page: number, pageSize: number) {

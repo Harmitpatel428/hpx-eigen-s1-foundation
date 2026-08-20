@@ -69,8 +69,27 @@ export function createGlobalLeadActivitiesRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        const activity = await service.markComplete({ tenantId, userId }, req.params.id);
+        const { note, nextFollowUp } = req.body as { note?: string; nextFollowUp?: string };
+        const activity = await service.markComplete({ tenantId, userId }, req.params.id, { note, nextFollowUp });
         res.json({ data: activity });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // POST /api/v1/lead-activities/bulk-complete
+  router.post(
+    '/bulk-complete',
+    authMiddleware,
+    permissionMiddleware('lead:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { ids } = req.body as { ids: string[] };
+        if (!Array.isArray(ids) || ids.length === 0) throw new ValidationError('ids must be a non-empty array.');
+        const result = await service.bulkComplete({ tenantId, userId }, ids);
+        res.json(result);
       } catch (err) {
         next(err);
       }
