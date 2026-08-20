@@ -312,8 +312,9 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         if (onDuplicates !== 'skip' && onDuplicates !== 'overwrite') throw new ValidationError('onDuplicates must be "skip" or "overwrite".');
 
         // Per-row validation: skip invalid rows, import valid ones
-        const FOLLOW_UP_REQUIRED_STAGES_IMPORT = new Set<string>([LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED]);
         const SELECTABLE_STAGES_IMPORT = new Set<string>([LeadStage.NEW, LeadStage.QUALIFIED, LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED, LeadStage.OTHER, LeadStage.DISQUALIFIED]);
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const toUuidOrNull = (v: string | undefined): string | null => (v && UUID_RE.test(v) ? v : null);
         const rowErrors: Array<{ row: number; message: string }> = [];
         const invalidRowIndices = new Set<number>();
         for (let i = 0; i < rows.length; i++) {
@@ -327,10 +328,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             rowErrors.push({ row: i + 1, message: `Stage "${row.stage}" is not valid for import. Use one of: ${[...SELECTABLE_STAGES_IMPORT].join(', ')}.` });
             invalidRowIndices.add(i);
             continue;
-          }
-          if (row.stage && FOLLOW_UP_REQUIRED_STAGES_IMPORT.has(row.stage) && !row.followUpDate) {
-            rowErrors.push({ row: i + 1, message: `Stage "${row.stage}" requires a followUpDate.` });
-            invalidRowIndices.add(i);
           }
         }
         if (invalidRowIndices.size === rows.length) {
@@ -389,7 +386,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             const result = await prisma.lead.createMany({
               data: chunk.map(row => ({
                 tenantId,
-                ownerId: row.ownerId || null,
+                ownerId: toUuidOrNull(row.ownerId),
                 firstName: row.firstName,
                 lastName: row.lastName,
                 // Normalize empty strings to null so the partial unique index treats them
