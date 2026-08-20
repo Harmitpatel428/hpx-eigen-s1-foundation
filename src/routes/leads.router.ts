@@ -313,12 +313,38 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
         // Per-row validation: skip invalid rows, import valid ones
         const SELECTABLE_STAGES_IMPORT = new Set<string>([LeadStage.NEW, LeadStage.QUALIFIED, LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED, LeadStage.OTHER, LeadStage.DISQUALIFIED]);
+        const STAGE_ALIASES: Record<string, string> = {
+          'FOLLOW UP': 'FOLLOW_UP', 'FOLLOW-UP': 'FOLLOW_UP',
+          'CALLBACK': 'CALL_BACK_REQUESTED', 'CALL BACK': 'CALL_BACK_REQUESTED', 'CALL-BACK': 'CALL_BACK_REQUESTED',
+          'NOT RECEIVED': 'CALL_NOT_RECEIVED', 'CALL NOT RECEIVED': 'CALL_NOT_RECEIVED',
+        };
+        const SOURCE_ALIASES: Record<string, LeadSource> = {
+          LINKEDIN: LeadSource.SOCIAL_MEDIA, FACEBOOK: LeadSource.SOCIAL_MEDIA,
+          TWITTER: LeadSource.SOCIAL_MEDIA, INSTAGRAM: LeadSource.SOCIAL_MEDIA,
+          YOUTUBE: LeadSource.SOCIAL_MEDIA, SOCIAL: LeadSource.SOCIAL_MEDIA,
+          WEB: LeadSource.WEBSITE, TRADESHOW: LeadSource.TRADE_SHOW, TRADE_SHOWS: LeadSource.TRADE_SHOW,
+          EMAIL_CAMPAIGNS: LeadSource.EMAIL_CAMPAIGN, EMAILCAMPAIGN: LeadSource.EMAIL_CAMPAIGN,
+        };
+        const normalizeSource = (v: string | undefined): LeadSource => {
+          if (!v) return LeadSource.OTHER;
+          const up = v.trim().toUpperCase();
+          if (SOURCE_ALIASES[up]) return SOURCE_ALIASES[up]!;
+          if ((Object.values(LeadSource) as string[]).includes(up)) return up as LeadSource;
+          return LeadSource.OTHER;
+        };
+        const normalizeStage = (v: string | undefined): string | undefined => {
+          if (!v) return v;
+          const up = v.trim().toUpperCase();
+          return STAGE_ALIASES[up] ?? up;
+        };
         const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         const toUuidOrNull = (v: string | undefined): string | null => (v && UUID_RE.test(v) ? v : null);
         const rowErrors: Array<{ row: number; message: string }> = [];
         const invalidRowIndices = new Set<number>();
         for (let i = 0; i < rows.length; i++) {
           const row = rows[i]!;
+          // Normalize stage + source in-place before validation
+          if (row.stage) row.stage = normalizeStage(row.stage);
           if (!row.firstName || !row.lastName) {
             rowErrors.push({ row: i + 1, message: 'firstName and lastName are required.' });
             invalidRowIndices.add(i);
@@ -394,7 +420,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 email: row.email || null,
                 phone: row.phone || null,
                 company: row.company || null,
-                source: (row.source as LeadSource | undefined) ?? LeadSource.OTHER,
+                source: normalizeSource(row.source),
                 status: LeadStatus.NEW,
                 stage: (row.stage as LeadStage | undefined) ?? LeadStage.NEW,
                 priority: (row.priority as LeadPriority | undefined) ?? LeadPriority.MEDIUM,
