@@ -12,7 +12,12 @@ export class LeadActivitiesService {
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
-    const baseWhere: any = { tenantId: ctx.tenantId, deletedAt: null };
+    // Exclude activities whose lead has been soft-deleted
+    const baseWhere: any = {
+      tenantId: ctx.tenantId,
+      deletedAt: null,
+      lead: { deletedAt: null },
+    };
 
     if (filter === 'DUE_TODAY') {
       baseWhere.scheduledAt = { gte: todayStart, lt: todayEnd };
@@ -36,7 +41,7 @@ export class LeadActivitiesService {
         skip,
         take: pageSize,
         include: {
-          lead: { select: { id: true, firstName: true, lastName: true, stage: true } },
+          lead: { select: { id: true, firstName: true, lastName: true, stage: true, company: true } },
         },
       }) as Promise<any[]>,
       (this.prisma as any).leadActivity.count({ where: baseWhere }),
@@ -101,8 +106,8 @@ export class LeadActivitiesService {
 
     const metadata = { ...(activity.metadata ?? {}), ...(opts?.note ? { completionNote: opts.note } : {}) };
 
-    return this.prisma.$transaction(async (tx: any) => {
-      const updated = await tx.leadActivity.update({
+    const updated = await this.prisma.$transaction(async (tx: any) => {
+      const result = await tx.leadActivity.update({
         where: { id: activityId },
         data: { state: 'COMPLETED', completedAt: new Date(), metadata },
       });
@@ -122,8 +127,31 @@ export class LeadActivitiesService {
         });
       }
 
-      return updated;
+      return result;
     });
+
+    // Persist completion note to lead's main notes (best-effort — completion already succeeded)
+    if (opts?.note && opts.note.trim()) {
+      try {
+        const noteCount = await (this.prisma as any).leadNote.count({
+          where: { leadId: activity.leadId, tenantId: ctx.tenantId, deletedAt: null },
+        });
+        if (noteCount < 15) {
+          await (this.prisma as any).leadNote.create({
+            data: {
+              tenantId: ctx.tenantId,
+              leadId: activity.leadId,
+              authorId: ctx.userId,
+              content: opts.note.trim().slice(0, 500),
+            },
+          });
+        }
+      } catch (e) {
+        console.error('[MARK_COMPLETE] note save failed:', e);
+      }
+    }
+
+    return updated;
   }
 
   async bulkComplete(ctx: TenantContext, ids: string[]) {
