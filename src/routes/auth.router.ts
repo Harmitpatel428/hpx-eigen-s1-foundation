@@ -1,8 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { AuthService } from '../services/auth.service';
-import { ValidationError, InvitationAlreadyAcceptedError } from '../types/exceptions';
+import { AppException, ValidationError, InvitationAlreadyAcceptedError, RetryTag } from '../types/exceptions';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
@@ -25,6 +25,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
   const invitationService = new InvitationService(prisma);
   const notificationService = new NotificationService(prisma);
   const auditService = new AuditService(prisma);
+  const orgInitService = new OrgInitService(prisma);
 
   // ─── POST /api/auth/signup ────────────────────────────────────────
   router.post('/signup', async (req: Request, res: Response, next: NextFunction) => {
@@ -33,16 +34,33 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       if (!email || !password || !companyName) throw new ValidationError('Email, password, and companyName are required.');
       if (password.length < 8) throw new ValidationError('Password must be at least 8 chars.');
 
+      // Fast-path duplicate check outside the transaction (authoritative
+      // check happens inside, under the advisory lock).
       const existingUser = await prisma.user.findFirst({ where: { email } });
-      if (existingUser) return res.status(409).json({ error: 'USER_EXISTS', message: 'Email already registered' });
+      if (existingUser) return res.status(409).json({ code: 'USER_EXISTS', message: 'Email already registered' });
 
       const hashedPassword = await bcrypt.hash(password, 12);
-      let tenantId = "", userId = "";
 
-      // 1. Create tenant and user
+      let verificationTokenValue = '';
+
+      // Everything — Tenant, User, verification token, admin role assignment,
+      // RBAC scaffolding, audit entries — commits atomically or not at all.
+      // There is no intermediate state where the org exists without its admin.
       await prisma.$transaction(async (tx) => {
+        // Serialize concurrent signups of the same email. The schema's user
+        // uniqueness is composite (tenantId, email) by design — invitations
+        // legitimately place one person in multiple tenants — so a global
+        // unique index is not an option; this lock + re-check is the guard.
+        // $executeRaw (not $queryRaw): the lock function returns VOID, which
+        // $queryRaw cannot deserialize ("Failed to deserialize column of type 'void'").
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${email}))`;
+
+        const duplicate = await tx.user.findFirst({ where: { email } });
+        if (duplicate) {
+          throw new AppException('USER_EXISTS', 'Email already registered', RetryTag.USER_ACTION_REQUIRED, 409);
+        }
+
         const tenant = await tx.tenant.create({ data: { name: companyName } });
-        tenantId = tenant.id;
 
         const user = await tx.user.create({
           data: {
@@ -52,12 +70,13 @@ export function createAuthRouter(prisma: PrismaClient): Router {
             emailVerified: null // CRITICAL: Start unverified
           }
         });
-        userId = user.id;
 
-        // 2. Generate verification token
+        // Verification token (row is data → belongs in the transaction; the
+        // email itself is sent after commit below).
         const token = tokenService.generateToken();
         const tokenHash = tokenService.hashToken(token);
-        
+        verificationTokenValue = token;
+
         await tx.verificationToken.create({
           data: {
             userId: user.id,
@@ -67,10 +86,20 @@ export function createAuthRouter(prisma: PrismaClient): Router {
           }
         });
 
-        // 3. Send email (fire and forget for now, or await)
-        await emailService.sendVerificationEmail(email, token).catch(e => console.error('Email send failed', e));
-        
-        // 4. Audit
+        // Audit entry chained onto the global hash chain
+        const lastAudit = await tx.auditLog.findFirst({
+          orderBy: { createdAt: 'desc' },
+          select: { currentHash: true },
+        });
+        const previousHash = lastAudit?.currentHash ?? null;
+        const currentHash = crypto
+          .createHash('sha256')
+          .update(JSON.stringify({
+            eventType: 'USER_REGISTERED', entityType: 'User', entityId: user.id,
+            operation: 'CREATE', payload: { email, emailVerified: false },
+          }) + (previousHash || ''))
+          .digest('hex');
+
         await tx.auditLog.create({
           data: {
             tenantId: tenant.id,
@@ -80,10 +109,32 @@ export function createAuthRouter(prisma: PrismaClient): Router {
             actorUserId: user.id,
             operation: 'CREATE',
             payload: { email, emailVerified: false },
-            currentHash: crypto.randomBytes(32).toString('hex') // Mock hash for now
+            previousHash,
+            currentHash,
           }
         });
+
+        // Admin role + department/team + role assignment for THIS user,
+        // inside the same transaction. Throws on failure → full rollback.
+        await orgInitService.initializeOrgRBACWithinTx(tx, tenant.id, user.id, {
+          previousAuditHash: currentHash,
+        });
+
+        // Org fully provisioned — leave PROVISIONING.
+        await tx.tenant.update({ where: { id: tenant.id }, data: { status: 'ACTIVE' } });
+      }).catch((err) => {
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          throw new AppException('USER_EXISTS', 'Email already registered', RetryTag.USER_ACTION_REQUIRED, 409);
+        }
+        throw err;
       });
+
+      // External side effect — strictly AFTER commit, never inside the
+      // transaction. Failure to send is logged; the user can request a resend
+      // via /resend-verification.
+      emailService
+        .sendVerificationEmail(email, verificationTokenValue)
+        .catch((e) => console.error('Email send failed', e));
 
       res.status(201).json({ success: true, message: 'Account created. Please verify your email.', email });
     } catch (err) { next(err); }
