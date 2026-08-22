@@ -1,9 +1,49 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
+import * as crypto from 'crypto';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 import { resolveLeadWhatsAppChannel } from './lead-wa-channels.router';
 import { defaultAdapter } from '../adapters/whatsapp/whatsapp.adapter';
+
+// ── Webhook HMAC verification ────────────────────────────────────────────────
+// Senders must sign with WEBHOOK_SECRET:
+//   x-webhook-timestamp: unix seconds
+//   x-webhook-signature: hex HMAC-SHA256(`${timestamp}.${rawBody}`)
+// Timestamps outside REPLAY_WINDOW_SECONDS are rejected (replay protection).
+const WEBHOOK_REPLAY_WINDOW_SECONDS = 300;
+
+export type SignatureCheck =
+  | { ok: true }
+  | { ok: false; reason: 'missing_signature' | 'stale_timestamp' | 'invalid_signature' };
+
+export function verifyWebhookSignature(
+  rawBody: Buffer | undefined,
+  timestampHeader: string | string[] | undefined,
+  signatureHeader: string | string[] | undefined,
+  secret: string | undefined,
+  nowMs: number = Date.now()
+): SignatureCheck {
+  if (!secret) return { ok: false, reason: 'missing_signature' };
+  const timestamp = Array.isArray(timestampHeader) ? timestampHeader[0] : timestampHeader;
+  const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+  if (!rawBody?.length || !timestamp || !signature) return { ok: false, reason: 'missing_signature' };
+
+  const ts = Number.parseInt(timestamp, 10);
+  if (!Number.isFinite(ts) || Math.abs(nowMs / 1000 - ts) > WEBHOOK_REPLAY_WINDOW_SECONDS) {
+    return { ok: false, reason: 'stale_timestamp' };
+  }
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(Buffer.concat([Buffer.from(`${ts}.`), rawBody]))
+    .digest();
+  const provided = Buffer.from(signature, 'hex');
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    return { ok: false, reason: 'invalid_signature' };
+  }
+  return { ok: true };
+}
 
 export function createWhatsAppRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -103,7 +143,26 @@ export function createWhatsAppRouter(prisma: PrismaClient): Router {
     '/webhook',
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        // ponytail: HMAC verification skipped — add at gateway/reverse-proxy layer.
+        const secret = process.env.WEBHOOK_SECRET;
+        if (!secret) {
+          // Fail closed — an unsigned write path into conversations must not
+          // exist just because configuration is missing.
+          console.error('[WA-WEBHOOK] WEBHOOK_SECRET not configured — rejecting webhook.');
+          res.status(503).json({ ok: false, reason: 'webhook_not_configured' });
+          return;
+        }
+
+        const check = verifyWebhookSignature(
+          (req as Request & { rawBody?: Buffer }).rawBody,
+          req.headers['x-webhook-timestamp'],
+          req.headers['x-webhook-signature'],
+          secret
+        );
+        if (!check.ok) {
+          res.status(401).json({ ok: false, reason: check.reason });
+          return;
+        }
+
         const normalized = defaultAdapter.normalizeInboundMessage(req.body);
         if (!normalized) {
           res.status(200).json({ ok: false, reason: 'unrecognized_payload' });

@@ -93,7 +93,14 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-app.use(express.json({ limit: '512kb' }));
+// Keep raw bytes for webhook HMAC verification (signature is computed over the
+// exact request body, not the re-serialized parsed object).
+app.use(express.json({
+  limit: '512kb',
+  verify: (req, _res, buf) => {
+    (req as Request & { rawBody?: Buffer }).rawBody = buf;
+  },
+}));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req: Request, res: Response) => {
