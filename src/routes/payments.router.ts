@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient, PaymentMethod, PaymentStatus } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { PaymentService } from '../services/payment.service';
 import { ValidationError } from '../types/exceptions';
 
@@ -11,7 +11,7 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   router.use(authMiddleware);
 
   // ─── GET /api/v1/payments ───────────────────────────────────────────
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/', permissionMiddleware('payment:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -39,7 +39,7 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   });
 
   // ─── GET /api/v1/payments/:id ───────────────────────────────────────
-  router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/:id', permissionMiddleware('payment:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const payment = await paymentService.getPaymentById({ tenantId, userId }, req.params.id);
@@ -50,7 +50,7 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   });
 
   // ─── POST /api/v1/payments ──────────────────────────────────────────
-  router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', permissionMiddleware('payment:create'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -107,7 +107,7 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   });
 
   // ─── PATCH /api/v1/payments/:id ─────────────────────────────────────
-  router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.patch('/:id', permissionMiddleware('payment:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const {
@@ -146,7 +146,7 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
   });
 
   // ─── DELETE /api/v1/payments/:id ────────────────────────────────────
-  router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', permissionMiddleware('payment:delete'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       await paymentService.deletePayment({ tenantId, userId }, req.params.id);

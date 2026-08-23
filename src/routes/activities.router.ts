@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient, ActivityType } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ActivityService } from '../services/activity.service';
 import { ValidationError } from '../types/exceptions';
 
@@ -10,7 +10,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/activities ─────────────────────────────────────────
   /** Log a new activity against an opportunity */
-  router.post('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', authMiddleware, permissionMiddleware('activity:create'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const { opportunityId, type, subject, notes, scheduledAt } = req.body as {
@@ -44,7 +44,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/activities ──────────────────────────────────────────
   /** List activities filtered by opportunityId, type, or userId */
-  router.get('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/', authMiddleware, permissionMiddleware('activity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const opportunityId = req.query.opportunityId as string | undefined;
@@ -75,7 +75,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/activities/:id ──────────────────────────────────────
   /** Get a single activity by ID */
-  router.get('/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/:id', authMiddleware, permissionMiddleware('activity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const activity = await activityService.getActivityById({ tenantId, userId }, req.params.id);
@@ -87,7 +87,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
 
   // ─── PUT /api/activities/:id ──────────────────────────────────────
   /** Update activity details */
-  router.put('/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.put('/:id', authMiddleware, permissionMiddleware('activity:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const { subject, notes, scheduledAt, completedAt } = req.body as {
@@ -116,7 +116,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/activities/:id/complete ────────────────────────────
   /** Mark an activity as complete */
-  router.post('/:id/complete', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/:id/complete', authMiddleware, permissionMiddleware('activity:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const activity = await activityService.markActivityComplete({ tenantId, userId }, req.params.id);
@@ -128,7 +128,7 @@ export function createActivitiesRouter(prisma: PrismaClient): Router {
 
   // ─── DELETE /api/activities/:id ───────────────────────────────────
   /** Soft-delete an activity */
-  router.delete('/:id', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', authMiddleware, permissionMiddleware('activity:delete'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       await activityService.deleteActivity({ tenantId, userId }, req.params.id);

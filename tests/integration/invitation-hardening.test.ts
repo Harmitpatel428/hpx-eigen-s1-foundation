@@ -172,6 +172,9 @@ describe('Invitation Hardening', () => {
 
   // A: PENDING + FAILED email → admin re-invites → new token, email re-attempted
   it('A: re-invites when email previously FAILED', async () => {
+    // SKIPPED path requires an unconfigured mailer — don't trust ambient .env
+    const origKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = '';
     const email = `a-${uid()}@test.invalid`;
     // Directly insert a row with emailStatus=FAILED to simulate prior failure
     const rawToken = crypto.randomBytes(32).toString('hex');
@@ -197,6 +200,7 @@ describe('Invitation Hardening', () => {
     // Verify a new token hash was written (old hash no longer valid)
     const row = await prisma.userInvitation.findFirst({ where: { tenantId, email } });
     expect(row?.token).not.toBe(tokenHash(rawToken));
+    if (origKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = origKey;
   });
 
   // B: PENDING + SENT → admin tries to re-invite → 409
@@ -344,24 +348,34 @@ describe('Invitation Hardening', () => {
     mockRateLimit.checkInviteCreation.mockResolvedValue(undefined);
   });
 
-  // H: Dev mode email skip → emailStatus=SKIPPED, devInviteUrl present
-  it('H: dev mode (NODE_ENV !== production) produces emailStatus=SKIPPED and devInviteUrl', async () => {
-    const email = `h-${uid()}@test.invalid`;
-    const r = await req('POST', '/api/v1/users/invite', {
-      token: adminUser.token, body: { email, roleId: targetRole.id }
-    });
+  // H: Unconfigured mailer → emailStatus=SKIPPED, devInviteUrl present
+  it('H: unconfigured RESEND_API_KEY produces emailStatus=SKIPPED and devInviteUrl', async () => {
+    // Don't trust ambient .env — pin the mailer to unconfigured
+    const origKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = '';
+    try {
+      const email = `h-${uid()}@test.invalid`;
+      const r = await req('POST', '/api/v1/users/invite', {
+        token: adminUser.token, body: { email, roleId: targetRole.id }
+      });
 
-    expect(r.status).toBe(201);
-    expect(r.body.emailStatus).toBe('SKIPPED');
-    expect(r.body.devInviteUrl).toMatch(/accept-invite\?token=/);
-    expect(r.body).not.toHaveProperty('token'); // raw token must not be in response
+      expect(r.status).toBe(201);
+      expect(r.body.emailStatus).toBe('SKIPPED');
+      expect(r.body.devInviteUrl).toMatch(/accept-invite\?token=/);
+      expect(r.body).not.toHaveProperty('token'); // raw token must not be in response
+    } finally {
+      if (origKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = origKey;
+    }
   });
 
   // I: Resend succeeds (mocked) → emailStatus=SENT
   it('I: when email service succeeds, emailStatus=SENT', async () => {
     const spy = jest.spyOn(EmailService.prototype, 'sendInvitationEmail').mockResolvedValue(undefined);
     const origEnv = process.env.NODE_ENV;
+    const origKey = process.env.RESEND_API_KEY;
     process.env.NODE_ENV = 'production';
+    // Sending is now keyed on a configured API key, not NODE_ENV
+    process.env.RESEND_API_KEY = 're_test_key';
 
     try {
       const email = `i-${uid()}@test.invalid`;
@@ -372,6 +386,7 @@ describe('Invitation Hardening', () => {
       expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       process.env.NODE_ENV = origEnv;
+      if (origKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = origKey;
       spy.mockRestore();
     }
   });
@@ -380,7 +395,9 @@ describe('Invitation Hardening', () => {
   it('J: when email service fails, emailStatus=FAILED and invitation row is preserved', async () => {
     const spy = jest.spyOn(EmailService.prototype, 'sendInvitationEmail').mockRejectedValue(new Error('Resend API error'));
     const origEnv = process.env.NODE_ENV;
+    const origKey = process.env.RESEND_API_KEY;
     process.env.NODE_ENV = 'production';
+    process.env.RESEND_API_KEY = 're_test_key';
 
     try {
       const email = `j-${uid()}@test.invalid`;
@@ -394,6 +411,7 @@ describe('Invitation Hardening', () => {
       expect(row?.emailStatus).toBe('FAILED');
     } finally {
       process.env.NODE_ENV = origEnv;
+      if (origKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = origKey;
       spy.mockRestore();
     }
   });

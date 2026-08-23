@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient, InvoiceStatus } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { InvoiceService } from '../services/invoice.service';
 import { ValidationError } from '../types/exceptions';
 
@@ -11,7 +11,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   router.use(authMiddleware);
 
   // ─── GET /api/v1/invoices ───────────────────────────────────────────
-  router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/', permissionMiddleware('invoice:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -39,7 +39,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   });
 
   // ─── GET /api/v1/invoices/:id ───────────────────────────────────────
-  router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/:id', permissionMiddleware('invoice:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const invoice = await invoiceService.getInvoiceById({ tenantId, userId }, req.params.id);
@@ -50,7 +50,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   });
 
   // ─── POST /api/v1/invoices ──────────────────────────────────────────
-  router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', permissionMiddleware('invoice:create'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
       if (!user || !user.tenantId) {
@@ -110,7 +110,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   });
 
   // ─── PATCH /api/v1/invoices/:id ─────────────────────────────────────
-  router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.patch('/:id', permissionMiddleware('invoice:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const {
@@ -149,7 +149,7 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
   });
 
   // ─── DELETE /api/v1/invoices/:id ────────────────────────────────────
-  router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', permissionMiddleware('invoice:delete'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       await invoiceService.deleteInvoice({ tenantId, userId }, req.params.id);

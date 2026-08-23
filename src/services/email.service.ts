@@ -1,13 +1,17 @@
 import { Resend } from 'resend';
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY ?? '';
-const resend = new Resend(RESEND_API_KEY || 're_placeholder');
+const resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder');
 
 // Sends happen wherever a working API key is configured — local included.
 // Without a key we log the action link instead, so the auth flow still works
 // end-to-end on a fresh checkout. (The old NODE_ENV gate silently disabled
 // all mail outside production and made local verification impossible.)
-const canSend = () => RESEND_API_KEY.startsWith('re_');
+// Read at call time so config changes/tests don't require a process restart.
+const canSend = () => (process.env.RESEND_API_KEY ?? '').startsWith('re_');
+
+// Callers that must distinguish "sent" from "skipped" (invitation flow tracks
+// emailStatus) use this instead of relying on NODE_ENV.
+export const emailCanSend = canSend;
 
 export class EmailService {
   async sendVerificationEmail(email: string, token: string): Promise<void> {
@@ -90,10 +94,11 @@ export class EmailService {
     });
   }
 
-  // acceptUrl contains the raw token — never log this URL in production
+  // acceptUrl contains the raw token — logged only when sending is unconfigured
+  // (mirrors verify/reset flows); never returned in an API response once SENT.
   async sendInvitationEmail(to: string, acceptUrl: string, roleName: string, expiresAt: Date): Promise<void> {
-    if (process.env.NODE_ENV !== 'production') {
-      // Intentional skip — caller must set emailStatus = SKIPPED
+    if (!canSend()) {
+      console.log(`\n[DEV MODE] Invitation URL: ${acceptUrl}\n`);
       return;
     }
 

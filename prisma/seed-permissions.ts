@@ -60,6 +60,7 @@ const PERMISSIONS = [
   { slug: 'payment:view',   module: 'Payments', description: 'View payments' },
   { slug: 'payment:create', module: 'Payments', description: 'Record payments' },
   { slug: 'payment:edit',   module: 'Payments', description: 'Edit payment details' },
+  { slug: 'payment:delete', module: 'Payments', description: 'Delete payments' },
   // Roles & Admin
   { slug: 'role:view',   module: 'Admin', description: 'View roles and permissions' },
   { slug: 'role:manage', module: 'Admin', description: 'Create, edit, and delete roles' },
@@ -82,7 +83,6 @@ const PERMISSIONS = [
   { slug: 'doc:transfer',       module: 'Documentation', description: 'Transfer documentation-ready cases to Process Department' },
   { slug: 'doc:preset:view',    module: 'Documentation', description: 'View document presets' },
   { slug: 'doc:preset:manage',  module: 'Documentation', description: 'Create, edit, and delete document presets' },
-  { slug: 'doc:audit:view',     module: 'Documentation', description: 'View documentation audit timeline' },
 ] as const;
 
 const PRESET_ROLES: Record<string, string[]> = {

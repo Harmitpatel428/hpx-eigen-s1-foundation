@@ -1,8 +1,9 @@
 import { PrismaClient, InvitationStatus, InvitationEmailStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { AuditService } from './audit.service';
-import { EmailService } from './email.service';
+import { EmailService, emailCanSend } from './email.service';
 import { TokenService } from './auth/TokenService';
+import { logger } from '../utils/logger';
 import {
   ResourceNotFoundError,
   DuplicateResourceError,
@@ -121,7 +122,9 @@ export class InvitationService {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const acceptUrl = `${frontendUrl}/accept-invite?token=${rawToken}`;
 
-    if (process.env.NODE_ENV !== 'production') {
+    // Sending happens wherever a working RESEND_API_KEY is configured — local included.
+    // (The old NODE_ENV gate silently disabled all mail outside production.)
+    if (!emailCanSend()) {
       await this.prisma.userInvitation.update({
         where: { id: invitationId },
         data: { emailStatus: InvitationEmailStatus.SKIPPED }
@@ -129,9 +132,9 @@ export class InvitationService {
       await this.auditService.log({
         tenantId, eventType: 'INVITATION_CREATED', entityType: 'UserInvitation',
         entityId: invitationId, actorUserId: invitedBy, operation: 'CREATE',
-        payload: { email }
+        payload: { email, emailSkipped: true }
       });
-      console.log(`\n[DEV MODE - INVITATION] URL: ${acceptUrl}\n`);
+      logger.warn({ invitationId }, 'Invitation email skipped — RESEND_API_KEY not configured');
       return { invitationId, emailStatus: InvitationEmailStatus.SKIPPED, devInviteUrl: acceptUrl };
     }
 
@@ -147,7 +150,8 @@ export class InvitationService {
         payload: { email }
       });
       return { invitationId, emailStatus: InvitationEmailStatus.SENT, devInviteUrl: null };
-    } catch {
+    } catch (err) {
+      logger.error({ err, invitationId, email }, 'Invitation email delivery failed');
       await this.prisma.userInvitation.update({
         where: { id: invitationId },
         data: { emailStatus: InvitationEmailStatus.FAILED }
