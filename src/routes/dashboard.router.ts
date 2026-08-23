@@ -145,7 +145,8 @@ async function getSalesMetrics(prisma: PrismaClient, tenantId: string) {
     pipelineAgg,
     activeDeals,
     winRateResult,
-    velocityResult
+    velocityResult,
+    byStage
   ] = await Promise.all([
     // Pipeline value: sum of open opportunities
     prisma.opportunity.aggregate({
@@ -193,7 +194,19 @@ async function getSalesMetrics(prisma: PrismaClient, tenantId: string) {
       AND stage = 'CLOSED_WON'
       AND "closedAt" IS NOT NULL
       AND "createdAt" >= ${ninetyDaysAgo}
-    `
+    `,
+
+    // Per-stage breakdown of open pipeline — lets the frontend render the
+    // momentum bars without fetching every opportunity row
+    prisma.opportunity.groupBy({
+      by: ['stage'],
+      where: {
+        tenantId,
+        stage: { notIn: ['CLOSED_WON', 'CLOSED_LOST'] }
+      },
+      _count: { _all: true },
+      _sum: { value: true }
+    })
   ]);
 
   return {
@@ -201,7 +214,12 @@ async function getSalesMetrics(prisma: PrismaClient, tenantId: string) {
     activeDeals,
     winRate: Number(winRateResult[0]?.win_rate ?? 0),
     avgVelocity: Math.round(Number(velocityResult[0]?.avg_velocity ?? 0)),
-    currency: 'INR'
+    currency: 'INR',
+    pipelineByStage: byStage.map(g => ({
+      stage: g.stage,
+      count: g._count._all,
+      value: g._sum.value?.toNumber() ?? 0,
+    }))
   };
 }
 

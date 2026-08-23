@@ -699,8 +699,10 @@ export class LeadService {
     const lead = await this.prisma.lead.findFirst({ where: { id: leadId, tenantId: ctx.tenantId, deletedAt: { not: null } } });
     if (!lead) throw new ResourceNotFoundError();
 
+    // deletedAt must be set explicitly in the where: the global db.ts extension
+    // injects `deletedAt: null` otherwise, which never matches a soft-deleted row (P2025).
     await this.prisma.lead.update({
-      where: { id: leadId },
+      where: { id: leadId, deletedAt: { not: null } },
       data: { deletedAt: null },
     });
 
@@ -737,11 +739,13 @@ export class LeadService {
 
   /** Permanently delete a lead */
   async permanentDeleteLead(ctx: TenantContext, leadId: string) {
-    const lead = await this.prisma.lead.findFirst({ where: { id: leadId, tenantId: ctx.tenantId } });
+    // Explicit deletedAt:{not:null} — without it the db.ts extension injects
+    // deletedAt:null and the soft-deleted row is never found (P2025).
+    const lead = await this.prisma.lead.findFirst({ where: { id: leadId, tenantId: ctx.tenantId, deletedAt: { not: null } } });
     if (!lead) throw new ResourceNotFoundError();
     if (!lead.deletedAt) throw new ValidationError('Lead must be soft-deleted before permanent deletion.');
 
-    await this.prisma.lead.delete({ where: { id: leadId } });
+    await this.prisma.lead.delete({ where: { id: leadId, deletedAt: { not: null } } });
 
     await this.audit.log({
       tenantId: ctx.tenantId,

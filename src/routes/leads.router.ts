@@ -540,6 +540,65 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     }
   );
 
+  // ─── GET /api/v1/leads/assignment-summary ────────────────────────
+  // Assignment distribution for higher-authority users: leads per owner,
+  // unassigned count, and how many the requesting user assigned (managerId
+  // tracks the last assigner — see Lead.managerId in schema.prisma).
+  // Same tenant/scope filters as GET /leads.
+  router.get(
+    '/assignment-summary',
+    authMiddleware,
+    permissionMiddleware('lead:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
+
+        const ownerFilter = await buildOwnerFilter(
+          (scope ?? 'OWN') as ScopeType,
+          userId, teamId, departmentId, prisma, true
+        );
+
+        const where: Prisma.LeadWhereInput = {
+          tenantId,
+          deletedAt: { equals: null },
+          ...ownerFilter,
+        };
+
+        const grouped = await prisma.lead.groupBy({
+          by: ['ownerId'],
+          where,
+          _count: { id: true },
+        });
+
+        const unassigned = grouped.find(g => g.ownerId === null)?._count.id ?? 0;
+        const ownerGroups = grouped.filter((g): g is typeof g & { ownerId: string } => g.ownerId !== null);
+
+        const owners = ownerGroups.length > 0
+          ? await prisma.user.findMany({
+              where: { id: { in: ownerGroups.map(g => g.ownerId) }, tenantId },
+              select: { id: true, firstName: true, lastName: true },
+            })
+          : [];
+        const nameById = Object.fromEntries(owners.map(u => [u.id, u]));
+
+        const perOwner = ownerGroups
+          .map(g => ({
+            userId: g.ownerId,
+            firstName: nameById[g.ownerId]?.firstName ?? null,
+            lastName: nameById[g.ownerId]?.lastName ?? null,
+            count: g._count.id,
+          }))
+          .sort((a, b) => b.count - a.count);
+
+        const assignedByMe = await prisma.lead.count({ where: { ...where, managerId: userId } });
+
+        res.json({ data: { total: unassigned + perOwner.reduce((s, o) => s + o.count, 0), unassigned, assignedByMe, perOwner } });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
   // ─── GET /api/v1/leads ────────────────────────────────────────────
   router.get(
     '/',
