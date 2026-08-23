@@ -6,3 +6,6 @@ node_modules
 
 /generated/prisma
 dist
+
+# One-off local DB ops scripts (hold prod connection string — never commit)
+.dbops/

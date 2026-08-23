@@ -1,12 +1,19 @@
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder');
+const RESEND_API_KEY = process.env.RESEND_API_KEY ?? '';
+const resend = new Resend(RESEND_API_KEY || 're_placeholder');
+
+// Sends happen wherever a working API key is configured — local included.
+// Without a key we log the action link instead, so the auth flow still works
+// end-to-end on a fresh checkout. (The old NODE_ENV gate silently disabled
+// all mail outside production and made local verification impossible.)
+const canSend = () => RESEND_API_KEY.startsWith('re_');
 
 export class EmailService {
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (!canSend()) {
       console.log(`\n[DEV MODE] Verification URL: ${verifyUrl}\n`);
       return;
     }
@@ -33,7 +40,7 @@ export class EmailService {
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
     const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${token}`;
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (!canSend()) {
       console.log(`\n[DEV MODE] Password Reset URL: ${resetUrl}\n`);
       return;
     }
@@ -58,7 +65,7 @@ export class EmailService {
   }
 
   async sendPasswordChangedEmail(email: string): Promise<void> {
-    if (process.env.NODE_ENV !== 'production') {
+    if (!canSend()) {
       console.log(`\n[DEV MODE] Password changed notification would be sent to: ${email}\n`);
       return;
     }
