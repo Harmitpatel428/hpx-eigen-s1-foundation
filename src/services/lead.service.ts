@@ -658,11 +658,18 @@ export class LeadService {
       data: { deletedAt: new Date() },
     });
 
+    // entityId uses "bulk:N" instead of the comma-joined UUID list — a list of
+    // ~75+ UUIDs exceeds PostgreSQL's 2704-byte btree index row cap on
+    // AuditLog_entityType_entityId_idx (error 54000). The delete itself had
+    // already committed by then, so the caller got a 500 while every selected
+    // lead WAS soft-deleted — the production "bulk delete fails" incident.
+    // Same failure/fix as bulkAssign (see its comment); the affected leads are
+    // recoverable from Lead.deletedAt + payload count.
     await this.audit.log({
       tenantId: ctx.tenantId,
       eventType: 'LEADS_BULK_DELETED',
       entityType: 'Lead',
-      entityId: leadIds.join(','),
+      entityId: `bulk:${result.count}`,
       actorUserId: ctx.userId,
       operation: 'DELETE',
       payload: { count: result.count },
@@ -731,7 +738,8 @@ export class LeadService {
       tenantId: ctx.tenantId,
       eventType: 'LEADS_BULK_RESTORED',
       entityType: 'Lead',
-      entityId: leadIds.join(','),
+      // entityId `bulk:N` — see bulkSoftDelete (btree 2704-byte index cap).
+      entityId: `bulk:${result.count}`,
       actorUserId: ctx.userId,
       operation: 'UPDATE',
       payload: { count: result.count },
@@ -771,7 +779,8 @@ export class LeadService {
       tenantId: ctx.tenantId,
       eventType: 'LEADS_BULK_PERMANENTLY_DELETED',
       entityType: 'Lead',
-      entityId: leadIds.join(','),
+      // entityId `bulk:N` — see bulkSoftDelete (btree 2704-byte index cap).
+      entityId: `bulk:${result.count}`,
       actorUserId: ctx.userId,
       operation: 'DELETE',
       payload: { count: result.count },

@@ -180,6 +180,15 @@ describe('POST /api/v1/leads/bulk-delete — HTTP integration', () => {
     for (const id of ids) expect(listedIds).not.toContain(id);
     expect(listedIds).toContain(survivorA);
 
+    // Audit trail: entityId is `bulk:N`, never the joined id list — joining 75+
+    // UUIDs exceeded PostgreSQL's 2704-byte btree index row cap (error 54000),
+    // which threw AFTER the delete committed and surfaced as a bogus 500.
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: a.tenantId, eventType: 'LEADS_BULK_DELETED' },
+      select: { entityId: true },
+    });
+    expect(audits.map((a2) => a2.entityId)).toContain('bulk:3');
+
     // Second bulk delete of already-deleted ids reports zero — no double effect.
     const again = await api('POST', '/api/v1/leads/bulk-delete', { token: a.token, body: { ids } });
     expect(again.status).toBe(200);

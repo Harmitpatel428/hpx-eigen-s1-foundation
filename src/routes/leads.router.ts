@@ -13,6 +13,7 @@ import { LeadService, FOLLOW_UP_REQUIRED_STAGES } from '../services/lead.service
 import { ValidationError } from '../types/exceptions';
 import { checkImportRateLimit, checkBulkOperationLimit } from '../services/auth/RateLimitService';
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
+import { logger } from '../utils/logger';
 
 export function createLeadsRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -377,6 +378,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             followUpDate?: string; expectedCloseDate?: string;
             country?: string; state?: string; city?: string;
             area?: string; postalCode?: string; freeformAddress?: string; ownerId?: string;
+            customFieldValues?: Array<{ fieldId: string; value: string | null }>;
+            tagNames?: string[];
           }>;
           onDuplicates?: 'skip' | 'overwrite';
         };
@@ -412,7 +415,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           return STAGE_ALIASES[up] ?? up;
         };
         const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        const toUuidOrNull = (v: string | undefined): string | null => (v && UUID_RE.test(v) ? v : null);
         const rowErrors: Array<{ row: number; message: string }> = [];
         const invalidRowIndices = new Set<number>();
         for (let i = 0; i < rows.length; i++) {
@@ -459,6 +461,77 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           } else {
             row.priority = undefined;
           }
+          // Custom field values: shape/size checks here; tenant-scope check
+          // happens batch-wide right after the loop.
+          if (row.customFieldValues !== undefined && !Array.isArray(row.customFieldValues)) {
+            rowErrors.push({ row: i + 1, message: 'customFieldValues must be an array.' });
+            invalidRowIndices.add(i);
+            continue;
+          }
+          if (Array.isArray(row.customFieldValues) && row.customFieldValues.length > 50) {
+            rowErrors.push({ row: i + 1, message: 'Maximum 50 custom field values per lead.' });
+            invalidRowIndices.add(i);
+            continue;
+          }
+          if (Array.isArray(row.customFieldValues)) {
+            for (const v of row.customFieldValues) {
+              if (typeof v?.value === 'string' && v.value.length > 1000) {
+                rowErrors.push({ row: i + 1, message: 'Custom field value must be 1,000 characters or fewer.' });
+                invalidRowIndices.add(i);
+                break;
+              }
+            }
+          }
+        }
+
+        // Resolve custom-field definitions and owner ids ONCE, scoped to this
+        // tenant — a file can never reference another tenant's fields or users.
+        const stillValidIdx = (): number[] => {
+          const out: number[] = [];
+          for (let i = 0; i < rows.length; i++) if (!invalidRowIndices.has(i)) out.push(i);
+          return out;
+        };
+
+        const cfIds = [...new Set(stillValidIdx().flatMap((i) => (rows[i]!.customFieldValues ?? []).map((v) => v?.fieldId).filter((v): v is string => typeof v === 'string')))];
+        let validCfIds = new Set<string>();
+        if (cfIds.length > 0) {
+          const defs = await (prisma as any).leadFieldDef.findMany({
+            where: { id: { in: cfIds }, tenantId },
+            select: { id: true },
+          });
+          validCfIds = new Set<string>(defs.map((d: { id: string }) => d.id));
+        }
+        for (const i of stillValidIdx()) {
+          for (const v of rows[i]!.customFieldValues ?? []) {
+            if (!v || typeof v.fieldId !== 'string' || !UUID_RE.test(v.fieldId) || !validCfIds.has(v.fieldId)) {
+              rowErrors.push({ row: i + 1, message: 'Unknown custom field — the referenced field does not exist in your organization.' });
+              invalidRowIndices.add(i);
+              break;
+            }
+          }
+        }
+
+        // Owner ids: only ids belonging to THIS tenant's active users are kept.
+        // A foreign/unknown UUID fails the row loudly instead of silently
+        // reassigning (or silently dropping) ownership. Non-UUID text (e.g. an
+        // email column from an external file) maps to unassigned below.
+        const ownerCandidates = [...new Set(stillValidIdx()
+          .map((i) => rows[i]!.ownerId)
+          .filter((v): v is string => !!v && UUID_RE.test(v)))];
+        let validOwnerIds = new Set<string>();
+        if (ownerCandidates.length > 0) {
+          const owners = await prisma.user.findMany({
+            where: { id: { in: ownerCandidates }, tenantId, deletedAt: null },
+            select: { id: true },
+          });
+          validOwnerIds = new Set(owners.map((u) => u.id));
+        }
+        for (const i of stillValidIdx()) {
+          const oid = rows[i]!.ownerId;
+          if (oid && UUID_RE.test(oid) && !validOwnerIds.has(oid)) {
+            rowErrors.push({ row: i + 1, message: 'Owner ID does not match a user in your organization.' });
+            invalidRowIndices.add(i);
+          }
         }
         if (invalidRowIndices.size === rows.length) {
           return res.status(400).json({ error: { message: 'All rows failed validation.', code: 'IMPORT_VALIDATION_FAILED', errors: rowErrors } });
@@ -504,58 +577,120 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           }
         }
 
-        // Create in 100-row chunks via createMany
-        // ponytail: createMany skips tagNames/customFieldValues — acceptable for CSV import
+        // Create rows individually so nested writes (tags, custom fields)
+        // are atomic per lead — Prisma wraps each create + its nested writes
+        // in one transaction; a failure skips exactly that lead.
+        // ponytail: per-row create instead of createMany — createMany cannot
+        // do nested writes, and silently dropping customFieldValues was the
+        // round-trip incident. Batch again only if Prisma supports it.
         let imported = 0;
-        let raceSkipped = 0; // rows silently dropped by DB unique constraint (TOCTOU race)
+        let raceSkipped = 0; // rows dropped by DB unique constraint (TOCTOU race)
         const errors: Array<{ row: number; message: string }> = [];
-        const CHUNK = 100;
-        for (let start = 0; start < toCreate.length; start += CHUNK) {
-          const chunk = toCreate.slice(start, start + CHUNK);
+
+        // Resolve tag names → ids once per unique name (same upsert as leadService).
+        const tagIdByName = new Map<string, string>();
+        const resolveTagIdsForImport = async (names: string[] | undefined): Promise<string[]> => {
+          if (!names?.length) return [];
+          const out: string[] = [];
+          for (const raw of names) {
+            const name = String(raw ?? '').trim();
+            if (!name) continue;
+            let id = tagIdByName.get(name);
+            if (!id) {
+              const tag: { id: string } = await (prisma as any).leadTag.upsert({
+                where: { tenantId_name: { tenantId, name } },
+                create: { tenantId, name },
+                update: { usageCount: { increment: 1 } },
+                select: { id: true },
+              });
+              id = tag.id;
+              tagIdByName.set(name, id);
+            }
+            if (!out.includes(id)) out.push(id);
+          }
+          return out;
+        };
+
+        const buildLeadData = (row: typeof rows[0]) => ({
+          tenantId,
+          ownerId: row.ownerId && validOwnerIds.has(row.ownerId) ? row.ownerId : null,
+          firstName: row.firstName,
+          lastName: row.lastName,
+          // Normalize empty strings to null so the partial unique index treats them
+          // as absent rather than as a (tenantId, '') unique constraint value.
+          email: row.email || null,
+          phone: row.phone || null,
+          company: row.company || null,
+          source: normalizeSource(row.source),
+          status: LeadStatus.NEW,
+          stage: (row.stage as LeadStage | undefined) ?? LeadStage.NEW,
+          priority: (row.priority as LeadPriority | undefined) ?? LeadPriority.MEDIUM,
+          notes: row.notes ?? null,
+          score: typeof row.score === 'number' ? row.score : 0,
+          expectedValue: row.expectedValue !== undefined
+            ? new Prisma.Decimal(Number(row.expectedValue))
+            : new Prisma.Decimal(0),
+          followUpDate: row.followUpDate ? new Date(row.followUpDate) : null,
+          expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : null,
+          country: row.country ?? null,
+          state: row.state ?? null,
+          city: row.city ?? null,
+          area: row.area ?? null,
+          postalCode: row.postalCode ?? null,
+          freeformAddress: row.freeformAddress ?? null,
+          // Already validated against THIS tenant's field defs above — values
+          // round-trip exactly as imported (the old code wrote [] here).
+          customFieldValues: (row.customFieldValues ?? []).map((v) => ({ fieldId: v.fieldId, value: v.value })),
+        });
+
+        for (const [idx, row] of toCreate.entries()) {
           try {
-            const result = await prisma.lead.createMany({
-              data: chunk.map(row => ({
-                tenantId,
-                ownerId: toUuidOrNull(row.ownerId),
-                firstName: row.firstName,
-                lastName: row.lastName,
-                // Normalize empty strings to null so the partial unique index treats them
-                // as absent rather than as a (tenantId, '') unique constraint value.
-                email: row.email || null,
-                phone: row.phone || null,
-                company: row.company || null,
-                source: normalizeSource(row.source),
-                status: LeadStatus.NEW,
-                stage: (row.stage as LeadStage | undefined) ?? LeadStage.NEW,
-                priority: (row.priority as LeadPriority | undefined) ?? LeadPriority.MEDIUM,
-                notes: row.notes ?? null,
-                score: typeof row.score === 'number' ? row.score : 0,
-                expectedValue: row.expectedValue !== undefined
-                  ? new Prisma.Decimal(Number(row.expectedValue))
-                  : new Prisma.Decimal(0),
-                followUpDate: row.followUpDate ? new Date(row.followUpDate) : null,
-                expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : null,
-                country: row.country ?? null,
-                state: row.state ?? null,
-                city: row.city ?? null,
-                area: row.area ?? null,
-                postalCode: row.postalCode ?? null,
-                freeformAddress: row.freeformAddress ?? null,
-                customFieldValues: [],
-              })),
-              skipDuplicates: true,
+            const tagIds = await resolveTagIdsForImport(row.tagNames);
+            await prisma.lead.create({
+              data: {
+                ...buildLeadData(row),
+                ...(tagIds.length ? { tags: { create: tagIds.map((tagId) => ({ tagId })) } } : {}),
+              } as any,
             });
-            imported += result.count;
-            // Count rows the DB skipped due to concurrent import racing the same unique key
-            raceSkipped += chunk.length - result.count;
+            imported++;
           } catch (err: any) {
-            errors.push({ row: start + 1, message: err.message ?? 'Chunk insert failed' });
+            if (err?.code === 'P2002') raceSkipped++; // concurrent import raced the same unique key
+            else errors.push({ row: idx + 1, message: err.message ?? 'Insert failed' });
+          }
+        }
+
+        // Merge custom fields for overwrite targets in one fetch — imported
+        // values win per fieldId; untouched fields on the existing lead stay.
+        const mergedCfById = new Map<string, Array<{ fieldId: string; value: string | null }>>();
+        if (toUpdate.length > 0) {
+          const existingLeads = await prisma.lead.findMany({
+            where: { id: { in: toUpdate.map((u) => u.id) }, tenantId },
+            select: { id: true, customFieldValues: true },
+          });
+          for (const el of existingLeads) {
+            const arr = Array.isArray(el.customFieldValues)
+              ? (el.customFieldValues as Array<{ fieldId: string; value: string | null }>)
+              : [];
+            mergedCfById.set(el.id, arr.filter((v) => v && typeof v.fieldId === 'string'));
+          }
+          for (const { id, row } of toUpdate) {
+            const merged = new Map((mergedCfById.get(id) ?? []).map((v) => [v.fieldId, v]));
+            for (const v of row.customFieldValues ?? []) merged.set(v.fieldId, { fieldId: v.fieldId, value: v.value });
+            mergedCfById.set(id, [...merged.values()]);
           }
         }
 
         // Overwrite duplicates individually
         for (const { id, row } of toUpdate) {
           try {
+            const tagIds = await resolveTagIdsForImport(row.tagNames);
+            if (tagIds.length) {
+              await (prisma as any).leadTagAssignment.deleteMany({ where: { leadId: id } });
+              await (prisma as any).leadTagAssignment.createMany({
+                data: tagIds.map((tagId) => ({ leadId: id, tagId })),
+                skipDuplicates: true,
+              });
+            }
             const updateResult = await prisma.lead.updateMany({
               where: { id, tenantId, deletedAt: null },
               data: {
@@ -578,6 +713,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 area: row.area ?? null,
                 postalCode: row.postalCode ?? null,
                 freeformAddress: row.freeformAddress ?? null,
+                customFieldValues: mergedCfById.get(id) ?? [],
               },
             });
             if (updateResult.count > 0) {
@@ -592,6 +728,19 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         }
 
         const allErrors = [...rowErrors, ...errors];
+        // Structured summary — counts and row numbers only, never cell contents.
+        logger.info(
+          {
+            tenantId,
+            userId,
+            rowsReceived: rows.length,
+            imported,
+            skipped: (onDuplicates === 'skip' ? duplicates.length : 0) + raceSkipped + invalidRowIndices.size,
+            duplicates: duplicates.length,
+            failed: allErrors.length,
+          },
+          'lead_import_summary'
+        );
         res.json({
           data: {
             imported,
