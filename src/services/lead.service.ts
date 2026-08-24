@@ -5,7 +5,8 @@ import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, Re
 import { AuthorizationDecision } from '../types/authorization';
 
 // Stages that require a followUpDate to be set
-const FOLLOW_UP_REQUIRED_STAGES = new Set<LeadStage>([
+export const FOLLOW_UP_REQUIRED_STAGES = new Set<LeadStage>([
+  LeadStage.INTERESTED,
   LeadStage.FOLLOW_UP,
   LeadStage.CALL_BACK_REQUESTED,
   LeadStage.CALL_NOT_RECEIVED,
@@ -15,6 +16,7 @@ const FOLLOW_UP_REQUIRED_STAGES = new Set<LeadStage>([
 const ACTIVE_STAGES = new Set<LeadStage>([
   LeadStage.NEW,
   LeadStage.QUALIFIED,
+  LeadStage.INTERESTED,
   LeadStage.FOLLOW_UP,
   LeadStage.CALL_BACK_REQUESTED,
   LeadStage.CALL_NOT_RECEIVED,
@@ -308,6 +310,7 @@ export class LeadService {
           { lastName:  { contains: options.search, mode: Prisma.QueryMode.insensitive } },
           { company:   { contains: options.search, mode: Prisma.QueryMode.insensitive } },
           { email:     { contains: options.search, mode: Prisma.QueryMode.insensitive } },
+          { phone:     { contains: options.search, mode: Prisma.QueryMode.insensitive } },
         ]
       : undefined;
 

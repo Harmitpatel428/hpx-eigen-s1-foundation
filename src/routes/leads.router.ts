@@ -9,7 +9,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
-import { LeadService } from '../services/lead.service';
+import { LeadService, FOLLOW_UP_REQUIRED_STAGES } from '../services/lead.service';
 import { ValidationError } from '../types/exceptions';
 import { checkImportRateLimit, checkBulkOperationLimit } from '../services/auth/RateLimitService';
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
@@ -17,6 +17,80 @@ import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
 export function createLeadsRouter(prisma: PrismaClient): Router {
   const router = Router();
   const leadService = new LeadService(prisma);
+
+  // Shared filter parsing for GET / (list) and GET /export — single source of
+  // truth for status/stage/assignee/role/search so both endpoints always agree.
+  const buildLeadFilterWhere = async (req: Request): Promise<Prisma.LeadWhereInput> => {
+    const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
+    const status = req.query.status as LeadStatus | undefined;
+    const stage = req.query.stage as LeadStage | undefined;
+    const ownerId = req.query.ownerId as string | undefined;
+    const roleId = req.query.roleId as string | undefined;
+    const search = req.query.search as string | undefined;
+
+    if (status && !Object.values(LeadStatus).includes(status)) {
+      throw new ValidationError(
+        `status must be one of: ${Object.values(LeadStatus).join(', ')}`
+      );
+    }
+    if (stage && !Object.values(LeadStage).includes(stage)) {
+      throw new ValidationError(
+        `stage must be one of: ${Object.values(LeadStage).join(', ')}`
+      );
+    }
+
+    const ownerFilter = await buildOwnerFilter(
+      (scope ?? 'OWN') as ScopeType,
+      userId,
+      teamId,
+      departmentId,
+      prisma,
+      true  // Lead has managerId; include delegation-chain visibility in OWN scope
+    );
+
+    const whereClause: Prisma.LeadWhereInput = {
+      tenantId,
+      deletedAt: { equals: null },
+      ...ownerFilter,
+    };
+
+    if (status) whereClause.status = status;
+    if (stage) whereClause.stage = stage;
+
+    // Role/assignee narrowing goes through AND so it composes with — and can
+    // never widen — the scope's ownerFilter above.
+    const conjuncts: Prisma.LeadWhereInput[] = [];
+    if (ownerId === 'UNASSIGNED') {
+      conjuncts.push({ ownerId: null });
+    } else if (ownerId && Object.keys(ownerFilter).length === 0) {
+      // Only ORGANIZATION-scope users (admins) may target an arbitrary owner;
+      // scoped users are already constrained by ownerFilter.
+      conjuncts.push({ ownerId });
+    }
+    if (roleId) {
+      // User/UserRole/Role are NOT tenant-scoped by db.ts — explicit tenant +
+      // soft-delete filters here are load-bearing.
+      const roleUsers = await prisma.userRole.findMany({
+        where: { roleId, role: { tenantId, deletedAt: null } },
+        select: { userId: true },
+      });
+      // `in: []` intentionally matches nothing when the role has no users.
+      conjuncts.push({ ownerId: { in: roleUsers.map((u) => u.userId) } });
+    }
+    if (conjuncts.length > 0) whereClause.AND = conjuncts;
+
+    if (search) {
+      whereClause.OR = [
+        { firstName: { contains: search, mode: 'insensitive' } },
+        { lastName: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+        { company: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    return whereClause;
+  };
 
   // ─── POST /api/v1/leads ───────────────────────────────────────────
   router.post(
@@ -312,7 +386,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         if (onDuplicates !== 'skip' && onDuplicates !== 'overwrite') throw new ValidationError('onDuplicates must be "skip" or "overwrite".');
 
         // Per-row validation: skip invalid rows, import valid ones
-        const SELECTABLE_STAGES_IMPORT = new Set<string>([LeadStage.NEW, LeadStage.QUALIFIED, LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED, LeadStage.OTHER, LeadStage.DISQUALIFIED]);
+        const SELECTABLE_STAGES_IMPORT = new Set<string>([LeadStage.NEW, LeadStage.QUALIFIED, LeadStage.INTERESTED, LeadStage.FOLLOW_UP, LeadStage.CALL_BACK_REQUESTED, LeadStage.CALL_NOT_RECEIVED, LeadStage.OTHER, LeadStage.DISQUALIFIED]);
         const STAGE_ALIASES: Record<string, string> = {
           'FOLLOW UP': 'FOLLOW_UP', 'FOLLOW-UP': 'FOLLOW_UP',
           'CALLBACK': 'CALL_BACK_REQUESTED', 'CALL BACK': 'CALL_BACK_REQUESTED', 'CALL-BACK': 'CALL_BACK_REQUESTED',
@@ -354,6 +428,36 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             rowErrors.push({ row: i + 1, message: `Stage "${row.stage}" is not valid for import. Use one of: ${[...SELECTABLE_STAGES_IMPORT].join(', ')}.` });
             invalidRowIndices.add(i);
             continue;
+          }
+          // Follow-up-required stages must carry a parseable follow-up date —
+          // same rule as create/update; import bypasses leadService so it
+          // re-checks here (INTERESTED included via FOLLOW_UP_REQUIRED_STAGES).
+          const stageEnum = row.stage as LeadStage | undefined;
+          if (stageEnum && FOLLOW_UP_REQUIRED_STAGES.has(stageEnum)) {
+            const d = row.followUpDate ? new Date(row.followUpDate) : null;
+            if (!d || isNaN(d.getTime())) {
+              rowErrors.push({
+                row: i + 1,
+                message: stageEnum === LeadStage.INTERESTED
+                  ? 'Follow-up Date is required for Interested leads.'
+                  : `followUpDate is required for stage ${row.stage}.`,
+              });
+              invalidRowIndices.add(i);
+              continue;
+            }
+          }
+          // Normalize + validate priority (import writes it directly via
+          // createMany — an invalid enum would fail the whole chunk).
+          if (row.priority !== undefined && row.priority !== null && String(row.priority).trim() !== '') {
+            const up = String(row.priority).trim().toUpperCase();
+            if (!(Object.values(LeadPriority) as string[]).includes(up)) {
+              rowErrors.push({ row: i + 1, message: `Priority "${row.priority}" is not valid. Use one of: ${Object.values(LeadPriority).join(', ')}.` });
+              invalidRowIndices.add(i);
+              continue;
+            }
+            row.priority = up;
+          } else {
+            row.priority = undefined;
           }
         }
         if (invalidRowIndices.size === rows.length) {
@@ -467,6 +571,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                   ? new Prisma.Decimal(Number(row.expectedValue))
                   : undefined,
                 expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : undefined,
+                followUpDate: row.followUpDate ? new Date(row.followUpDate) : null,
                 country: row.country ?? null,
                 state: row.state ?? null,
                 city: row.city ?? null,
@@ -542,8 +647,9 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/v1/leads/assignment-summary ────────────────────────
   // Assignment distribution for higher-authority users: leads per owner,
-  // unassigned count, and how many the requesting user assigned (managerId
-  // tracks the last assigner — see Lead.managerId in schema.prisma).
+  // unassigned count, how many the requesting user assigned (managerId
+  // tracks the last assigner — see Lead.managerId in schema.prisma), and
+  // role-grouped assignee options (roleGroups) for the dashboard filter.
   // Same tenant/scope filters as GET /leads.
   router.get(
     '/assignment-summary',
@@ -592,7 +698,51 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
         const assignedByMe = await prisma.lead.count({ where: { ...where, managerId: userId } });
 
-        res.json({ data: { total: unassigned + perOwner.reduce((s, o) => s + o.count, 0), unassigned, assignedByMe, perOwner } });
+        // Role-grouped assignee options for the dashboard filter: every active
+        // tenant user under their role(s) with live lead counts (0 when they own
+        // none). User/UserRole/Role bypass db.ts scoping — explicit tenant +
+        // soft-delete filters are load-bearing here.
+        const allUsers = await prisma.user.findMany({
+          where: { tenantId, deletedAt: null },
+          select: { id: true, firstName: true, lastName: true },
+        });
+        const userById = new Map(allUsers.map((u) => [u.id, u]));
+        const userRoles = allUsers.length > 0
+          ? await prisma.userRole.findMany({
+              where: {
+                userId: { in: allUsers.map((u) => u.id) },
+                role: { tenantId, deletedAt: null },
+              },
+              select: { userId: true, role: { select: { id: true, name: true } } },
+            })
+          : [];
+        const countByOwner = new Map(ownerGroups.map((g) => [g.ownerId, g._count.id]));
+
+        type AssigneeUser = { userId: string; firstName: string | null; lastName: string | null; count: number };
+        const roleGroupsMap = new Map<string, { roleId: string; roleName: string; users: AssigneeUser[] }>();
+        for (const ur of userRoles) {
+          let group = roleGroupsMap.get(ur.role.id);
+          if (!group) {
+            group = { roleId: ur.role.id, roleName: ur.role.name, users: [] };
+            roleGroupsMap.set(ur.role.id, group);
+          }
+          const u = userById.get(ur.userId);
+          group.users.push({
+            userId: ur.userId,
+            firstName: u?.firstName ?? null,
+            lastName: u?.lastName ?? null,
+            count: countByOwner.get(ur.userId) ?? 0,
+          });
+        }
+        const displayName = (u: AssigneeUser) => `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim();
+        const roleGroups = [...roleGroupsMap.values()]
+          .map((g) => ({
+            ...g,
+            users: g.users.sort((a, b) => b.count - a.count || displayName(a).localeCompare(displayName(b))),
+          }))
+          .sort((a, b) => a.roleName.localeCompare(b.roleName));
+
+        res.json({ data: { total: unassigned + perOwner.reduce((s, o) => s + o.count, 0), unassigned, assignedByMe, perOwner, roleGroups } });
       } catch (err) {
         next(err);
       }
@@ -606,33 +756,13 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const {
-          userId,
-          tenantId,
-          teamId,
-          departmentId,
-          scope,
-        } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
 
-        const status = req.query.status as LeadStatus | undefined;
-        const stage = req.query.stage as LeadStage | undefined;
-        const ownerId = req.query.ownerId as string | undefined;
-        const search = req.query.search as string | undefined;
         const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
         const pageSize = req.query.pageSize
           ? parseInt(req.query.pageSize as string, 10)
           : 50;
 
-        if (status && !Object.values(LeadStatus).includes(status)) {
-          throw new ValidationError(
-            `status must be one of: ${Object.values(LeadStatus).join(', ')}`
-          );
-        }
-        if (stage && !Object.values(LeadStage).includes(stage)) {
-          throw new ValidationError(
-            `stage must be one of: ${Object.values(LeadStage).join(', ')}`
-          );
-        }
         if (page < 1 || isNaN(page)) {
           throw new ValidationError('page must be a positive integer.');
         }
@@ -640,36 +770,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           throw new ValidationError('pageSize must be between 1 and 200.');
         }
 
-        const ownerFilter = await buildOwnerFilter(
-          (scope ?? 'OWN') as ScopeType,
-          userId,
-          teamId,
-          departmentId,
-          prisma,
-          true  // Lead has managerId; include delegation-chain visibility in OWN scope
-        );
-
-        const whereClause: Prisma.LeadWhereInput = {
-          tenantId,
-          deletedAt: { equals: null },
-          ...ownerFilter,
-        };
-
-        if (status) whereClause.status = status;
-        if (stage) whereClause.stage = stage;
-        // Only let ORGANIZATION-scope users (admins) filter by an arbitrary ownerId.
-        // Scoped users already have their visibility constrained by ownerFilter.
-        if (ownerId && Object.keys(ownerFilter).length === 0) {
-          whereClause.ownerId = ownerId;
-        }
-        if (search) {
-          whereClause.OR = [
-            { firstName: { contains: search, mode: 'insensitive' } },
-            { lastName: { contains: search, mode: 'insensitive' } },
-            { email: { contains: search, mode: 'insensitive' } },
-            { company: { contains: search, mode: 'insensitive' } },
-          ];
-        }
+        const whereClause = await buildLeadFilterWhere(req);
 
         const skip = (page - 1) * pageSize;
         const [data, total] = await Promise.all([
@@ -716,6 +817,104 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         }));
 
         res.json({ data: enriched, total, page, pageSize });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── GET /api/v1/leads/export ─────────────────────────────────────
+  // Full-fidelity CSV source: every stored lead field plus owner/role info,
+  // tags, and notes aggregated from LeadNote (real notes no longer live in
+  // lead.notes). Same filters as GET /, or an explicit ?ids= list for
+  // export-selected. Defined before /:id to avoid route conflict.
+  router.get(
+    '/export',
+    authMiddleware,
+    permissionMiddleware('lead:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
+        const idsParam = req.query.ids as string | undefined;
+
+        let where: Prisma.LeadWhereInput;
+        if (idsParam !== undefined) {
+          // Export-selected: explicit id list, still bounded by scope + tenant.
+          const ids = idsParam.split(',').map((s) => s.trim()).filter(Boolean);
+          if (ids.length === 0 || ids.length > 200) {
+            throw new ValidationError('ids must contain between 1 and 200 comma-separated lead ids.');
+          }
+          const ownerFilter = await buildOwnerFilter(
+            (scope ?? 'OWN') as ScopeType, userId, teamId, departmentId, prisma, true
+          );
+          where = { tenantId, deletedAt: { equals: null }, ...ownerFilter, id: { in: ids } };
+        } else {
+          where = await buildLeadFilterWhere(req);
+        }
+
+        const EXPORT_CAP = 10000;
+        const leads = await prisma.lead.findMany({
+          where,
+          orderBy: { createdAt: 'desc' },
+          take: EXPORT_CAP,
+          include: { tags: { include: { tag: true } } },
+        });
+
+        // Owner names + role names. User/UserRole/Role bypass db.ts scoping —
+        // explicit tenant/soft-delete filters are load-bearing here.
+        const ownerIds = [...new Set(leads.map((l) => l.ownerId).filter((v): v is string => Boolean(v)))];
+        const owners = ownerIds.length > 0
+          ? await prisma.user.findMany({
+              where: { id: { in: ownerIds }, tenantId },
+              select: { id: true, firstName: true, lastName: true },
+            })
+          : [];
+        const rolesByUser = new Map<string, string[]>();
+        if (ownerIds.length > 0) {
+          const userRoles = await prisma.userRole.findMany({
+            where: { userId: { in: ownerIds }, role: { tenantId, deletedAt: null } },
+            select: { userId: true, role: { select: { name: true } } },
+          });
+          for (const ur of userRoles) {
+            const names = rolesByUser.get(ur.userId) ?? [];
+            names.push(ur.role.name);
+            rolesByUser.set(ur.userId, names);
+          }
+        }
+        const ownerById = Object.fromEntries(owners.map((u) => [u.id, u]));
+
+        // Notes aggregated from LeadNote, oldest → newest, newlines preserved.
+        const leadIds = leads.map((l) => l.id);
+        const notes = leadIds.length > 0
+          ? await prisma.leadNote.findMany({
+              where: { leadId: { in: leadIds }, deletedAt: { equals: null } },
+              orderBy: [{ leadId: 'asc' }, { createdAt: 'asc' }],
+              select: { leadId: true, content: true },
+            })
+          : [];
+        const notesByLead = new Map<string, string[]>();
+        for (const n of notes) {
+          const list = notesByLead.get(n.leadId) ?? [];
+          list.push(n.content);
+          notesByLead.set(n.leadId, list);
+        }
+
+        const data = leads.map((l) => ({
+          ...l,
+          tags: ((l.tags as Array<{ tag: unknown }>) ?? []).map((a) => a.tag),
+          owner: l.ownerId
+            ? {
+                id: l.ownerId,
+                firstName: ownerById[l.ownerId]?.firstName ?? null,
+                lastName: ownerById[l.ownerId]?.lastName ?? null,
+                roleNames: rolesByUser.get(l.ownerId) ?? [],
+              }
+            : null,
+          notesCount: notesByLead.get(l.id)?.length ?? 0,
+          notesText: (notesByLead.get(l.id) ?? []).join('\n'),
+        }));
+
+        res.json({ data, total: data.length, truncated: leads.length >= EXPORT_CAP });
       } catch (err) {
         next(err);
       }

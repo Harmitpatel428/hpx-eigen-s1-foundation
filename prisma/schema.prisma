@@ -305,7 +305,7 @@ model Session {
   deletedAt         DateTime?
 
   // Populated only during admin impersonation; null = normal session
-  impersonatedByUserId String?   @db.Uuid
+  impersonatedByUserId String? @db.Uuid
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -384,6 +384,7 @@ enum LeadStage {
   // Active selectable stages
   NEW
   QUALIFIED
+  INTERESTED
   FOLLOW_UP
   CALL_BACK_REQUESTED
   CALL_NOT_RECEIVED
@@ -518,7 +519,7 @@ model Lead {
   opportunities  Opportunity[]
   docCases       DocCase[]
   tags           LeadTagAssignment[]
-  leadNotes      LeadNote[]          @relation("LeadNotes")
+  leadNotes      LeadNote[]            @relation("LeadNotes")
   leadActivities LeadActivity[]
   waChannels     LeadWhatsAppChannel[]
   conversations  Conversation[]
@@ -534,16 +535,16 @@ model Lead {
 
 // ─── LeadNote — chronological note history with same-day editing ─────
 model LeadNote {
-  id            String    @id @default(uuid()) @db.Uuid
-  tenantId      String    @db.Uuid
-  leadId        String    @db.Uuid
-  authorId      String    @db.Uuid
-  content       String    @db.VarChar(500)
-  followUpDate  DateTime?
-  followUpTime  String?   // HH:mm stored as string for timezone handling
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  deletedAt     DateTime?
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  leadId       String    @db.Uuid
+  authorId     String    @db.Uuid
+  content      String    @db.VarChar(500)
+  followUpDate DateTime?
+  followUpTime String? // HH:mm stored as string for timezone handling
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
 
   lead Lead @relation("LeadNotes", fields: [leadId], references: [id], onDelete: Cascade)
 
@@ -558,7 +559,7 @@ model LeadFieldDef {
   tenantId  String   @db.Uuid
   name      String
   key       String
-  type      String   // text | number | date | dropdown
+  type      String // text | number | date | dropdown
   options   Json     @default("[]") // string[] for dropdown type
   required  Boolean  @default(false)
   createdAt DateTime @default(now())
@@ -602,18 +603,18 @@ model LeadTagAssignment {
 // ─── LeadActivity — append-mostly operational timeline per lead ───
 // Separate from Opportunity-scoped Activity; owned at the Lead level.
 model LeadActivity {
-  id          String              @id @default(uuid()) @db.Uuid
-  tenantId    String              @db.Uuid
-  leadId      String              @db.Uuid
-  actorUserId String?             @db.Uuid
+  id          String            @id @default(uuid()) @db.Uuid
+  tenantId    String            @db.Uuid
+  leadId      String            @db.Uuid
+  actorUserId String?           @db.Uuid
   type        LeadActivityType
-  state       LeadActivityState   @default(COMPLETED)
+  state       LeadActivityState @default(COMPLETED)
   subject     String
-  metadata    Json                @default("{}")
+  metadata    Json              @default("{}")
   scheduledAt DateTime?
   completedAt DateTime?
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
   deletedAt   DateTime?
 
   lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
@@ -990,22 +991,22 @@ model DocPreset {
 
 // ─── DocPresetItem — individual document definition in a preset ───
 model DocPresetItem {
-  id                    String   @id @default(uuid()) @db.Uuid
-  presetId              String   @db.Uuid
-  tenantId              String   @db.Uuid
+  id                    String    @id @default(uuid()) @db.Uuid
+  presetId              String    @db.Uuid
+  tenantId              String    @db.Uuid
   name                  String
   description           String?
-  isMandatory           Boolean  @default(true)
-  isBlocking            Boolean  @default(false)
-  displayOrder          Int      @default(0)
-  verificationRequired  Boolean  @default(true)
-  expiryTrackingEnabled Boolean  @default(false)
+  isMandatory           Boolean   @default(true)
+  isBlocking            Boolean   @default(false)
+  displayOrder          Int       @default(0)
+  verificationRequired  Boolean   @default(true)
+  expiryTrackingEnabled Boolean   @default(false)
   expiryDays            Int?
-  metadataFields        Json     @default("[]")
+  metadataFields        Json      @default("[]")
   notes                 String?
   conditionRule         Json?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
   deletedAt             DateTime?
 
   preset DocPreset @relation(fields: [presetId], references: [id], onDelete: Cascade)

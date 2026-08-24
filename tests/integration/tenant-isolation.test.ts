@@ -27,6 +27,7 @@ function uid() { return crypto.randomUUID(); }
 
 function makeTestApp() {
   const app = express();
+  app.set('trust proxy', true); // honor X-Forwarded-For from the api() helper
   app.use(express.json({ limit: '10mb' }));
   app.use('/api/v1/leads', createLeadsRouter(prisma));
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -39,6 +40,16 @@ function makeTestApp() {
   return app;
 }
 
+// Spoofed unique client IP per request. With REDIS_URL set, the Redis-backed
+// per-IP rate limiters (import:ip:* — 20/hr) are shared by every suite through
+// 127.0.0.1 and persist across runs; trust proxy + X-Forwarded-For gives each
+// suite its own buckets so suites don't exhaust each other's quota.
+const ipSeq = { n: crypto.randomBytes(2).readUInt16BE(0) };
+function testIp(): string {
+  const n = ipSeq.n++ % 65536;
+  return `10.${(n >> 8) & 0xff}.${n & 0xff}.1`;
+}
+
 async function api(
   method: string,
   path: string,
@@ -48,6 +59,7 @@ async function api(
     method,
     headers: {
       'Content-Type': 'application/json',
+      'X-Forwarded-For': testIp(),
       ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
