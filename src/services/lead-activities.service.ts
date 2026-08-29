@@ -8,8 +8,9 @@ export class LeadActivitiesService {
   constructor(private readonly prisma: PrismaClient) {}
 
   async listGlobal(ctx: TenantContext, filter: GlobalFilter, page: number, pageSize: number) {
+    // Use UTC boundaries — follow-up dates are stored as UTC midnight
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
     // Exclude activities whose lead has been soft-deleted

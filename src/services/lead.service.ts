@@ -358,6 +358,8 @@ export class LeadService {
 
     const ownerChanged = input.ownerId !== undefined && input.ownerId !== (beforeLead as any).ownerId;
     const stageChanged = input.stage !== undefined && input.stage !== (beforeLead as any).stage;
+    const followUpDateChanged = 'followUpDate' in input &&
+      String(input.followUpDate ?? '') !== String((beforeLead as any).followUpDate ?? '');
 
     const lead = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.lead.update({
@@ -446,17 +448,32 @@ export class LeadService {
         });
       }
 
-      // Follow-up scheduling activity for stages requiring a follow-up date
-      if (stageChanged && input.stage && FOLLOW_UP_REQUIRED_STAGES.has(input.stage) && effectiveFollowUpDate) {
-        const actType = input.stage === LeadStage.CALL_BACK_REQUESTED
+      // Follow-up scheduling: create/reschedule when stage or followUpDate changes
+      const needsFollowUpActivity = FOLLOW_UP_REQUIRED_STAGES.has(effectiveStage) &&
+        (stageChanged || followUpDateChanged) && effectiveFollowUpDate;
+
+      if (needsFollowUpActivity) {
+        // Cancel stale PENDING follow-up/callback activities for this lead
+        await (tx as any).leadActivity.updateMany({
+          where: {
+            leadId,
+            tenantId: ctx.tenantId,
+            state: LeadActivityState.PENDING,
+            type: { in: [LeadActivityType.FOLLOW_UP_SCHEDULED, LeadActivityType.CALLBACK_SCHEDULED, LeadActivityType.CALL_NOT_RECEIVED_EVENT] },
+            deletedAt: null,
+          },
+          data: { state: LeadActivityState.CANCELLED },
+        });
+
+        const actType = effectiveStage === LeadStage.CALL_BACK_REQUESTED
           ? LeadActivityType.CALLBACK_SCHEDULED
-          : input.stage === LeadStage.CALL_NOT_RECEIVED
+          : effectiveStage === LeadStage.CALL_NOT_RECEIVED
           ? LeadActivityType.CALL_NOT_RECEIVED_EVENT
           : LeadActivityType.FOLLOW_UP_SCHEDULED;
 
-        const subject = input.stage === LeadStage.CALL_BACK_REQUESTED
+        const subject = effectiveStage === LeadStage.CALL_BACK_REQUESTED
           ? 'Callback scheduled'
-          : input.stage === LeadStage.CALL_NOT_RECEIVED
+          : effectiveStage === LeadStage.CALL_NOT_RECEIVED
           ? 'Call not received — follow-up scheduled'
           : 'Follow-up scheduled';
 
@@ -472,7 +489,7 @@ export class LeadService {
               followUpDate: effectiveFollowUpDate instanceof Date
                 ? effectiveFollowUpDate.toISOString()
                 : new Date(effectiveFollowUpDate).toISOString(),
-              stage: input.stage,
+              stage: effectiveStage,
             },
             scheduledAt: effectiveFollowUpDate instanceof Date
               ? effectiveFollowUpDate
