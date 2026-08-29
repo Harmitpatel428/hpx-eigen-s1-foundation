@@ -1,23 +1,38 @@
 import { PrismaClient } from '@prisma/client';
 import { TenantContext } from './lead.service';
 import { ResourceNotFoundError, ValidationError } from '../types/exceptions';
+import { buildOwnerFilter, ScopeType, LeadOwnerFilter } from '../utils/scope.helper';
 
 export type GlobalFilter = 'ALL' | 'DUE_TODAY' | 'UPCOMING' | 'OVERDUE' | 'MINE';
+
+export interface ActivityScopeContext {
+  scope: ScopeType;
+  teamId: string | null;
+  departmentId: string | null;
+}
 
 export class LeadActivitiesService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async listGlobal(ctx: TenantContext, filter: GlobalFilter, page: number, pageSize: number) {
+  async listGlobal(
+    ctx: TenantContext, filter: GlobalFilter, page: number, pageSize: number,
+    scopeCtx?: ActivityScopeContext,
+  ) {
     // Use UTC boundaries — follow-up dates are stored as UTC midnight
     const now = new Date();
     const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const todayEnd = new Date(todayStart.getTime() + 86_400_000);
 
+    // Build lead-ownership filter from the user's ABAC scope
+    const ownerFilter: LeadOwnerFilter = scopeCtx
+      ? await buildOwnerFilter(scopeCtx.scope, ctx.userId, scopeCtx.teamId, scopeCtx.departmentId, this.prisma, true)
+      : {};
+
     // Exclude activities whose lead has been soft-deleted
     const baseWhere: any = {
       tenantId: ctx.tenantId,
       deletedAt: null,
-      lead: { deletedAt: null },
+      lead: { deletedAt: null, ...ownerFilter },
     };
 
     if (filter === 'DUE_TODAY') {

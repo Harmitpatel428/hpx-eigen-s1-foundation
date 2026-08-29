@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { LeadActivitiesService } from '../services/lead-activities.service';
 import { ValidationError } from '../types/exceptions';
+import { buildOwnerFilter, type ScopeType } from '../utils/scope.helper';
 
 export function createLeadActivitiesRouter(prisma: PrismaClient): Router {
   const router = Router({ mergeParams: true });
@@ -15,8 +16,22 @@ export function createLeadActivitiesRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, scope, teamId, departmentId } = (req as AuthenticatedRequest).user;
         const { leadId } = req.params;
+
+        // Verify the user's scope grants access to this lead
+        const ownerFilter = await buildOwnerFilter(
+          (scope ?? 'OWN') as ScopeType, userId, teamId ?? null, departmentId ?? null, prisma, true
+        );
+        const lead = await prisma.lead.findFirst({
+          where: { id: leadId, tenantId, deletedAt: null, ...ownerFilter },
+          select: { id: true },
+        });
+        if (!lead) {
+          res.status(404).json({ error: { message: 'Lead not found.' } });
+          return;
+        }
+
         const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
         const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string, 10) : 50;
         if (page < 1 || isNaN(page)) throw new ValidationError('page must be a positive integer.');
