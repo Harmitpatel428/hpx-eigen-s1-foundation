@@ -477,6 +477,9 @@ export class LeadService {
           ? 'Call not received — follow-up scheduled'
           : 'Follow-up scheduled';
 
+        const isDateOnly = typeof effectiveFollowUpDate === 'string'
+          && !effectiveFollowUpDate.includes('T');
+
         await (tx as any).leadActivity.create({
           data: {
             tenantId: ctx.tenantId,
@@ -490,6 +493,7 @@ export class LeadService {
                 ? effectiveFollowUpDate.toISOString()
                 : new Date(effectiveFollowUpDate).toISOString(),
               stage: effectiveStage,
+              dateOnly: isDateOnly,
             },
             scheduledAt: effectiveFollowUpDate instanceof Date
               ? effectiveFollowUpDate
