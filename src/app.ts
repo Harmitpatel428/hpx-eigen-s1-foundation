@@ -36,6 +36,14 @@ import { createTeamsRouter } from './routes/teams.router';
 // ─── Route Factories (S4 Documentation Tracker) ───────────────────────────────
 import { createDocumentationRouter } from './routes/documentation.router';
 
+// ─── Route Factories (Phase 1-B: Handoff + Client Portal) ────────────────────
+import {
+  createCasesRouter,
+  createLeadHandoffRouter,
+  createContactChangeRouter,
+} from './routes/handoff.router';
+import { createPortalRouter, createPublishingRouter } from './routes/portal.router';
+
 // ─── Route Factories (Lead Tags + Lead Contacts + Lead Fields + Lead Notes) ───
 import { createLeadTagsRouter } from './routes/lead-tags.router';
 import { createLeadContactsRouter } from './routes/lead-contacts.router';
@@ -141,6 +149,14 @@ app.use('/api/v1/teams', createTeamsRouter(prisma));
 
 // ─── S4 Documentation Tracker ─────────────────────────────────────────────────
 app.use('/api/v1/documentation', createDocumentationRouter(prisma));
+
+// ─── Phase 1-B: Handoff + Client Portal ───────────────────────────────────────
+// /portal is deliberately PUBLIC (its own token scheme) — do not add authMiddleware.
+app.use('/api/v1/portal', createPortalRouter(prisma));
+app.use('/api/v1/cases', createCasesRouter(prisma));
+app.use('/api/v1/leads/:leadId/handoff', createLeadHandoffRouter(prisma));
+app.use('/api/v1/portal-contact-change-requests', createContactChangeRouter(prisma));
+app.use('/api/v1/publishing', createPublishingRouter(prisma));
 
 // ─── Lead Tags + Lead Contacts + Lead Notes ────────────────────────────────────
 app.use('/api/v1/lead-tags', createLeadTagsRouter(prisma));

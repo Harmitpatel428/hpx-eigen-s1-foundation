@@ -914,11 +914,51 @@ enum DocDocumentStatus {
 }
 
 enum DocCaseStatus {
+  // INCOMING — handed off from Sales, awaiting Documentation acceptance.
+  INCOMING
   ACTIVE
+  // RETURNED — sent back to Sales after acceptance. Distinct from a pre-acceptance reject,
+  // which deletes nothing and leaves the case in INCOMING for the Sales owner to fix & resend.
+  RETURNED
   DOCUMENTATION_READY
   TRANSFERRED_TO_PROCESS
   CLOSED
   CANCELLED
+}
+
+// Handoff lifecycle, tracked separately from case status so that a returned case
+// keeps its documentation progress while the handoff itself is re-negotiated.
+enum HandoffState {
+  NONE
+  HANDED_OFF
+  ACCEPTED
+  RETURNED
+  RESENT
+  MANAGER_REVIEW_REQUIRED
+  AUTO_DROPPED
+}
+
+// Where the portal phone came from. NOMINATED_OVERRIDE requires an approved
+// PortalContactChangeRequest — it is never set directly from user input.
+enum PortalPhoneSource {
+  LEAD_SNAPSHOT
+  NOMINATED_OVERRIDE
+}
+
+enum PortalContactChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Reason codes gate what Fix & Resend requires. See src/domain/handoff.ts.
+enum HandoffReturnReason {
+  WRONG_OR_MISSING_CONTACT
+  WRONG_PRESET
+  INCOMPLETE_INFORMATION
+  DUPLICATE_CASE
+  COMPLIANCE_ISSUE
+  OTHER
 }
 
 enum DocNoteType {
@@ -958,6 +998,19 @@ enum DocEventType {
   CASE_CLOSED
   CASE_CANCELLED
   EXPIRY_WARNING
+  // ─── Handoff lifecycle ───────────────────────────────────────────
+  HANDOFF_CREATED
+  HANDOFF_ACCEPTED
+  HANDOFF_REJECTED
+  CASE_RETURNED
+  HANDOFF_RESENT
+  HANDOFF_AUTO_DROPPED
+  MANAGER_REVIEW_COMPLETED
+  // ─── Client portal ───────────────────────────────────────────────
+  CLIENT_VISIBLE_PUBLISHED
+  PORTAL_CONTACT_CHANGE_REQUESTED
+  PORTAL_CONTACT_CHANGE_APPROVED
+  PORTAL_SESSION_REVOKED
 }
 
 // ─── DocPreset — reusable document requirement template ───────────
@@ -1039,6 +1092,8 @@ model DocCase {
   id                String        @id @default(uuid()) @db.Uuid
   tenantId          String        @db.Uuid
   leadId            String        @db.Uuid
+  // Public case identifier shown to clients: HPX-XXXX-XXXX. Null until handoff confirm.
+  caseNumber        String?       @unique
   presetId          String?       @db.Uuid
   presetVersion     Int?
   assignedTo        String?       @db.Uuid
@@ -1063,6 +1118,32 @@ model DocCase {
   updatedAt         DateTime      @updatedAt
   deletedAt         DateTime?
 
+  // ─── Handoff ─────────────────────────────────────────────────────
+  handoffState          HandoffState         @default(NONE)
+  handoffAt             DateTime?
+  handoffBy             String?              @db.Uuid
+  acceptedAt            DateTime?
+  acceptedBy            String?              @db.Uuid
+  returnedAt            DateTime?
+  returnCount           Int                  @default(0)
+  returnReasonCode      HandoffReturnReason?
+  returnReasonNote      String?
+  managerReviewRequired Boolean              @default(false)
+  // Set on return: returnedAt + 7d. A worker drops the lead to Follow-Up when passed.
+  autoDropAt            DateTime?
+  // Snapshot taken at handoff so Fix & Resend can prove the contact actually changed.
+  handoffPhoneSnapshot  String?
+  handoffPresetSnapshot String?              @db.Uuid
+
+  // ─── Client portal ───────────────────────────────────────────────
+  // Non-null == portal is live. Set once, on first client-visible publish.
+  portalEnabledAt            DateTime?
+  portalPhoneSource          PortalPhoneSource @default(LEAD_SNAPSHOT)
+  portalPhoneSnapshot        String?
+  portalPhoneLast4           String?           @db.VarChar(4)
+  lastClientVisiblePublishAt DateTime?
+  lastInternalChangeAt       DateTime?
+
   tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   lead      Lead                 @relation(fields: [leadId], references: [id], onDelete: Restrict)
   preset    DocPreset?           @relation(fields: [presetId], references: [id], onDelete: SetNull)
@@ -1072,12 +1153,78 @@ model DocCase {
   reminders DocReminder[]
   overrides DocManagerOverride[]
 
+  portalSessions       PortalSession[]
+  contactChangeRequests PortalContactChangeRequest[]
+  portalAuthAttempts   PortalAuthAttempt[]
+
   @@unique([tenantId, leadId])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([tenantId, assignedTo])
   @@index([tenantId, isReady])
   @@index([deletedAt])
+  @@index([tenantId, handoffState])
+  @@index([autoDropAt])
+}
+
+// ─── PortalSession — opaque bearer token for the public client portal ───
+// Only the SHA-256 hash is stored. Revocation is a timestamp, never a delete,
+// so the audit trail survives.
+model PortalSession {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @db.Uuid
+  caseId     String    @db.Uuid
+  tokenHash  String    @unique @db.Char(64)
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  lastSeenAt DateTime?
+  ipAddress  String?
+  userAgent  String?
+  revokedAt  DateTime?
+
+  case DocCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([tenantId])
+  @@index([expiresAt])
+}
+
+// ─── PortalAuthAttempt — DB-backed rate limiting for portal verification ───
+// DB rather than Redis: redis.ts degrades to a silent no-op when REDIS_URL is
+// absent, which would disable the lockout entirely. A security control must not
+// fail open.
+model PortalAuthAttempt {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String?  @db.Uuid
+  caseId      String?  @db.Uuid
+  caseNumber  String
+  ipAddress   String
+  succeeded   Boolean  @default(false)
+  attemptedAt DateTime @default(now())
+
+  case DocCase? @relation(fields: [caseId], references: [id], onDelete: SetNull)
+
+  @@index([caseNumber, ipAddress, attemptedAt])
+  @@index([attemptedAt])
+}
+
+// ─── PortalContactChangeRequest — manager-gated portal phone change ───
+model PortalContactChangeRequest {
+  id          String                    @id @default(uuid()) @db.Uuid
+  tenantId    String                    @db.Uuid
+  caseId      String                    @db.Uuid
+  newPhone    String
+  reason      String
+  status      PortalContactChangeStatus @default(PENDING)
+  requestedBy String                    @db.Uuid
+  approvedBy  String?                   @db.Uuid
+  createdAt   DateTime                  @default(now())
+  resolvedAt  DateTime?
+
+  case DocCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([tenantId, status])
 }
 
 // ─── DocCaseDocument — individual document tracking entry ─────────
@@ -1105,6 +1252,10 @@ model DocCaseDocument {
   waivedReason          String?
   metadataValues        Json              @default("{}")
   notes                 String?
+  // Publishing this to the client is an explicit, audited act — never a side effect
+  // of a status change. First publish on a case activates its portal.
+  clientVisible         Boolean           @default(false)
+  clientVisibleAt       DateTime?
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
   deletedAt             DateTime?
@@ -1148,6 +1299,10 @@ model DocCaseNote {
   caseId    String      @db.Uuid
   noteType  DocNoteType @default(INTERNAL)
   content   String
+  // noteType records intent; clientVisible records the audited publish decision.
+  // A CUSTOMER note is not on the portal until it is explicitly published.
+  clientVisible   Boolean   @default(false)
+  clientVisibleAt DateTime?
   createdBy String      @db.Uuid
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
