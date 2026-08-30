@@ -350,15 +350,25 @@ export class LeadService {
     }
     // Determine the effective stage after this update (fallback to existing)
     const effectiveStage: LeadStage = input.stage ?? (beforeLead as any).stage ?? LeadStage.NEW;
-    // followUpDate effective value: explicit in input overrides existing
-    const effectiveFollowUpDate = 'followUpDate' in input
+    // followUpDate effective value: a provided value overrides existing.
+    // Use `!== undefined` (not the `in` operator) because the router destructures
+    // every field from the body and passes them explicitly, so an absent field
+    // arrives as `followUpDate: undefined` — an `in` check would treat that as
+    // "provided" and wrongly run validation / write null on a priority-only edit.
+    const effectiveFollowUpDate = input.followUpDate !== undefined
       ? input.followUpDate
       : (beforeLead as any).followUpDate;
-    this.validateFollowUpDate(effectiveStage, effectiveFollowUpDate);
+    // Only enforce the follow-up-date requirement when this update actually
+    // sets stage or followUpDate. A partial update that changes neither
+    // (e.g. priority-only) must not be rejected because the lead already sits
+    // in a follow-up stage with a null followUpDate — it isn't modifying that.
+    if (input.stage !== undefined || input.followUpDate !== undefined) {
+      this.validateFollowUpDate(effectiveStage, effectiveFollowUpDate);
+    }
 
     const ownerChanged = input.ownerId !== undefined && input.ownerId !== (beforeLead as any).ownerId;
     const stageChanged = input.stage !== undefined && input.stage !== (beforeLead as any).stage;
-    const followUpDateChanged = 'followUpDate' in input &&
+    const followUpDateChanged = input.followUpDate !== undefined &&
       String(input.followUpDate ?? '') !== String((beforeLead as any).followUpDate ?? '');
 
     const lead = await this.prisma.$transaction(async (tx) => {
@@ -384,10 +394,10 @@ export class LeadService {
             ? { expectedValue: new Prisma.Decimal(input.expectedValue) }
             : {}),
           ...(input.priority !== undefined ? { priority: input.priority } : {}),
-          ...('expectedCloseDate' in input
+          ...(input.expectedCloseDate !== undefined
             ? { expectedCloseDate: input.expectedCloseDate ? new Date(input.expectedCloseDate) : null }
             : {}),
-          ...('followUpDate' in input
+          ...(input.followUpDate !== undefined
             ? { followUpDate: input.followUpDate ? new Date(input.followUpDate) : null }
             : {}),
           ...(input.country !== undefined ? { country: input.country } : {}),

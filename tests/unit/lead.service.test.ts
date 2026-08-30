@@ -4,7 +4,7 @@
  * Strategy: mock PrismaClient, verify business logic in isolation.
  */
 import { LeadService } from '../../src/services/lead.service';
-import { LeadStatus, LeadSource, OpportunityStage, OpportunityCurrency } from '@prisma/client';
+import { LeadStatus, LeadSource, OpportunityStage, OpportunityCurrency, LeadStage, LeadPriority } from '@prisma/client';
 
 // ─── Prisma mock factory ───────────────────────────────────────────────────────
 function makePrismaMock() {
@@ -159,6 +159,58 @@ describe('LeadService', () => {
       const result = await service.updateLead(CTX, undefined, 'lead-1', { firstName: 'Jane' });
       expect(result.firstName).toBe('Jane');
       expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    });
+
+    // Regression: a partial update that touches neither stage nor followUpDate
+    // must not be blocked by a pre-existing null followUpDate on a lead already
+    // sitting in a follow-up stage. Previously this threw and the UI reverted
+    // the change ("priority does not persist").
+    //
+    // Critically, the input replicates what the ROUTER sends: it destructures
+    // every field from the body, so absent fields arrive as `undefined` keys
+    // (followUpDate: undefined, expectedCloseDate: undefined, stage: undefined).
+    // The earlier `'followUpDate' in input` guard treated those as "provided"
+    // and still threw over HTTP — this test would fail against that code.
+    it('allows a priority-only update (router-shaped payload) on a follow-up-stage lead with no followUpDate', async () => {
+      const existing = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        stage: LeadStage.FOLLOW_UP, followUpDate: null, expectedCloseDate: null,
+        priority: LeadPriority.MEDIUM, ownerId: 'user-1',
+      };
+      const updated = { ...existing, priority: LeadPriority.HIGH, tags: [] };
+      prisma.lead.findFirst
+        .mockResolvedValueOnce(existing)  // getLeadById (beforeLead)
+        .mockResolvedValueOnce(updated);  // getLeadWithTags (after)
+      prisma.lead.update.mockResolvedValue(updated);
+
+      const result = await service.updateLead(CTX, undefined, 'lead-1', {
+        priority: LeadPriority.HIGH,
+        followUpDate: undefined,
+        expectedCloseDate: undefined,
+        stage: undefined,
+      });
+      expect(result.priority).toBe(LeadPriority.HIGH);
+
+      // And it must NOT touch the date fields — a priority-only update must
+      // never null out a lead's followUpDate / expectedCloseDate.
+      const writeData = prisma.lead.update.mock.calls[0][0].data;
+      expect(writeData).not.toHaveProperty('followUpDate');
+      expect(writeData).not.toHaveProperty('expectedCloseDate');
+      expect(writeData.priority).toBe(LeadPriority.HIGH);
+    });
+
+    // Guard the fix from over-reaching: moving INTO a follow-up stage without a
+    // followUpDate must still be rejected.
+    it('still rejects moving into a follow-up stage without a followUpDate', async () => {
+      const existing = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        stage: LeadStage.NEW, followUpDate: null, priority: LeadPriority.MEDIUM,
+      };
+      prisma.lead.findFirst.mockResolvedValueOnce(existing);
+
+      await expect(
+        service.updateLead(CTX, undefined, 'lead-1', { stage: LeadStage.FOLLOW_UP })
+      ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
     });
   });
 
