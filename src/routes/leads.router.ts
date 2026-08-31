@@ -15,6 +15,10 @@ import { checkImportRateLimit, checkBulkOperationLimit } from '../services/auth/
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
 import { logger } from '../utils/logger';
 
+/** Shared owner select — used by list GET enrichment and PUT response.
+ *  Changing this here changes both; shapes cannot drift. */
+export const OWNER_SELECT = { id: true, firstName: true, lastName: true } as const;
+
 export function createLeadsRouter(prisma: PrismaClient): Router {
   const router = Router();
   const leadService = new LeadService(prisma);
@@ -940,7 +944,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         const owners = ownerIds.length > 0
           ? await prisma.user.findMany({
               where: { id: { in: ownerIds }, tenantId },
-              select: { id: true, firstName: true, lastName: true },
+              select: OWNER_SELECT,
             })
           : [];
         const ownerMap = Object.fromEntries(owners.map((u: any) => [u.id, u]));
@@ -1195,7 +1199,13 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           }
         );
 
-        res.json({ data: lead });
+        const owner = lead.ownerId
+          ? (await prisma.user.findFirst({
+              where: { id: lead.ownerId, tenantId },
+              select: OWNER_SELECT,
+            }) ?? null)
+          : null;
+        res.json({ data: { ...lead, owner } });
       } catch (err) {
         next(err);
       }
