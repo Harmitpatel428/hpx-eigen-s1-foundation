@@ -42,6 +42,9 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
 
         if (!firstName || !lastName) throw new ValidationError('firstName and lastName are required.');
 
+        const lead = await (prisma as any).lead.findFirst({ where: { id: leadId, tenantId, deletedAt: null } });
+        if (!lead) throw new ResourceNotFoundError();
+
         await (prisma as any).$transaction(async (tx: any) => {
           if (isMain) {
             await tx.contact.updateMany({ where: { leadId, tenantId, deletedAt: null }, data: { isMain: false } });
