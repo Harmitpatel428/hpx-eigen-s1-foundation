@@ -188,6 +188,11 @@ export class LeadService {
     if (input.stage) this.validateStageSelectable(input.stage);
     this.validateFollowUpDate(resolvedStage, input.followUpDate ?? null);
 
+    // Invariant: non-date stages must not carry a followUpDate
+    const normalizedFollowUpDate = FOLLOW_UP_REQUIRED_STAGES.has(resolvedStage) && input.followUpDate
+      ? new Date(input.followUpDate)
+      : null;
+
     const lead = await this.prisma.$transaction(async (tx) => {
       const created = await tx.lead.create({
         data: {
@@ -208,7 +213,7 @@ export class LeadService {
           expectedCloseDate: input.expectedCloseDate
             ? new Date(input.expectedCloseDate)
             : null,
-          followUpDate: input.followUpDate ? new Date(input.followUpDate) : null,
+          followUpDate: normalizedFollowUpDate,
           country: input.country ?? null,
           state: input.state ?? null,
           city: input.city ?? null,
@@ -350,6 +355,15 @@ export class LeadService {
     }
     // Determine the effective stage after this update (fallback to existing)
     const effectiveStage: LeadStage = input.stage ?? (beforeLead as any).stage ?? LeadStage.NEW;
+
+    // Invariant: non-date stages must not carry a followUpDate.
+    // Normalize before validation so stale dates are cleared on any write path.
+    if (!FOLLOW_UP_REQUIRED_STAGES.has(effectiveStage)) {
+      if (input.followUpDate !== undefined || (beforeLead as any).followUpDate) {
+        input.followUpDate = null;
+      }
+    }
+
     // followUpDate effective value: a provided value overrides existing.
     // Use `!== undefined` (not the `in` operator) because the router destructures
     // every field from the body and passes them explicitly, so an absent field

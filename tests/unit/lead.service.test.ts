@@ -29,6 +29,7 @@ function makePrismaMock() {
     },
     leadActivity: {
       create: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     // Default $transaction implementation calls the callback with a copy of the mock itself
     $transaction: jest.fn(),
@@ -211,6 +212,108 @@ describe('LeadService', () => {
       await expect(
         service.updateLead(CTX, undefined, 'lead-1', { stage: LeadStage.FOLLOW_UP })
       ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    });
+  });
+
+  // ─── follow-up date / stage invariant ─────────────────────────────────────────
+  describe('followUpDate stage normalization', () => {
+    // B1: PUT stage=DISQUALIFIED + date → stored and returned null
+    it('[B1] clears followUpDate when updating to a non-date stage', async () => {
+      const existing = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        stage: LeadStage.FOLLOW_UP, followUpDate: new Date('2026-09-15'),
+        priority: LeadPriority.MEDIUM, ownerId: 'user-1',
+      };
+      const updated = { ...existing, stage: LeadStage.DISQUALIFIED, followUpDate: null, tags: [] };
+      prisma.lead.findFirst
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(updated);
+      prisma.lead.update.mockResolvedValue(updated);
+
+      const result = await service.updateLead(CTX, undefined, 'lead-1', {
+        stage: LeadStage.DISQUALIFIED,
+        followUpDate: '2026-09-20',
+      });
+
+      const writeData = prisma.lead.update.mock.calls[0][0].data;
+      expect(writeData.followUpDate).toBeNull();
+      expect(result.followUpDate).toBeNull();
+    });
+
+    // B2: PUT stage=FOLLOW_UP + date → kept
+    it('[B2] keeps followUpDate when updating to a date stage', async () => {
+      const existing = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        stage: LeadStage.NEW, followUpDate: null,
+        priority: LeadPriority.MEDIUM, ownerId: 'user-1',
+      };
+      const updated = { ...existing, stage: LeadStage.FOLLOW_UP, followUpDate: new Date('2026-09-20'), tags: [] };
+      prisma.lead.findFirst
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(updated);
+      prisma.lead.update.mockResolvedValue(updated);
+
+      await service.updateLead(CTX, undefined, 'lead-1', {
+        stage: LeadStage.FOLLOW_UP,
+        followUpDate: '2026-09-20',
+      });
+
+      const writeData = prisma.lead.update.mock.calls[0][0].data;
+      expect(writeData.followUpDate).toEqual(new Date('2026-09-20'));
+    });
+
+    // B3: PUT WITHOUT stage field, lead currently non-date with stale date → cleared
+    it('[B3] clears stale followUpDate on partial update when lead is in a non-date stage', async () => {
+      const existing = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        stage: LeadStage.DISQUALIFIED, followUpDate: new Date('2026-09-15'),
+        priority: LeadPriority.MEDIUM, ownerId: 'user-1',
+      };
+      const updated = { ...existing, priority: LeadPriority.HIGH, followUpDate: null, tags: [] };
+      prisma.lead.findFirst
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(updated);
+      prisma.lead.update.mockResolvedValue(updated);
+
+      await service.updateLead(CTX, undefined, 'lead-1', {
+        priority: LeadPriority.HIGH,
+        stage: undefined,
+        followUpDate: undefined,
+      });
+
+      const writeData = prisma.lead.update.mock.calls[0][0].data;
+      expect(writeData.followUpDate).toBeNull();
+    });
+
+    // B4: create non-date + date → null
+    it('[B4] clears followUpDate when creating with a non-date stage', async () => {
+      const lead = {
+        id: 'lead-new', tenantId: CTX.tenantId, firstName: 'Test', lastName: 'User',
+        stage: LeadStage.DISQUALIFIED, followUpDate: null, tags: [],
+      };
+      prisma.lead.create.mockResolvedValue(lead);
+      prisma.lead.findFirst.mockResolvedValue({ ...lead, tags: [] });
+
+      await service.createLead(CTX, {
+        firstName: 'Test', lastName: 'User',
+        stage: LeadStage.DISQUALIFIED,
+        followUpDate: '2026-09-20',
+      });
+
+      const createData = prisma.lead.create.mock.calls[0][0].data;
+      expect(createData.followUpDate).toBeNull();
+    });
+
+    // B5: parity — FOLLOW_UP_REQUIRED_STAGES matches the literal 4-value list
+    it('[B5] FOLLOW_UP_REQUIRED_STAGES contains exactly the 4 date stages', () => {
+      const { FOLLOW_UP_REQUIRED_STAGES } = require('../../src/services/lead.service');
+      const expected = new Set([
+        LeadStage.INTERESTED,
+        LeadStage.FOLLOW_UP,
+        LeadStage.CALL_BACK_REQUESTED,
+        LeadStage.CALL_NOT_RECEIVED,
+      ]);
+      expect(FOLLOW_UP_REQUIRED_STAGES).toEqual(expected);
     });
   });
 

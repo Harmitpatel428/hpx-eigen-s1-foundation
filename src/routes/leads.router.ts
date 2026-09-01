@@ -615,7 +615,9 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           return out;
         };
 
-        const buildLeadData = (row: typeof rows[0]) => ({
+        const buildLeadData = (row: typeof rows[0]) => {
+          const rowStage = (row.stage as LeadStage | undefined) ?? LeadStage.NEW;
+          return {
           tenantId,
           ownerId: row.ownerId && validOwnerIds.has(row.ownerId) ? row.ownerId : null,
           firstName: row.firstName,
@@ -627,14 +629,15 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           company: row.company || null,
           source: normalizeSource(row.source),
           status: LeadStatus.NEW,
-          stage: (row.stage as LeadStage | undefined) ?? LeadStage.NEW,
+          stage: rowStage,
           priority: (row.priority as LeadPriority | undefined) ?? LeadPriority.MEDIUM,
           notes: row.notes ?? null,
           score: typeof row.score === 'number' ? row.score : 0,
           expectedValue: row.expectedValue !== undefined
             ? new Prisma.Decimal(Number(row.expectedValue))
             : new Prisma.Decimal(0),
-          followUpDate: row.followUpDate ? new Date(row.followUpDate) : null,
+          // Invariant: non-date stages must not carry a followUpDate
+          followUpDate: FOLLOW_UP_REQUIRED_STAGES.has(rowStage) && row.followUpDate ? new Date(row.followUpDate) : null,
           expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : null,
           country: row.country ?? null,
           state: row.state ?? null,
@@ -645,7 +648,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           // Already validated against THIS tenant's field defs above — values
           // round-trip exactly as imported (the old code wrote [] here).
           customFieldValues: (row.customFieldValues ?? []).map((v) => ({ fieldId: v.fieldId, value: v.value })),
-        });
+        }; };
 
         for (const [idx, row] of toCreate.entries()) {
           try {
