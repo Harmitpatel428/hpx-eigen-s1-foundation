@@ -414,6 +414,18 @@ enum LeadActivityState {
   CANCELLED
 }
 
+enum LeadPhoneStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum LeadPhoneSource {
+  IMPORT
+  MANUAL
+  API
+  BACKFILL
+}
+
 enum WhatsAppChannelType {
   INDIVIDUAL_NUMBER
   GROUP
@@ -514,8 +526,7 @@ model Lead {
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
   deletedAt         DateTime?
-
-  contacts       Contact[]
+  contacts       Contact[]      @relation("LeadContacts")
   opportunities  Opportunity[]
   docCases       DocCase[]
   tags           LeadTagAssignment[]
@@ -523,6 +534,7 @@ model Lead {
   leadActivities LeadActivity[]
   waChannels     LeadWhatsAppChannel[]
   conversations  Conversation[]
+  phones         LeadPhone[]
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -531,6 +543,29 @@ model Lead {
   @@index([tenantId, ownerId])
   @@index([tenantId, managerId])
   @@index([deletedAt])
+}
+
+// ─── LeadPhone — phone number history with normalization ────────────
+model LeadPhone {
+  id              String          @id @default(uuid()) @db.Uuid
+  tenantId        String          @db.Uuid
+  leadId          String          @db.Uuid
+  phoneOriginal   String
+  phoneNormalized String?
+  status          LeadPhoneStatus @default(ACTIVE)
+  isPrimary       Boolean         @default(false)
+  source          LeadPhoneSource @default(MANUAL)
+  deactivatedAt   DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  // Partial unique (leadId, phoneNormalized) WHERE NOT NULL lives in
+  // migration SQL only — Prisma @@unique would create a non-partial index.
+  @@index([phoneNormalized, tenantId])
+  @@index([leadId, status])
+  @@index([tenantId])
 }
 
 // ─── LeadNote — chronological note history with same-day editing ─────
@@ -643,7 +678,7 @@ model Contact {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  lead          Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  lead          Lead?         @relation("LeadContacts", fields: [leadId], references: [id], onDelete: SetNull)
   opportunities Opportunity[]
 
   @@index([tenantId])

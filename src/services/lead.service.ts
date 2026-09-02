@@ -1,8 +1,55 @@
 import { PrismaClient, Prisma, LeadStatus, LeadSource, LeadStage, LeadPriority, OpportunityCurrency, UserStatus, NotificationType, LeadActivityType, LeadActivityState } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { NotificationService } from './notification.service';
+import { PhoneService } from './phone.service';
+import { phoneSearchCondition } from '../utils/phone-search.util';
 import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, ResourceNotFoundError } from '../types/exceptions';
 import { AuthorizationDecision } from '../types/authorization';
+
+const PERSON_FIELDS = ['firstName', 'lastName', 'email', 'phone', 'company'] as const;
+type PersonField = typeof PERSON_FIELDS[number];
+
+interface PersonDelta {
+  firstName?: string;
+  lastName?: string;
+  email?: string | null;
+  phone?: string | null;
+  company?: string | null;
+}
+
+function personDeltaFrom(input: Partial<Record<PersonField, unknown>>): PersonDelta | null {
+  const delta: PersonDelta = {};
+  let hasKey = false;
+  for (const f of PERSON_FIELDS) {
+    if (input[f] !== undefined) {
+      (delta as Record<string, unknown>)[f] = (input[f] as string) ?? null;
+      hasKey = true;
+    }
+  }
+  return hasKey ? delta : null;
+}
+
+async function materializePersonContact(
+  tx: Prisma.TransactionClient,
+  leadId: string,
+  tenantId: string,
+  fields: { firstName: string; lastName: string; email: string | null; phone: string | null; company: string | null },
+  isMain: boolean,
+): Promise<string> {
+  const contact = await tx.contact.create({
+    data: {
+      tenantId,
+      leadId,
+      firstName: fields.firstName,
+      lastName: fields.lastName,
+      email: fields.email,
+      phone: fields.phone,
+      company: fields.company,
+      isMain,
+    },
+  });
+  return contact.id;
+}
 
 // Stages that require a followUpDate to be set
 export const FOLLOW_UP_REQUIRED_STAGES = new Set<LeadStage>([
@@ -134,10 +181,12 @@ export interface DuplicateCheckInput {
 export class LeadService {
   private readonly audit: AuditService;
   private readonly notifications: NotificationService;
+  readonly phoneService: PhoneService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.audit = new AuditService(prisma);
     this.notifications = new NotificationService(prisma);
+    this.phoneService = new PhoneService(prisma);
   }
 
   /** Resolve tag names to tag IDs within a transaction, creating missing tags. */
@@ -226,6 +275,20 @@ export class LeadService {
         } as any,
       });
 
+      // Attach phone to LeadPhone history
+      if (input.phone) {
+        await this.phoneService.attach(tx, created.id, ctx.tenantId, input.phone, { isPrimary: true, source: 'MANUAL' });
+      }
+
+      // Materialize person contact (E1a)
+      await materializePersonContact(tx, created.id, ctx.tenantId, {
+        firstName: input.firstName,
+        lastName: input.lastName,
+        email: input.email ?? null,
+        phone: input.phone ?? null,
+        company: input.company ?? null,
+      }, true);
+
       // Assign tags
       if (input.tagNames?.length) {
         const tagIds = await this.resolveTagIds(tx, ctx.tenantId, input.tagNames);
@@ -310,13 +373,18 @@ export class LeadService {
     const skip = (page - 1) * pageSize;
 
     const searchWhere: Prisma.LeadWhereInput[] | undefined = options?.search
-      ? [
-          { firstName: { contains: options.search, mode: Prisma.QueryMode.insensitive } },
-          { lastName:  { contains: options.search, mode: Prisma.QueryMode.insensitive } },
-          { company:   { contains: options.search, mode: Prisma.QueryMode.insensitive } },
-          { email:     { contains: options.search, mode: Prisma.QueryMode.insensitive } },
-          { phone:     { contains: options.search, mode: Prisma.QueryMode.insensitive } },
-        ]
+      ? (() => {
+          const conds: Prisma.LeadWhereInput[] = [
+            { firstName: { contains: options.search!, mode: Prisma.QueryMode.insensitive } },
+            { lastName:  { contains: options.search!, mode: Prisma.QueryMode.insensitive } },
+            { company:   { contains: options.search!, mode: Prisma.QueryMode.insensitive } },
+            { email:     { contains: options.search!, mode: Prisma.QueryMode.insensitive } },
+            { phone:     { contains: options.search!, mode: Prisma.QueryMode.insensitive } },
+          ];
+          const phoneCond = phoneSearchCondition(options.search!, ctx.tenantId);
+          if (phoneCond) conds.push(phoneCond);
+          return conds;
+        })()
       : undefined;
 
     const where: Prisma.LeadWhereInput = {
@@ -423,6 +491,30 @@ export class LeadService {
           ...(input.customFieldValues !== undefined ? { customFieldValues: input.customFieldValues } : {}),
         } as any,
       });
+
+      // Phone change: deactivate old, attach new, sync mirror
+      if (input.phone !== undefined) {
+        const oldPhone = (beforeLead as any).phone;
+        if (oldPhone && oldPhone !== input.phone) {
+          await this.phoneService.deactivate(tx, leadId, oldPhone);
+        }
+        if (input.phone) {
+          await this.phoneService.attach(tx, leadId, ctx.tenantId, input.phone, { isPrimary: true, source: 'MANUAL' });
+        }
+        await this.phoneService.syncLeadPhone(tx, leadId);
+      }
+
+      // B2: Forward sync — updateLead targets isMain contact
+      const delta = personDeltaFrom(input);
+      if (delta) {
+        const mainContact = await tx.contact.findFirst({
+          where: { leadId, tenantId: ctx.tenantId, isMain: true, deletedAt: null },
+          select: { id: true },
+        });
+        if (mainContact) {
+          await tx.contact.update({ where: { id: mainContact.id }, data: delta });
+        }
+      }
 
       // Replace tag assignments if tagNames provided
       if (Array.isArray(input.tagNames)) {
@@ -624,6 +716,10 @@ export class LeadService {
           company: input.contact.company ?? lead.company ?? null,
         },
       });
+
+      if (input.contact.phone) {
+        await this.phoneService.attach(tx, leadId, ctx.tenantId, input.contact.phone, { isPrimary: false, source: 'MANUAL' });
+      }
 
       const opportunity = await tx.opportunity.create({
         data: {

@@ -16,7 +16,8 @@ function makePrismaMock() {
       update: jest.fn(),
       count: jest.fn().mockResolvedValue(0),
     },
-    contact: { create: jest.fn() },
+    contact: { create: jest.fn().mockResolvedValue({ id: 'person-contact-1' }), update: jest.fn().mockResolvedValue({}), findFirst: jest.fn().mockResolvedValue(null) },
+    leadPhone: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({}), updateMany: jest.fn().mockResolvedValue({ count: 0 }), update: jest.fn().mockResolvedValue({}) },
     opportunity: { create: jest.fn() },
     pipeline: { create: jest.fn() },
     auditLog: {
@@ -367,6 +368,115 @@ describe('LeadService', () => {
       expect(result.contact.id).toBe('contact-1');
       expect(result.opportunity.id).toBe('opp-1');
       expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── person contact materialization ──────────────────────────────────────────
+  describe('person contact', () => {
+    it('[S7] createLead materializes person contact with matching fields (no personContactId link)', async () => {
+      const lead = {
+        id: 'lead-1', tenantId: CTX.tenantId, firstName: 'John', lastName: 'Doe',
+        email: 'john@example.com', phone: '+1234567890', company: 'Acme',
+        deletedAt: null,
+      };
+      prisma.lead.create.mockResolvedValue(lead);
+      prisma.lead.findFirst.mockResolvedValue({ ...lead, tags: [] });
+      prisma.contact.create.mockResolvedValue({ id: 'pc-1' });
+
+      await service.createLead(CTX, {
+        firstName: 'John', lastName: 'Doe', email: 'john@example.com',
+        phone: '+1234567890', company: 'Acme',
+      });
+
+      expect(prisma.contact.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          tenantId: CTX.tenantId, leadId: 'lead-1',
+          firstName: 'John', lastName: 'Doe',
+          email: 'john@example.com', phone: '+1234567890', company: 'Acme',
+          isMain: true,
+        }),
+      });
+    });
+
+    it('[T10] createLead with null phone/email still creates person contact', async () => {
+      const lead = {
+        id: 'lead-2', tenantId: CTX.tenantId, firstName: 'No', lastName: 'Phone',
+        email: null, phone: null, company: null, deletedAt: null,
+      };
+      prisma.lead.create.mockResolvedValue(lead);
+      prisma.lead.findFirst.mockResolvedValue({ ...lead, tags: [] });
+      prisma.contact.create.mockResolvedValue({ id: 'pc-2' });
+
+      await service.createLead(CTX, { firstName: 'No', lastName: 'Phone' });
+
+      expect(prisma.contact.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          firstName: 'No', lastName: 'Phone',
+          email: null, phone: null, company: null, isMain: true,
+        }),
+      });
+    });
+
+    it('[S2] updateLead syncs isMain contact fields (finds by isMain, not personContactId)', async () => {
+      const existing = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        firstName: 'Old', lastName: 'Name', phone: null,
+      };
+      const updated = { ...existing, firstName: 'New', tags: [] };
+      prisma.lead.findFirst
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(updated);
+      prisma.lead.update.mockResolvedValue(updated);
+      prisma.contact.findFirst.mockResolvedValue({ id: 'main-c' });
+
+      await service.updateLead(CTX, undefined, 'lead-1', { firstName: 'New' });
+
+      expect(prisma.contact.findFirst).toHaveBeenCalledWith({
+        where: { leadId: 'lead-1', tenantId: CTX.tenantId, isMain: true, deletedAt: null },
+        select: { id: true },
+      });
+      expect(prisma.contact.update).toHaveBeenCalledWith({
+        where: { id: 'main-c' },
+        data: { firstName: 'New' },
+      });
+    });
+
+    it('[S2b] updateLead skips contact sync when no isMain contact exists', async () => {
+      const existing = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        firstName: 'Old', lastName: 'Name', phone: null,
+      };
+      const updated = { ...existing, firstName: 'New', tags: [] };
+      prisma.lead.findFirst
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(updated);
+      prisma.lead.update.mockResolvedValue(updated);
+      prisma.contact.findFirst.mockResolvedValue(null);
+
+      await service.updateLead(CTX, undefined, 'lead-1', { firstName: 'New' });
+
+      expect(prisma.contact.update).not.toHaveBeenCalled();
+    });
+
+    it('[T13] convertLead does not set isMain on conversion contact', async () => {
+      const lead = {
+        id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null,
+        status: 'NEW', company: 'Acme', ownerId: 'user-1',
+      };
+      prisma.lead.findFirst.mockResolvedValue(lead);
+      prisma.contact.create.mockResolvedValue({ id: 'conv-c' });
+      prisma.opportunity = { create: jest.fn().mockResolvedValue({ id: 'opp-1', stage: 'QUALIFICATION' }) };
+      prisma.pipeline = { create: jest.fn().mockResolvedValue({}) };
+      prisma.lead.update.mockResolvedValue({ ...lead, status: 'CONVERTED' });
+
+      await service.convertLead(CTX, 'lead-1', {
+        contact: { firstName: 'Conv', lastName: 'Contact' },
+        opportunity: { title: 'Deal', value: 1000 },
+      });
+
+      expect(prisma.contact.create).toHaveBeenCalledWith({
+        data: expect.not.objectContaining({ isMain: true }),
+      });
     });
   });
 

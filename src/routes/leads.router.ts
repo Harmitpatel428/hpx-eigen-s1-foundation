@@ -13,6 +13,8 @@ import { LeadService, FOLLOW_UP_REQUIRED_STAGES } from '../services/lead.service
 import { ValidationError } from '../types/exceptions';
 import { checkImportRateLimit, checkBulkOperationLimit } from '../services/auth/RateLimitService';
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
+import { phoneSearchCondition } from '../utils/phone-search.util';
+import { normalizePhone } from '../utils/phone.util';
 import { logger } from '../utils/logger';
 
 /** Shared owner select — used by list GET enrichment and PUT response.
@@ -85,13 +87,24 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     if (conjuncts.length > 0) whereClause.AND = conjuncts;
 
     if (search) {
-      whereClause.OR = [
+      const textConditions: Prisma.LeadWhereInput[] = [
         { firstName: { contains: search, mode: 'insensitive' } },
         { lastName: { contains: search, mode: 'insensitive' } },
         { email: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
         { company: { contains: search, mode: 'insensitive' } },
       ];
+      const phoneCond = phoneSearchCondition(search, tenantId);
+      if (phoneCond) textConditions.push(phoneCond);
+      // Keep legacy fallback for raw substring match on lead.phone
+      textConditions.push({ phone: { contains: search, mode: 'insensitive' } });
+      // M8/C4: Search matches contact phone/email (semi-join, no row duplication)
+      textConditions.push({
+        contacts: { some: { phone: { contains: search, mode: 'insensitive' }, deletedAt: null } },
+      });
+      textConditions.push({
+        contacts: { some: { email: { contains: search, mode: 'insensitive' }, deletedAt: null } },
+      });
+      whereClause.OR = textConditions;
     }
 
     return whereClause;
@@ -557,6 +570,14 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
         const existingEmails = new Set(existing.map(e => e.email).filter(Boolean));
         const existingPhones = new Set(existing.map(e => e.phone).filter(Boolean));
+        // R6: normalized phone dedup — compare normalized values client-side
+        const existingNormalizedPhones = new Map<string, typeof existing[0]>();
+        for (const e of existing) {
+          if (e.phone) {
+            const n = normalizePhone(e.phone);
+            if (n) existingNormalizedPhones.set(n, e);
+          }
+        }
 
         const toCreate: typeof rows = [];
         const toUpdate: Array<{ id: string; row: typeof rows[0] }> = [];
@@ -565,15 +586,17 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         for (let i = 0; i < rows.length; i++) {
           if (invalidRowIndices.has(i)) continue;
           const row = rows[i]!;
+          const rowNormalized = row.phone ? normalizePhone(row.phone) : null;
           const isDuplicate =
             (row.email && existingEmails.has(row.email)) ||
-            (row.phone && existingPhones.has(row.phone));
+            (row.phone && existingPhones.has(row.phone)) ||
+            (rowNormalized && existingNormalizedPhones.has(rowNormalized));
           if (isDuplicate) {
             duplicates.push({ row: i + 1, email: row.email, phone: row.phone });
             if (onDuplicates === 'overwrite') {
               const ex = existing.find(e =>
                 (row.email && e.email === row.email) || (row.phone && e.phone === row.phone)
-              );
+              ) ?? (rowNormalized ? existingNormalizedPhones.get(rowNormalized) : undefined);
               if (ex) toUpdate.push({ id: ex.id, row });
             }
           } else {
@@ -652,12 +675,26 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
         for (const [idx, row] of toCreate.entries()) {
           try {
-            const tagIds = await resolveTagIdsForImport(row.tagNames);
-            await prisma.lead.create({
-              data: {
-                ...buildLeadData(row),
-                ...(tagIds.length ? { tags: { create: tagIds.map((tagId) => ({ tagId })) } } : {}),
-              } as any,
+            await prisma.$transaction(async (tx) => {
+              const tagIds = await resolveTagIdsForImport(row.tagNames);
+              const created = await tx.lead.create({
+                data: {
+                  ...buildLeadData(row),
+                  ...(tagIds.length ? { tags: { create: tagIds.map((tagId) => ({ tagId })) } } : {}),
+                } as any,
+              });
+              if (row.phone) {
+                await leadService.phoneService.attach(tx, created.id, tenantId, row.phone, { isPrimary: true, source: 'IMPORT' });
+              }
+              // Materialize person contact
+              await tx.contact.create({
+                data: {
+                  tenantId, leadId: created.id,
+                  firstName: row.firstName, lastName: row.lastName,
+                  email: row.email || null, phone: row.phone || null,
+                  company: row.company ?? null, isMain: true,
+                },
+              });
             });
             imported++;
           } catch (err: any) {
@@ -690,47 +727,72 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         // Overwrite duplicates individually
         for (const { id, row } of toUpdate) {
           try {
-            const tagIds = await resolveTagIdsForImport(row.tagNames);
-            if (tagIds.length) {
-              await (prisma as any).leadTagAssignment.deleteMany({ where: { leadId: id } });
-              await (prisma as any).leadTagAssignment.createMany({
-                data: tagIds.map((tagId) => ({ leadId: id, tagId })),
-                skipDuplicates: true,
+            await prisma.$transaction(async (tx) => {
+              const tagIds = await resolveTagIdsForImport(row.tagNames);
+              if (tagIds.length) {
+                await (tx as any).leadTagAssignment.deleteMany({ where: { leadId: id } });
+                await (tx as any).leadTagAssignment.createMany({
+                  data: tagIds.map((tagId) => ({ leadId: id, tagId })),
+                  skipDuplicates: true,
+                });
+              }
+              const updateResult = await tx.lead.updateMany({
+                where: { id, tenantId, deletedAt: null },
+                data: {
+                  firstName: row.firstName,
+                  lastName: row.lastName,
+                  phone: row.phone || null,
+                  company: row.company ?? null,
+                  source: row.source as LeadSource | undefined,
+                  stage: row.stage as LeadStage | undefined,
+                  priority: row.priority as LeadPriority | undefined,
+                  notes: row.notes ?? null,
+                  score: typeof row.score === 'number' ? row.score : undefined,
+                  expectedValue: row.expectedValue !== undefined
+                    ? new Prisma.Decimal(Number(row.expectedValue))
+                    : undefined,
+                  expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : undefined,
+                  followUpDate: row.followUpDate ? new Date(row.followUpDate) : null,
+                  country: row.country ?? null,
+                  state: row.state ?? null,
+                  city: row.city ?? null,
+                  area: row.area ?? null,
+                  postalCode: row.postalCode ?? null,
+                  freeformAddress: row.freeformAddress ?? null,
+                  customFieldValues: mergedCfById.get(id) ?? [],
+                },
               });
-            }
-            const updateResult = await prisma.lead.updateMany({
-              where: { id, tenantId, deletedAt: null },
-              data: {
-                firstName: row.firstName,
-                lastName: row.lastName,
-                company: row.company ?? null,
-                source: row.source as LeadSource | undefined,
-                stage: row.stage as LeadStage | undefined,
-                priority: row.priority as LeadPriority | undefined,
-                notes: row.notes ?? null,
-                score: typeof row.score === 'number' ? row.score : undefined,
-                expectedValue: row.expectedValue !== undefined
-                  ? new Prisma.Decimal(Number(row.expectedValue))
-                  : undefined,
-                expectedCloseDate: row.expectedCloseDate ? new Date(row.expectedCloseDate) : undefined,
-                followUpDate: row.followUpDate ? new Date(row.followUpDate) : null,
-                country: row.country ?? null,
-                state: row.state ?? null,
-                city: row.city ?? null,
-                area: row.area ?? null,
-                postalCode: row.postalCode ?? null,
-                freeformAddress: row.freeformAddress ?? null,
-                customFieldValues: mergedCfById.get(id) ?? [],
-              },
+              if (updateResult.count > 0) {
+                // R5: attach imported phone (reactivates INACTIVE rows)
+                if (row.phone) {
+                  await leadService.phoneService.attach(tx, id, tenantId, row.phone, { isPrimary: true, source: 'IMPORT' });
+                }
+                // B6: Sync isMain contact on overwrite
+                const mainContact = await tx.contact.findFirst({
+                  where: { leadId: id, tenantId, isMain: true, deletedAt: null },
+                  select: { id: true },
+                });
+                if (mainContact) {
+                  await tx.contact.update({
+                    where: { id: mainContact.id },
+                    data: {
+                      firstName: row.firstName, lastName: row.lastName,
+                      email: row.email || null, phone: row.phone || null,
+                      company: row.company ?? null,
+                    },
+                  });
+                }
+              } else {
+                throw new Error('Overwrite target no longer exists or is inaccessible');
+              }
             });
-            if (updateResult.count > 0) {
-              imported++;
-            } else {
-              // Row was deleted or moved to another tenant between detection and update
-              errors.push({ row: -1, message: 'Overwrite target no longer exists or is inaccessible' });
-            }
+            imported++;
           } catch (err: any) {
-            errors.push({ row: -1, message: err.message ?? 'Update failed' });
+            if (err.message === 'Overwrite target no longer exists or is inaccessible') {
+              errors.push({ row: -1, message: err.message });
+            } else {
+              errors.push({ row: -1, message: err.message ?? 'Update failed' });
+            }
           }
         }
 
@@ -1313,6 +1375,24 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
         await leadService.permanentDeleteLead({ tenantId, userId }, req.params.id);
         res.status(204).send();
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── GET /api/v1/leads/:id/phones ──────────────────────────────────
+  router.get(
+    '/:id/phones',
+    authMiddleware,
+    permissionMiddleware('lead:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId } = (req as AuthenticatedRequest).user;
+        const lead = await prisma.lead.findFirst({ where: { id: req.params.id, tenantId, deletedAt: null } });
+        if (!lead) { res.status(404).json({ error: { message: 'Lead not found.' } }); return; }
+        const phones = await leadService.phoneService.listByLead(req.params.id, tenantId);
+        res.json({ data: phones });
       } catch (err) {
         next(err);
       }
