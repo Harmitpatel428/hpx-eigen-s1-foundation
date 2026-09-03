@@ -9,3 +9,8 @@ dist
 
 # One-off local DB ops scripts (hold prod connection string — never commit)
 .dbops/
+
+# Database dumps (contain real data — never commit)
+backups/
+*.dump
+*.sql.gz

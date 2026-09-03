@@ -1,0 +1,7 @@
+#!/bin/bash
+# Opt-in: enable with  git config core.hooksPath .githooks
+# Blocks a commit that adds an unreviewed destructive migration (same check as CI).
+node scripts/check-destructive-migrations.cjs --base HEAD || {
+  echo "pre-commit: destructive migration blocked. Add a '-- SAFETY-REVIEWED:' marker if intentional."
+  exit 1
+}

@@ -73,3 +73,21 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  migration-guard:
+    name: Destructive Migration Guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure base ref
+        run: git fetch --no-tags origin main:refs/remotes/origin/main || true
+
+      # Fails the build if a NEW migration contains an unreviewed data-destroying
+      # statement (DROP TABLE/COLUMN, TRUNCATE, mass DELETE/UPDATE). Existing
+      # history is untouched — only migrations added vs origin/main are checked.
+      - name: Check for unreviewed destructive migrations
+        run: node scripts/check-destructive-migrations.cjs --base origin/main

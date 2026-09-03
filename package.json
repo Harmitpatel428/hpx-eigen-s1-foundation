@@ -16,7 +16,9 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:reset": "bash scripts/safe-reset.sh",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "prisma:seed-permissions": "tsx prisma/seed-permissions.ts"
+    "prisma:seed-permissions": "tsx prisma/seed-permissions.ts",
+    "check:migrations": "node scripts/check-destructive-migrations.cjs",
+    "db:backup": "bash scripts/backup-db.sh"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
