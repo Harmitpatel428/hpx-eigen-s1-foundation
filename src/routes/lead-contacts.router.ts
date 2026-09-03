@@ -4,6 +4,34 @@ import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../m
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 import { PhoneService } from '../services/phone.service';
 
+/**
+ * Build the Lead person-cache payload from a contact's fields, dropping `email`
+ * when another (non-deleted) lead in the tenant already owns it. Lead has
+ * @@unique([tenantId, email]) but contacts may share an email, so copying a
+ * shared email onto the Lead row would throw P2002 and abort setMain/delete.
+ * Name/company always copy; a null email always copies (NULLs never collide).
+ * On collision the lead keeps its current email — search still resolves the
+ * lead via the contact semi-join (C4).
+ */
+async function buildLeadCacheData(
+  db: any, leadId: string, tenantId: string,
+  contact: { firstName: string; lastName: string; email: string | null; company: string | null },
+): Promise<{ firstName: string; lastName: string; company: string | null; email?: string | null }> {
+  const data: { firstName: string; lastName: string; company: string | null; email?: string | null } = {
+    firstName: contact.firstName, lastName: contact.lastName, company: contact.company,
+  };
+  if (contact.email == null) {
+    data.email = null;
+  } else {
+    const clash = await db.lead.findFirst({
+      where: { tenantId, email: contact.email, deletedAt: null, id: { not: leadId } },
+      select: { id: true },
+    });
+    if (!clash) data.email = contact.email;
+  }
+  return data;
+}
+
 export function createLeadContactsRouter(prisma: PrismaClient): Router {
   const router = Router({ mergeParams: true });
   const phoneService = new PhoneService(prisma);
@@ -125,10 +153,8 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
               select: { firstName: true, lastName: true, email: true, company: true },
             });
             if (newMain) {
-              await tx.lead.update({ where: { id: leadId }, data: {
-                firstName: newMain.firstName, lastName: newMain.lastName,
-                email: newMain.email, company: newMain.company,
-              }});
+              const data = await buildLeadCacheData(tx, leadId, tenantId, newMain);
+              await tx.lead.update({ where: { id: leadId }, data });
             }
           }
 
@@ -138,8 +164,14 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
             const syncData: Record<string, string | null | undefined> = {};
             if (firstName !== undefined) syncData.firstName = firstName;
             if (lastName !== undefined) syncData.lastName = lastName;
-            if (email !== undefined) syncData.email = email;
             if (company !== undefined) syncData.company = company;
+            // email is unique per lead — only sync if it won't collide with another lead
+            if (email !== undefined && email !== null) {
+              const clash = await tx.lead.findFirst({ where: { tenantId, email, deletedAt: null, id: { not: leadId } }, select: { id: true } });
+              if (!clash) syncData.email = email;
+            } else if (email === null) {
+              syncData.email = null;
+            }
             if (Object.keys(syncData).length > 0) {
               await tx.lead.update({ where: { id: leadId }, data: syncData });
             }
@@ -181,11 +213,9 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
           const next = await (prisma as any).contact.findFirst({ where: { leadId, tenantId, deletedAt: null }, orderBy: { createdAt: 'asc' } });
           if (next) {
             await (prisma as any).contact.update({ where: { id: next.id }, data: { isMain: true } });
-            // Copy promoted contact's fields to Lead (minus phone)
-            await (prisma as any).lead.update({ where: { id: leadId }, data: {
-              firstName: next.firstName, lastName: next.lastName,
-              email: next.email, company: next.company,
-            }});
+            // Copy promoted contact's fields to Lead (minus phone; email guarded against unique clash)
+            const data = await buildLeadCacheData(prisma, leadId, tenantId, next);
+            await (prisma as any).lead.update({ where: { id: leadId }, data });
             if (next.phone) {
               await phoneService.setPrimary(prisma, leadId, next.phone);
               await phoneService.syncLeadPhone(prisma, leadId);

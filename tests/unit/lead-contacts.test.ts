@@ -205,6 +205,37 @@ describe('lead-contacts router', () => {
       expect(b1Call[0].data).not.toHaveProperty('phone');
     });
 
+    it('[F4] does NOT copy email to Lead when another lead already owns it (P2002 guard)', async () => {
+      const { mock, txMock } = makePrismaMock();
+      const contactFields = {
+        id: 'c-main', leadId: LEAD_ID, tenantId: TENANT,
+        firstName: 'Test', lastName: 'BHAI', email: 'test@hpx.com',
+        phone: '111', company: 'Co', isMain: false,
+      };
+      mock.contact.findFirst.mockResolvedValue(contactFields);
+      txMock.contact.findFirst.mockResolvedValue({
+        firstName: 'Test', lastName: 'BHAI', email: 'test@hpx.com', company: 'Co',
+      });
+      // Another lead in the tenant already caches this email → clash
+      txMock.lead.findFirst.mockResolvedValue({ id: 'other-lead' });
+      mock.contact.findMany.mockResolvedValue([{ ...contactFields, isMain: true }]);
+
+      const handler = getHandler(createLeadContactsRouter(mock), 'put', '/:contactId');
+      const req = makeReq({ params: { leadId: LEAD_ID, contactId: 'c-main' }, body: { isMain: true } });
+      const res = makeRes();
+      const next: NextFunction = jest.fn();
+
+      await handler(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      const b1Call = txMock.lead.update.mock.calls.find((c: any) => c[0]?.data?.firstName === 'Test');
+      expect(b1Call).toBeDefined();
+      // name/company still copied, but colliding email is skipped (no P2002 / no 500)
+      expect(b1Call[0].data.firstName).toBe('Test');
+      expect(b1Call[0].data.company).toBe('Co');
+      expect(b1Call[0].data).not.toHaveProperty('email');
+    });
+
     it('[S8] copies null email/company to lead when main has nulls', async () => {
       const { mock, txMock } = makePrismaMock();
       mock.contact.findFirst.mockResolvedValue({
