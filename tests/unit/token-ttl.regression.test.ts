@@ -32,7 +32,7 @@ describe('access-token TTL (reg #9)', () => {
   });
 
   it('defaults ACCESS_TTL to <= 15 minutes', () => {
-    const def = src.match(/ACCESS_TTL\s*=\s*process\.env\.ACCESS_TTL\s*\?\?\s*'([^']+)'/);
+    const def = src.match(/ACCESS_TTL\s*=\s*\(?process\.env\.ACCESS_TTL\s*\?\?\s*'([^']+)'/);
     expect(def).not.toBeNull();
     expect(ttlSeconds(def![1])).toBeLessThanOrEqual(15 * 60);
   });

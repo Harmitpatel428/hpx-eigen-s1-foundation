@@ -1,6 +1,6 @@
 import { PrismaClient, SessionStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import jwt, { type SignOptions } from 'jsonwebtoken';
 import crypto from 'crypto';
 import {
   AuthenticationFailedError,
@@ -32,7 +32,7 @@ const SESSION_LIFETIME_DAYS = parseInt(process.env.SESSION_LIFETIME_DAYS ?? '30'
 // reg #9: the ACCESS token is short-lived; SESSION_LIFETIME_DAYS is the REFRESH/session-row
 // lifetime and must NOT leak into the access-token expiry (that was the multi-day-token bug).
 // Single source of truth for the access-token TTL, used at BOTH sign sites (login + refresh).
-const ACCESS_TTL = process.env.ACCESS_TTL ?? '15m';
+const ACCESS_TTL = (process.env.ACCESS_TTL ?? '15m') as SignOptions['expiresIn'];
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 if (!JWT_SECRET) {
