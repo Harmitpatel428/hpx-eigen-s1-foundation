@@ -37,7 +37,6 @@ jobs:
       NODE_ENV: test
       # JWT secrets for test only — not real credentials
       JWT_SECRET: ci-test-jwt-secret-not-for-production
-      JWT_REFRESH_SECRET: ci-test-refresh-secret-not-for-production
       JWT_PRIVATE_KEY: ""
       JWT_PUBLIC_KEY: ""
       FRONTEND_URL: http://localhost:5173
