@@ -24,7 +24,7 @@ Status legend: `UNVERIFIED` (needs human/console) · `PENDING` (planned, not don
 | 12 | DSAR backup template | PENDING (never-send until #11) | DPO | Gate until #11 ships |
 | 13 | DR environment (cold restore-on-demand) | ADOPTED (documented) | Platform-Eng | No warm standby; staging not kept in sync |
 | 14 | `JWT_REFRESH_SECRET` vestigial | DONE | Backend | Commit `chore(auth): remove vestigial JWT_REFRESH_SECRET` — zero src refs proven; removed from tracked templates + ci.yml (local .env is gitignored, dev's own) |
-| 15 | PG version drift (14/15/16) | IN-PROGRESS | Platform-Eng | docker-compose → 16-alpine DONE (this WP); ci.yml → 16 in WP-0.4; closes when CI green on 16 + local proofs on 16 (DONE) |
+| 15 | PG version drift (14/15/16) | DONE | Platform-Eng | docker-compose + ci.yml pinned to 16-alpine (commit `ci(db): pin PG16`); prod already 16; local proofs ran on 16; CI run 33851090060 applied migrations + guard green on postgres:16-alpine |
 | 16 | `messages`/junction `tenant_id` backfill | PENDING | Backend | WP-2 |
 | 17 | `crm_invoices/crm_payments.deleted_at` drop | PENDING | Backend | WP-2 (expand/contract) |
 | 18 | Staged RLS enablement | PENDING | Platform-Eng | WP-5; staging suite green before prod |

@@ -38,6 +38,19 @@ role). Order:
 Only then change the CMD to `CMD ["sh", "-c", "npm run start"]` so production stops carrying DDL.
 Until then, the Dockerfile keeps its current behavior — nothing is stranded.
 
+**Deploy flow (confirmed): deploys are MANUAL via the Render dashboard (user-clicked). A `git
+push` is a repo event only — it does NOT deploy.** So the Dockerfile cutover gates on your next
+manual deploy AFTER the bootstrap. Sequence for your next deploy session:
+1. Add CI secret `MIGRATION_DATABASE_URL` (task #2).
+2. Run `bootstrap-roles.sql` against PROD as the Render owner — verify owner is **non-superuser +
+   CREATEROLE** first (both proven-required, see §WP-0 evidence / task #4).
+3. One green CI migration run as `hpx_migrator` (or a Render pre-deploy step) against staging.
+4. **THEN** remove `prisma migrate deploy &&` from the Dockerfile CMD.
+5. Your next manual deploy carries no DDL on the app credential.
+Until step 4, every Render deploy still runs migrations with the app credential — safe for the
+verified removal migration, but **the DDL-with-app-credential exposure persists until cutover
+completes.**
+
 ## 4. Prod bootstrap preconditions (register #19, findings A + B) — verify BEFORE task #5
 Proven locally during WP-0 that the bootstrap **fails** without these:
 - **Owner role name:** provide the current owner role of the prod/staging DB (the role that owns
