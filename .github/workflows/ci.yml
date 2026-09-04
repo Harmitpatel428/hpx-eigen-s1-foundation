@@ -13,7 +13,13 @@ jobs:
 
     services:
       postgres:
-        image: postgres:15-alpine
+        # WP-0/reg #15: pinned to 16 to match prod (Render PG16) + local docker-compose,
+        # ending the 14/15/16 drift. This `migrate deploy` step below targets the EPHEMERAL
+        # CI test container (correct as-is) — it is NOT the prod migration path. Prod
+        # migrations run via Dockerfile CMD today; moving them to a CI/Render step as
+        # hpx_migrator with MIGRATION_DATABASE_URL is the human cutover in HUMAN_TASKS #3.
+        # The RLS role-parity bootstrap (bootstrap-roles.sql) is added here in WP-5.
+        image: postgres:16-alpine
         env:
           POSTGRES_DB: hpx_ci_test
           POSTGRES_USER: ci

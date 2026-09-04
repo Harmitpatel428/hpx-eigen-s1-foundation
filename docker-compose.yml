@@ -2,7 +2,11 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:14-alpine
+    # WP-0/reg #15: pinned to 16 to match prod (Render PG16) and CI. Was 14-alpine.
+    # No `volumes:` here by design — local data is ephemeral, so the major-version
+    # bump is a non-event (no PG_DATA version conflict). Do NOT add a volume without
+    # a dump→restore migration plan.
+    image: postgres:16-alpine
     environment:
       POSTGRES_DB: hpx_eigen_dev
       POSTGRES_PASSWORD: password
