@@ -19,7 +19,7 @@ Status legend: `UNVERIFIED` (needs human/console) · `PENDING` (planned, not don
 | 7 | Admin MFA | UNVERIFIED / interim | Security | Decide: pull `mfa_factors` forward for admins, or IP-allowlist + dated milestone |
 | 8 | First DR game-day | PENDING (2026-09-10) | Platform-Eng lead | Execute; record `restore_drill_rto/rpo` |
 | 9 | ACCESS_TTL = 15m (login path) | DONE | Backend | Commit `fix(auth): single ACCESS_TTL=15m …` + tests/unit/token-ttl.regression.test.ts (3/3 pass) |
-| 10 | V10 `user:impersonate` removal | PENDING | Backend | WP-1 PR-1: live feature (route+toggle+middleware), re-seeded by prisma/seed-permissions.ts:71 — needs seed removal + anti-resurrection guard + human customer-facing decision |
+| 10 | V10 `user:impersonate` removal | DONE (backend); frontend deferred | Backend | Commit `refactor(auth)!: remove admin impersonation backend`. Endpoints + toggle + permission slug + seed entry removed; SAFETY-REVIEWED delete migration verified (perm count=0 after full chain); anti-resurrection + gone-route guards pass. User decision: backend-only now. **Follow-up:** paired frontend cleanup (ImpersonationBanner, AuthContext, PermissionMatrix); drop `Session.impersonatedByUserId` + `TenantSettings.allowImpersonation` at the Phase-12 support-access cutover. |
 | 11 | `restore_erasure_replay` job + manifest | PENDING (not built) | Backend | Build job + off-site manifest (Phase 19) |
 | 12 | DSAR backup template | PENDING (never-send until #11) | DPO | Gate until #11 ships |
 | 13 | DR environment (cold restore-on-demand) | ADOPTED (documented) | Platform-Eng | No warm standby; staging not kept in sync |
