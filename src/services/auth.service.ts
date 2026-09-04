@@ -29,6 +29,10 @@ export interface RefreshResult {
 
 const BCRYPT_COST = parseInt(process.env.BCRYPT_COST ?? '12', 10);
 const SESSION_LIFETIME_DAYS = parseInt(process.env.SESSION_LIFETIME_DAYS ?? '30', 10);
+// reg #9: the ACCESS token is short-lived; SESSION_LIFETIME_DAYS is the REFRESH/session-row
+// lifetime and must NOT leak into the access-token expiry (that was the multi-day-token bug).
+// Single source of truth for the access-token TTL, used at BOTH sign sites (login + refresh).
+const ACCESS_TTL = process.env.ACCESS_TTL ?? '15m';
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 if (!JWT_SECRET) {
@@ -113,7 +117,7 @@ export class AuthService {
     const accessToken = jwt.sign(
       { sessionId: session.id, userId: user.id, tenantId: actualTenantId },
       JWT_SECRET,
-      { expiresIn: `${SESSION_LIFETIME_DAYS}d` }
+      { expiresIn: ACCESS_TTL }
     );
 
     await this.auditService.log({
@@ -239,7 +243,7 @@ export class AuthService {
     const accessToken = jwt.sign(
       { sessionId: session.id, userId: session.userId, tenantId },
       JWT_SECRET,
-      { expiresIn: '15m' }
+      { expiresIn: ACCESS_TTL }
     );
 
     // Touch lastActivityAt
