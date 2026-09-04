@@ -109,3 +109,49 @@ These need Render dashboard access and could not be done from code:
 4. **Isolate/confirm `SHADOW_DATABASE_URL`.** It currently points at a Neon cloud DB; Prisma
    drops & recreates the shadow schema on every `migrate dev`. Confirmed throwaway for now —
    keep it a dedicated empty DB, never a database holding real data.
+
+---
+
+## §WP-0 — Credential-split acceptance evidence (2026-09-04)
+
+Proofs run against a **disposable PG16 cluster** created with `initdb` on port 55432 (own data
+dir, no volume, destroyed after) — never the dev server on 5432, never staging/prod. Owner modeled
+as a **non-superuser role with CREATEROLE** (`hpx_owner`) to match Render's managed owner; tables
+owned by it, then `bootstrap-roles.sql` transferred ownership to `hpx_migrator`.
+
+```
+PROOF 1  prisma db push        as hpx_app  → Error: ERROR: permission denied for schema public
+PROOF 2  prisma migrate reset  as hpx_app  → P3016 … ERROR: must be owner of table _prisma_migrations
+PROOF 3  TRUNCATE "User"       as hpx_app  → ERROR:  permission denied for table User
+PROOF 4  ALTER TABLE ADD COLUMN as hpx_migrator → ALTER TABLE            (success)
+PROOF 5  break-glass: hpx_owner SET ROLE hpx_migrator; ALTER TABLE → SET / ALTER TABLE (success)
+```
+Two preconditions **proven required** (both true of Render's managed owner — see HUMAN_TASKS #4):
+- Owner must be **non-superuser**: `REASSIGN OWNED BY <superuser>` fails "objects … required by the
+  database system".
+- Owner must have **CREATEROLE**: bootstrap's `CREATE ROLE` fails "permission denied to create
+  role" otherwise.
+
+Caveat: proof 5 is **mechanics-only** — under a superuser owner it proves the break-glass path,
+not the "owner loses routine DDL" restriction (which holds only for a non-superuser owner; verify
+at prod cutover).
+
+### Destructive-migration guard (`scripts/check-destructive-migrations.cjs`)
+Bare `DELETE`/`UPDATE` without `WHERE` are already caught per-statement (findings() lines 77–78).
+Fixture run:
+```
+default (new/untracked) mode: DELETE FROM "User";                    → ❌ DELETE without WHERE
+                              DELETE FROM "User" WHERE id = '…';      → (not flagged, passes)
+--all mode: also flags legitimate HISTORICAL unmarked DROP COLUMN migrations — so the guard's
+            contract is diff-mode on NEW migrations (how CI runs it, --base origin/main), not an
+            --all clean sweep.
+```
+
+### Encrypted off-site backup roundtrip (`scripts/db/backup-offsite.sh`)
+File-based two-step (Windows-safe), gpg encrypt → decrypt → verify:
+```
+pg_dump -Fc -f db.dump          → 170,918 bytes
+gpg --encrypt → db.dump.gpg      → 28,236 bytes
+gpg --decrypt → db.restored.dump
+pg_restore -l db.restored.dump   → 447 TOC entries (tables owned by hpx_migrator)
+```
