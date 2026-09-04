@@ -68,7 +68,8 @@ const PERMISSIONS = [
   // Users
   { slug: 'user:view',        module: 'Admin', description: 'View users' },
   { slug: 'user:manage',      module: 'Admin', description: 'Invite, suspend, and manage users' },
-  { slug: 'user:impersonate', module: 'Admin', description: 'Impersonate another user (admin only)' },
+  // reg #10 (WP-1 PR-1): the admin-impersonation permission was removed with the feature (V10).
+  // Anti-resurrection guard: tests/unit/impersonation-removed.test.ts fails if the slug returns.
   // Departments & Teams
   { slug: 'department:view',   module: 'Admin', description: 'View departments' },
   { slug: 'department:manage', module: 'Admin', description: 'Create, edit, delete departments' },

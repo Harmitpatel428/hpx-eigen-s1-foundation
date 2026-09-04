@@ -22,29 +22,10 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
     } catch (err) { next(err); }
   });
 
-  // POST /api/v1/settings/crm/impersonation — toggle admin impersonation; role:manage required
-  router.post(
-    '/impersonation',
-    authMiddleware,
-    permissionMiddleware('role:manage'),
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const { tenantId } = (req as AuthenticatedRequest).user;
-        const { enabled } = req.body as { enabled?: boolean };
-        if (typeof enabled !== 'boolean') {
-          throw new ValidationError('enabled must be a boolean.');
-        }
-
-        await prisma.tenantSettings.upsert({
-          where: { tenantId },
-          create: { tenantId, allowImpersonation: enabled },
-          update: { allowImpersonation: enabled },
-        });
-
-        res.json({ success: true, allowImpersonation: enabled });
-      } catch (err) { next(err); }
-    }
-  );
+  // reg #10 (WP-1 PR-1): the admin-impersonation toggle POST is removed with the feature.
+  // The GET above still surfaces `allowImpersonation` (now inert) so the settings response
+  // shape is unchanged for the frontend; the TenantSettings column is retained, never written,
+  // until the Phase-12 support-access cutover.
 
   // POST /api/v1/settings/crm/lead-header — org-level setting; role:manage gate, freely mutable
   router.post(
