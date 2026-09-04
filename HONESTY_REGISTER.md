@@ -18,12 +18,12 @@ Status legend: `UNVERIFIED` (needs human/console) · `PENDING` (planned, not don
 | 6 | Object storage provider | [NEXT] not installed | Platform-Eng | Pick S3-compatible (Oregon); off-site backup dest (used by scripts/db/backup-offsite.sh) |
 | 7 | Admin MFA | UNVERIFIED / interim | Security | Decide: pull `mfa_factors` forward for admins, or IP-allowlist + dated milestone |
 | 8 | First DR game-day | PENDING (2026-09-10) | Platform-Eng lead | Execute; record `restore_drill_rto/rpo` |
-| 9 | ACCESS_TTL = 15m (login path) | PENDING | Backend | WP-1 PR-2: single const both paths; auth.service.ts:116 signs `${SESSION_LIFETIME_DAYS}d`, :242 `'15m'` |
+| 9 | ACCESS_TTL = 15m (login path) | DONE | Backend | Commit `fix(auth): single ACCESS_TTL=15m …` + tests/unit/token-ttl.regression.test.ts (3/3 pass) |
 | 10 | V10 `user:impersonate` removal | PENDING | Backend | WP-1 PR-1: live feature (route+toggle+middleware), re-seeded by prisma/seed-permissions.ts:71 — needs seed removal + anti-resurrection guard + human customer-facing decision |
 | 11 | `restore_erasure_replay` job + manifest | PENDING (not built) | Backend | Build job + off-site manifest (Phase 19) |
 | 12 | DSAR backup template | PENDING (never-send until #11) | DPO | Gate until #11 ships |
 | 13 | DR environment (cold restore-on-demand) | ADOPTED (documented) | Platform-Eng | No warm standby; staging not kept in sync |
-| 14 | `JWT_REFRESH_SECRET` vestigial | PENDING | Backend | WP-1 PR-3: delete from config (grep-proof zero `src` refs first) |
+| 14 | `JWT_REFRESH_SECRET` vestigial | DONE | Backend | Commit `chore(auth): remove vestigial JWT_REFRESH_SECRET` — zero src refs proven; removed from tracked templates + ci.yml (local .env is gitignored, dev's own) |
 | 15 | PG version drift (14/15/16) | IN-PROGRESS | Platform-Eng | docker-compose → 16-alpine DONE (this WP); ci.yml → 16 in WP-0.4; closes when CI green on 16 + local proofs on 16 (DONE) |
 | 16 | `messages`/junction `tenant_id` backfill | PENDING | Backend | WP-2 |
 | 17 | `crm_invoices/crm_payments.deleted_at` drop | PENDING | Backend | WP-2 (expand/contract) |
