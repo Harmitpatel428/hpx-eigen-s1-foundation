@@ -147,3 +147,9 @@ export class AuditWriteFailureError extends AppException {
     super('AUDIT_WRITE_FAILURE', 'Operation temporarily unavailable.', RetryTag.RETRYABLE, 503);
   }
 }
+
+export class AuditChainBranchError extends AppException {
+  constructor() {
+    super('AUDIT_CHAIN_BRANCH', 'Audit chain has multiple leaves — integrity compromised.', RetryTag.NON_RETRYABLE, 500);
+  }
+}
