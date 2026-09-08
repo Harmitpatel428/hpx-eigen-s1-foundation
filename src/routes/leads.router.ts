@@ -10,7 +10,7 @@ import {
 } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { LeadService, FOLLOW_UP_REQUIRED_STAGES } from '../services/lead.service';
-import { ValidationError } from '../types/exceptions';
+import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 import { checkImportRateLimit, checkBulkOperationLimit } from '../services/auth/RateLimitService';
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
 import { phoneSearchCondition } from '../utils/phone-search.util';
@@ -25,12 +25,23 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
   const router = Router();
   const leadService = new LeadService(prisma);
 
+  // Reject malformed :id params before they reach a lookup. Without this, a path
+  // like /api/v1/leads/stats matched GET /:id with id="stats" and a non-UUID
+  // lookup threw → HTTP 500. Now it's a clean 404 (audit S-11).
+  const LEAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  router.param('id', (_req: Request, _res: Response, next: NextFunction, id: string) => {
+    if (!LEAD_ID_RE.test(id)) return next(new ResourceNotFoundError());
+    next();
+  });
+
   // Shared filter parsing for GET / (list) and GET /export — single source of
   // truth for status/stage/assignee/role/search so both endpoints always agree.
   const buildLeadFilterWhere = async (req: Request): Promise<Prisma.LeadWhereInput> => {
     const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
     const status = req.query.status as LeadStatus | undefined;
     const stage = req.query.stage as LeadStage | undefined;
+    const source = req.query.source as LeadSource | undefined;
+    const priority = req.query.priority as LeadPriority | undefined;
     const ownerId = req.query.ownerId as string | undefined;
     const roleId = req.query.roleId as string | undefined;
     const search = req.query.search as string | undefined;
@@ -43,6 +54,18 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     if (stage && !Object.values(LeadStage).includes(stage)) {
       throw new ValidationError(
         `stage must be one of: ${Object.values(LeadStage).join(', ')}`
+      );
+    }
+    // source/priority power the Filters panel (audit S-03). Previously `source`
+    // was accepted by the client but silently ignored here.
+    if (source && !Object.values(LeadSource).includes(source)) {
+      throw new ValidationError(
+        `source must be one of: ${Object.values(LeadSource).join(', ')}`
+      );
+    }
+    if (priority && !Object.values(LeadPriority).includes(priority)) {
+      throw new ValidationError(
+        `priority must be one of: ${Object.values(LeadPriority).join(', ')}`
       );
     }
 
@@ -63,15 +86,15 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
     if (status) whereClause.status = status;
     if (stage) whereClause.stage = stage;
+    if (source) whereClause.source = source;
+    if (priority) whereClause.priority = priority;
 
     // Role/assignee narrowing goes through AND so it composes with — and can
     // never widen — the scope's ownerFilter above.
     const conjuncts: Prisma.LeadWhereInput[] = [];
     if (ownerId === 'UNASSIGNED') {
       conjuncts.push({ ownerId: null });
-    } else if (ownerId && Object.keys(ownerFilter).length === 0) {
-      // Only ORGANIZATION-scope users (admins) may target an arbitrary owner;
-      // scoped users are already constrained by ownerFilter.
+    } else if (ownerId) {
       conjuncts.push({ ownerId });
     }
     if (roleId) {
@@ -168,6 +191,14 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
 
         if (!firstName || !lastName) {
           throw new ValidationError('firstName and lastName are required.');
+        }
+
+        // A new lead must be reachable — require at least an email or a phone
+        // (audit S-10). Mirrors the create-form rule; enforced here so the API
+        // can't be used to bypass it. Update (PUT) stays lenient so legacy leads
+        // with neither remain editable.
+        if ((!email || !email.trim()) && (!phone || !phone.trim())) {
+          throw new ValidationError('Provide at least an email or a phone number.');
         }
 
         if (Array.isArray(customFieldValues)) {
@@ -833,6 +864,11 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
+        const ownerId = req.query.ownerId as string | undefined;
+        const roleId = req.query.roleId as string | undefined;
+        const source = req.query.source as string | undefined;
+        const priority = req.query.priority as string | undefined;
+        const search = req.query.search as string | undefined;
 
         const ownerFilter = await buildOwnerFilter(
           (scope ?? 'OWN') as ScopeType,
@@ -844,6 +880,34 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           deletedAt: { equals: null },
           ...ownerFilter,
         };
+
+        if (source) where.source = source as any;
+        if (priority) where.priority = priority as any;
+
+        const conjuncts: Prisma.LeadWhereInput[] = [];
+        if (ownerId === 'UNASSIGNED') {
+          conjuncts.push({ ownerId: null });
+        } else if (ownerId) {
+          conjuncts.push({ ownerId });
+        }
+        if (roleId) {
+          const roleUsers = await prisma.userRole.findMany({
+            where: { roleId, role: { tenantId, deletedAt: null } },
+            select: { userId: true },
+          });
+          conjuncts.push({ ownerId: { in: roleUsers.map((u) => u.userId) } });
+        }
+        if (search) {
+          conjuncts.push({
+            OR: [
+              { firstName: { contains: search, mode: 'insensitive' } },
+              { lastName: { contains: search, mode: 'insensitive' } },
+              { email: { contains: search, mode: 'insensitive' } },
+              { company: { contains: search, mode: 'insensitive' } },
+            ],
+          });
+        }
+        if (conjuncts.length > 0) where.AND = conjuncts;
 
         const grouped = await prisma.lead.groupBy({
           by: ['stage'],
@@ -1004,25 +1068,25 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           prisma.lead.count({ where: whereClause }),
         ]);
 
-        // Batch-load owner names to avoid N+1
+        // Enrichment: owner names + last-meaningful-activity. Both depend only on
+        // the page's leads (not on each other), so run them concurrently to remove
+        // a sequential DB round-trip from the hot list path. Both are already
+        // batched (no N+1).
         const ownerIds = [...new Set(data.filter((l: any) => l.ownerId).map((l: any) => l.ownerId as string))];
-        const owners = ownerIds.length > 0
-          ? await prisma.user.findMany({
-              where: { id: { in: ownerIds }, tenantId },
-              select: OWNER_SELECT,
-            })
-          : [];
-        const ownerMap = Object.fromEntries(owners.map((u: any) => [u.id, u]));
-
-        // Batch-load last meaningful activity per lead (single groupBy, no N+1)
         const leadIds = data.map((l: any) => l.id as string);
-        const activityMaxes = leadIds.length > 0
-          ? await (prisma as any).leadActivity.groupBy({
-              by: ['leadId'],
-              where: { leadId: { in: leadIds }, deletedAt: { equals: null } },
-              _max: { createdAt: true },
-            })
-          : [];
+        const [owners, activityMaxes] = await Promise.all([
+          ownerIds.length > 0
+            ? prisma.user.findMany({ where: { id: { in: ownerIds }, tenantId }, select: OWNER_SELECT })
+            : Promise.resolve([] as Array<{ id: string }>),
+          leadIds.length > 0
+            ? (prisma as any).leadActivity.groupBy({
+                by: ['leadId'],
+                where: { leadId: { in: leadIds }, deletedAt: { equals: null } },
+                _max: { createdAt: true },
+              })
+            : Promise.resolve([] as any[]),
+        ]);
+        const ownerMap = Object.fromEntries(owners.map((u: any) => [u.id, u]));
         const activityMap: Record<string, string | null> = Object.fromEntries(
           activityMaxes.map((a: any) => [a.leadId, a._max.createdAt ? new Date(a._max.createdAt).toISOString() : null])
         );
