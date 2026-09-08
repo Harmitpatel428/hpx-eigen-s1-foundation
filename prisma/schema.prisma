@@ -334,12 +334,14 @@ model AuditLog {
   correlationId  String?  @db.Uuid
   previousHash   String?  @db.Char(64)
   currentHash    String   @db.Char(64)
+  hashVersion    Int      @default(0)
   createdAt      DateTime @default(now())
 
+  @@unique([tenantId, currentHash])
   @@index([tenantId, createdAt])
+  @@index([tenantId, previousHash])
   @@index([correlationId])
   @@index([entityType, entityId])
-  @@index([currentHash])
 }
 
 // ─── Notifications ───────────────────────────────────────────────
