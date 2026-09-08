@@ -15,6 +15,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
 import { createCasesRouter } from '../../src/routes/handoff.router';
+import { PortalService } from '../../src/services/portal.service';
 import { AppException } from '../../src/types/exceptions';
 
 const prisma = new PrismaClient();
@@ -306,15 +307,110 @@ describe('POST /cases/:caseId/portal/activate', () => {
     expect(sessions.every(s => s.revokedAt !== null)).toBe(true);
   });
 
-  // The following require exercising the note/document publish flow, which
-  // triggers PortalService's private reconcilePortalActivation — that path
-  // needs a full documentation-service fixture (preset, DocCaseDocument,
-  // client-visible note/document) beyond this router's own surface. Tracked
-  // here rather than faked, since faking them would just re-assert Prisma
-  // update semantics already covered by test 12 above.
-  it.todo('13. auto-activation via published client-visible note on ACTIVE case sets portalEnabledAt');
-  it.todo('14. auto-activation via published client-visible document sets portalEnabledAt');
-  it.todo('15. auto-activation does not fire when case has no portal phone set');
-  it.todo('16. auto-activation is idempotent — publishing twice does not duplicate PORTAL_AUTO_ACTIVATED audit');
-  it.todo('17. auto-activation does not fire on non-ACTIVE case even with client-visible content');
+});
+
+describe('portal auto-activation via publish flow (reconcilePortalActivation)', () => {
+  const portalService = new PortalService(prisma);
+  const ctx = { tenantId: TENANT_ID, userId: USER_ID };
+
+  async function createNote(caseId: string) {
+    return prisma.docCaseNote.create({
+      data: {
+        tenantId: TENANT_ID,
+        caseId,
+        content: 'Test note for portal activation',
+        createdBy: USER_ID,
+        clientVisible: false,
+      },
+    });
+  }
+
+  it('13. publish note on ACTIVE case → auto-activates portal + PORTAL_AUTO_ACTIVATED audit', async () => {
+    const c = await createCase();
+    const note = await createNote(c.id);
+
+    await portalService.setNoteVisibility(ctx, note.id, true);
+
+    const updated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(updated!.portalEnabledAt).toBeTruthy();
+
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityId: c.id, eventType: 'PORTAL_AUTO_ACTIVATED' },
+    });
+    expect(audits).toHaveLength(1);
+    expect(audits[0].hashVersion).toBe(1);
+  });
+
+  it('14. publish note on INCOMING case → does NOT auto-activate', async () => {
+    const c = await createCase({ status: DocCaseStatus.INCOMING });
+    const note = await createNote(c.id);
+
+    await portalService.setNoteVisibility(ctx, note.id, true);
+
+    const updated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(updated!.portalEnabledAt).toBeNull();
+
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityId: c.id, eventType: 'PORTAL_AUTO_ACTIVATED' },
+    });
+    expect(audits).toHaveLength(0);
+  });
+
+  it('15. publish note on case with no portalPhoneLast4 → does NOT auto-activate', async () => {
+    const c = await createCase({ portalPhoneLast4: null });
+    const note = await createNote(c.id);
+
+    await portalService.setNoteVisibility(ctx, note.id, true);
+
+    const updated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(updated!.portalEnabledAt).toBeNull();
+  });
+
+  it('16. publish twice on same case → exactly one PORTAL_AUTO_ACTIVATED audit (idempotent)', async () => {
+    const c = await createCase();
+    const note1 = await createNote(c.id);
+    const note2 = await createNote(c.id);
+
+    await portalService.setNoteVisibility(ctx, note1.id, true);
+    await portalService.setNoteVisibility(ctx, note2.id, true);
+
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityId: c.id, eventType: 'PORTAL_AUTO_ACTIVATED' },
+    });
+    expect(audits).toHaveLength(1);
+  });
+
+  it('17. unpublish all visible content → deactivates portal + revokes sessions + PORTAL_DEACTIVATED audit', async () => {
+    const c = await createCase();
+    const note = await createNote(c.id);
+
+    // Activate via publish
+    await portalService.setNoteVisibility(ctx, note.id, true);
+    const activated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(activated!.portalEnabledAt).toBeTruthy();
+
+    // Create a portal session while active
+    await prisma.portalSession.create({
+      data: {
+        tenantId: TENANT_ID,
+        caseId: c.id,
+        tokenHash: crypto.randomBytes(32).toString('hex'),
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    });
+
+    // Unpublish → should deactivate + revoke sessions
+    await portalService.setNoteVisibility(ctx, note.id, false);
+
+    const deactivated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(deactivated!.portalEnabledAt).toBeNull();
+
+    const sessions = await prisma.portalSession.findMany({ where: { caseId: c.id } });
+    expect(sessions.every(s => s.revokedAt !== null)).toBe(true);
+
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityId: c.id, eventType: 'PORTAL_DEACTIVATED' },
+    });
+    expect(audits).toHaveLength(1);
+  });
 });
