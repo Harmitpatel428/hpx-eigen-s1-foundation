@@ -452,6 +452,72 @@ export class PortalService {
     return { sessionsRevoked: revoked.count };
   }
 
+  /**
+   * Race-safe portal activation: a single conditional updateMany checks every
+   * invariant (not deleted, not already enabled, ACTIVE status, phone set) and
+   * flips portalEnabledAt atomically. No read-then-write TOCTOU window.
+   */
+  async activatePortal(ctx: TenantContext, caseId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+
+      // Race-safe: conditional update succeeds only if ALL activation invariants hold.
+      // If another request already set portalEnabledAt, count will be 0 (idempotent).
+      const { count } = await tx.docCase.updateMany({
+        where: {
+          id: caseId,
+          tenantId: ctx.tenantId,
+          deletedAt: null,
+          portalEnabledAt: null,
+          status: DocCaseStatus.ACTIVE,
+          portalPhoneLast4: { not: null },
+        },
+        data: { portalEnabledAt: now },
+      });
+
+      if (count === 1) {
+        // Activation succeeded — audit it
+        await this.audit.appendInTx(tx, {
+          tenantId: ctx.tenantId,
+          eventType: 'PORTAL_ACTIVATED',
+          entityType: 'DocCase',
+          entityId: caseId,
+          actorUserId: ctx.userId,
+          operation: 'UPDATE',
+          payload: { caseId, activationType: 'MANUAL' },
+        });
+
+        return { caseId, portalEnabledAt: now.toISOString(), alreadyEnabled: false };
+      }
+
+      // count === 0 — determine why
+      const docCase = await tx.docCase.findFirst({
+        where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null },
+        select: { id: true, status: true, portalEnabledAt: true, portalPhoneLast4: true },
+      });
+
+      if (!docCase) throw new ResourceNotFoundError();
+
+      // Already enabled — idempotent success, no duplicate audit
+      if (docCase.portalEnabledAt) {
+        return { caseId, portalEnabledAt: docCase.portalEnabledAt.toISOString(), alreadyEnabled: true };
+      }
+
+      // Wrong status
+      if (docCase.status !== DocCaseStatus.ACTIVE) {
+        throw new BusinessRuleViolationError(`Case must be in ACTIVE status to activate portal (current: ${docCase.status}).`);
+      }
+
+      // No phone
+      if (!docCase.portalPhoneLast4) {
+        throw new ValidationError('Case has no portal phone number set. Cannot activate portal.');
+      }
+
+      // Should not reach here, but fail safe
+      throw new BusinessRuleViolationError('Portal activation conditions not met.');
+    }, { maxWait: 5000, timeout: 15000 });
+  }
+
   /** Active session count per case — powers the Client Portal settings panel. */
   async activeSessionStats(ctx: TenantContext) {
     const now = new Date();

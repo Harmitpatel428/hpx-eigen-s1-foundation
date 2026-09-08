@@ -121,6 +121,19 @@ export function createCasesRouter(prisma: PrismaClient): Router {
       } catch (err) { next(err); }
     });
 
+  /** POST /api/v1/cases/:caseId/portal/activate */
+  router.post('/:caseId/portal/activate', authMiddleware, permissionMiddleware('portal:activate'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const caseId = req.params.caseId;
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(caseId)) {
+          throw new ValidationError('Invalid caseId format.');
+        }
+        res.json({ success: true, data: await portal.activatePortal({ tenantId, userId }, caseId) });
+      } catch (err) { next(err); }
+    });
+
   return router;
 }
 
