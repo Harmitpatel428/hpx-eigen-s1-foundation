@@ -25,9 +25,11 @@ export function createGlobalLeadActivitiesRouter(prisma: PrismaClient): Router {
         const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string, 10) : 50;
         if (page < 1 || isNaN(page)) throw new ValidationError('page must be a positive integer.');
         if (pageSize < 1 || pageSize > 200 || isNaN(pageSize)) throw new ValidationError('pageSize must be between 1 and 200.');
+        const search = (req.query.search as string | undefined)?.trim() || undefined;
         const result = await service.listGlobal(
           { tenantId, userId }, filter, page, pageSize,
           { scope: (scope ?? 'OWN') as ScopeType, teamId: teamId ?? null, departmentId: departmentId ?? null },
+          search,
         );
         res.json(result);
       } catch (err) {

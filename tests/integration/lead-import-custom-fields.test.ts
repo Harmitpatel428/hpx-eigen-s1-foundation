@@ -253,10 +253,11 @@ describe('POST /api/v1/leads/import — custom fields / ownership / tags', () =>
 
     const lead = await prisma.lead.findFirst({ where: { tenantId: t.tenantId, email, deletedAt: null } });
     const cfs = [...((lead!.customFieldValues as any[]) ?? [])].sort((a, b) => a.fieldId.localeCompare(b.fieldId));
-    expect(cfs).toEqual([
-      { fieldId: gstId, value: 'new-gst' }, // imported wins…
-      { fieldId: kvaId, value: 'keep-me' }, // …untouched sibling field survives
-    ]);
+    const expected = [
+      { fieldId: gstId, value: 'new-gst' },
+      { fieldId: kvaId, value: 'keep-me' },
+    ].sort((a, b) => a.fieldId.localeCompare(b.fieldId));
+    expect(cfs).toEqual(expected);
   });
 
   it('C06 — tagNames resolve to tenant-scoped tags and are assigned to the lead', async () => {

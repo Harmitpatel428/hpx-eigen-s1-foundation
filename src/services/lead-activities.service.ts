@@ -1,7 +1,8 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { TenantContext } from './lead.service';
 import { ResourceNotFoundError, ValidationError } from '../types/exceptions';
 import { buildOwnerFilter, ScopeType, LeadOwnerFilter } from '../utils/scope.helper';
+import { phoneSearchCondition } from '../utils/phone-search.util';
 
 export type GlobalFilter = 'ALL' | 'DUE_TODAY' | 'UPCOMING' | 'OVERDUE' | 'MINE';
 
@@ -17,6 +18,7 @@ export class LeadActivitiesService {
   async listGlobal(
     ctx: TenantContext, filter: GlobalFilter, page: number, pageSize: number,
     scopeCtx?: ActivityScopeContext,
+    search?: string,
   ) {
     // Use UTC boundaries — follow-up dates are stored as UTC midnight
     const now = new Date();
@@ -29,10 +31,26 @@ export class LeadActivitiesService {
       : {};
 
     // Exclude activities whose lead has been soft-deleted
+    const leadFilter: any = { deletedAt: null, ...ownerFilter };
+
+    // R3: shared phone + text search on the lead, same abstraction as leads list
+    if (search) {
+      const textConditions: Prisma.LeadWhereInput[] = [
+        { firstName: { contains: search, mode: 'insensitive' } },
+        { lastName: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+        { company: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search, mode: 'insensitive' } },
+      ];
+      const phoneCond = phoneSearchCondition(search, ctx.tenantId);
+      if (phoneCond) textConditions.push(phoneCond);
+      leadFilter.OR = textConditions;
+    }
+
     const baseWhere: any = {
       tenantId: ctx.tenantId,
       deletedAt: null,
-      lead: { deletedAt: null, ...ownerFilter },
+      lead: leadFilter,
     };
 
     if (filter === 'DUE_TODAY') {
