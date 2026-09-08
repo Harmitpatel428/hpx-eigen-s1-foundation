@@ -82,7 +82,9 @@ app.use(correlationMiddleware);
 const allowedOrigins = [
   'https://hpx-eigen-frontend.vercel.app', // Production frontend
   'http://localhost:5173',                  // Local Vite dev server
+  'http://localhost:5174',                  // Local Vite dev server (alt port)
   'http://127.0.0.1:5173',                 // Local Vite dev server (IP)
+  'http://127.0.0.1:5174',                 // Local Vite dev server (IP, alt port)
   'http://localhost:3000',                  // Local backend testing (if applicable)
   'https://hpxeigen.com',                   // Custom production domain
   'https://www.hpxeigen.com'                // Custom production domain (www)
@@ -176,6 +178,18 @@ app.use('/api/v1/dashboard', authMiddleware, createDashboardRouter(prisma));
 // superseded by POST /api/v1/users/invite and POST /api/v1/auth/accept-invite.
 // The legacy paths had no permission gate (any authenticated user could invite)
 // and no rate limiting — removed during invitation hardening audit.
+
+// ─── 404 for unmatched routes ─────────────────────────────────────────────────
+// Any path that reached here matched no router. Return a clean 404 instead of
+// letting the request fall through to the error handler as a generic 500
+// (audit S-11). Route-level malformed-id 404s are handled in each router.
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    code: 'NOT_FOUND',
+    message: `Route ${req.method} ${req.path} not found.`,
+    correlationId: getCorrelationId() ?? 'unknown',
+  });
+});
 
 // ─── Global Error Handler ─────────────────────────────────────────────────────
 Sentry.setupExpressErrorHandler(app);
