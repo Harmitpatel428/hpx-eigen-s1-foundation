@@ -301,7 +301,7 @@ export class LeadService {
       }
 
       const txAudit = new AuditService(tx as any);
-      await txAudit.log({
+      await txAudit.appendInTx(tx, {
         tenantId: ctx.tenantId,
         eventType: 'LEAD_CREATED',
         entityType: 'Lead',
@@ -531,7 +531,7 @@ export class LeadService {
       }
 
       const txAudit = new AuditService(tx as any);
-      await txAudit.log({
+      await txAudit.appendInTx(tx, {
         tenantId: ctx.tenantId,
         eventType: 'LEAD_UPDATED',
         entityType: 'Lead',
