@@ -1022,23 +1022,6 @@ export class LeadService {
 
       let count = 0;
 
-      // Pre-read the audit hash chain pointer BEFORE the transaction.
-      // Root cause of AUDIT_WRITE_FAILURE at N≥100: AuditService.log() was doing findFirst
-      // inside the $transaction callback, adding an extra query on the already-loaded tx
-      // connection (which held user.findFirst + lead.findMany(N) + lead.updateMany(N)).
-      // On Render free-tier, that 5th query on a resource-pressured connection caused a
-      // transient error that was swallowed into AuditWriteFailureError.
-      // Moving the read outside the tx uses a short-lived pool connection instead.
-      // ponytail: TOCTOU — if another audit event lands between here and tx commit the chain
-      // forks (two records share the same previousHash). verifyChain() detects it. Acceptable:
-      // concurrent bulk-assigns to the same tenant are rare in this CRM.
-      const prevAuditRecord = await this.prisma.auditLog.findFirst({
-        where: { tenantId: ctx.tenantId },
-        orderBy: { createdAt: 'desc' },
-        select: { currentHash: true },
-      });
-      const previousAuditHash = prevAuditRecord?.currentHash ?? null;
-
       // ponytail: MANUAL intentionally does NOT acquire the advisory lock held by AUTO.
       // Concurrent MANUAL+AUTO on the same leads uses PostgreSQL row-level last-write-wins (READ COMMITTED).
       // This is correct: MANUAL is an explicit user override and should be able to win the race.
@@ -1073,7 +1056,7 @@ export class LeadService {
         // AuditLog_entityType_entityId_idx index (error 54000). This was the production failure.
         // Full leadIds list is not needed here — the Lead table is the source of truth.
         const txAudit = new AuditService(tx as any);
-        await txAudit.log({
+        await txAudit.appendInTx(tx, {
           tenantId: ctx.tenantId,
           eventType: 'LEADS_BULK_ASSIGNED',
           entityType: 'Lead',
@@ -1081,7 +1064,7 @@ export class LeadService {
           actorUserId: ctx.userId,
           operation: 'UPDATE',
           payload: { mode: 'MANUAL', targetUserId: input.userId, count },
-        }, previousAuditHash);
+        });
       }, { timeout: 30000 });
 
       // Notifications are fire-and-forget and must NOT be inside the transaction
@@ -1105,14 +1088,6 @@ export class LeadService {
     // Capture assignments inside the tx so we can send notifications after commit
     // without an extra DB round-trip
     let capturedAssignments: Array<{ leadId: string; assigneeId: string }> = [];
-
-    // Pre-read audit hash before the transaction — same fix as MANUAL path.
-    const prevAuditRecordAuto = await this.prisma.auditLog.findFirst({
-      where: { tenantId: ctx.tenantId },
-      orderBy: { createdAt: 'desc' },
-      select: { currentHash: true },
-    });
-    const previousAuditHashAuto = prevAuditRecordAuto?.currentHash ?? null;
 
     await this.prisma.$transaction(async (tx) => {
       // Advisory lock per tenant+department — serializes concurrent auto-assigns for the
@@ -1147,7 +1122,7 @@ export class LeadService {
       // Audit inside the transaction — rolls back with the assignment if this throws.
       // entityId uses "bulk:N" — same reason as MANUAL path (btree index size limit).
       const txAudit = new AuditService(tx as any);
-      await txAudit.log({
+      await txAudit.appendInTx(tx, {
         tenantId: ctx.tenantId,
         eventType: 'LEADS_BULK_ASSIGNED',
         entityType: 'Lead',
@@ -1155,7 +1130,7 @@ export class LeadService {
         actorUserId: ctx.userId,
         operation: 'UPDATE',
         payload: { mode: 'AUTO', departmentId: input.departmentId, count },
-      }, previousAuditHashAuto);
+      });
     }, { timeout: 30000 });
 
     // Notifications after commit — built from captured assignments, no extra DB query

@@ -1,5 +1,5 @@
 import { PrismaClient, ScopeType, Prisma } from '@prisma/client';
-import crypto from 'crypto';
+import { AuditService } from './audit.service';
 
 /**
  * The administrative role every new organization must have exactly one of.
@@ -107,59 +107,43 @@ export class OrgInitService {
       }
     });
 
-    // 7. Immutable audit entries (SHA-256 hash chained)
-    const generateHash = (eventData: unknown, previousHash: string | null): string => {
-      return crypto.createHash('sha256').update(JSON.stringify(eventData) + (previousHash || '')).digest('hex');
-    };
+    // 7. Immutable audit entries (SHA-256 hash chained via AuditService)
+    const auditSvc = new AuditService(tx as any);
 
-    const createAuditLog = async (
-      eventType: string,
-      entityType: string,
-      entityId: string,
-      operation: string,
-      payload: Prisma.InputJsonValue,
-      previousHash: string | null
-    ) => {
-      const currentHash = generateHash({ eventType, entityType, entityId, operation, payload }, previousHash);
-      return await tx.auditLog.create({
-        data: {
-          tenantId,
-          eventType,
-          entityType,
-          entityId,
-          actorUserId: userId,
-          actorIp: '0.0.0.0',
-          actorUserAgent: 'hpx-eigen-api',
-          operation,
-          payload,
-          previousHash,
-          currentHash,
-        }
-      });
-    };
+    await auditSvc.appendInTx(tx, {
+      tenantId, eventType: 'department_created', entityType: 'Department',
+      entityId: department.id, actorUserId: userId,
+      actorIp: '0.0.0.0', actorUserAgent: 'hpx-eigen-api',
+      operation: 'CREATE', payload: { name: departmentName },
+    });
 
-    let previousHash: string | null = opts.previousAuditHash ?? null;
+    await auditSvc.appendInTx(tx, {
+      tenantId, eventType: 'team_created', entityType: 'Team',
+      entityId: team.id, actorUserId: userId,
+      actorIp: '0.0.0.0', actorUserAgent: 'hpx-eigen-api',
+      operation: 'CREATE', payload: { name: teamName, departmentId: department.id },
+    });
 
-    const audit1 = await createAuditLog(
-      "department_created", "Department", department.id, "CREATE", { name: departmentName }, previousHash
-    );
-    previousHash = audit1.currentHash;
+    await auditSvc.appendInTx(tx, {
+      tenantId, eventType: 'role_created', entityType: 'Role',
+      entityId: role.id, actorUserId: userId,
+      actorIp: '0.0.0.0', actorUserAgent: 'hpx-eigen-api',
+      operation: 'CREATE', payload: { name: DEFAULT_ADMIN_ROLE_NAME, level: 'ORGANIZATION' },
+    });
 
-    const audit2 = await createAuditLog(
-      "team_created", "Team", team.id, "CREATE", { name: teamName, departmentId: department.id }, previousHash
-    );
+    await auditSvc.appendInTx(tx, {
+      tenantId, eventType: 'role_assigned', entityType: 'UserRole',
+      entityId: `${userId}_${role.id}`, actorUserId: userId,
+      actorIp: '0.0.0.0', actorUserAgent: 'hpx-eigen-api',
+      operation: 'CREATE', payload: { userId, roleId: role.id, scopeType: 'ORGANIZATION' },
+    });
 
-    const audit3 = await createAuditLog(
-      "role_created", "Role", role.id, "CREATE", { name: DEFAULT_ADMIN_ROLE_NAME, level: "ORGANIZATION" }, audit2.currentHash
-    );
-
-    const audit4 = await createAuditLog(
-      "role_assigned", "UserRole", `${userId}_${role.id}`, "CREATE", { userId, roleId: role.id, scopeType: "ORGANIZATION" }, audit3.currentHash
-    );
-
-    const audit5 = await createAuditLog(
-      "permissions_initialized", "Permission", role.id, "CREATE", { roleId: role.id, permissionCount: allPermissions.length }, audit4.currentHash
-    );
+    const audit5 = await auditSvc.appendInTx(tx, {
+      tenantId, eventType: 'permissions_initialized', entityType: 'Permission',
+      entityId: role.id, actorUserId: userId,
+      actorIp: '0.0.0.0', actorUserAgent: 'hpx-eigen-api',
+      operation: 'CREATE', payload: { roleId: role.id, permissionCount: allPermissions.length },
+    });
 
     return {
       departmentId: department.id,

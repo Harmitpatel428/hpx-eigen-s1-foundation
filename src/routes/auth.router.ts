@@ -87,37 +87,20 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         });
 
         // Audit entry chained onto the global hash chain
-        const lastAudit = await tx.auditLog.findFirst({
-          orderBy: { createdAt: 'desc' },
-          select: { currentHash: true },
-        });
-        const previousHash = lastAudit?.currentHash ?? null;
-        const currentHash = crypto
-          .createHash('sha256')
-          .update(JSON.stringify({
-            eventType: 'USER_REGISTERED', entityType: 'User', entityId: user.id,
-            operation: 'CREATE', payload: { email, emailVerified: false },
-          }) + (previousHash || ''))
-          .digest('hex');
-
-        await tx.auditLog.create({
-          data: {
-            tenantId: tenant.id,
-            eventType: 'USER_REGISTERED',
-            entityType: 'User',
-            entityId: user.id,
-            actorUserId: user.id,
-            operation: 'CREATE',
-            payload: { email, emailVerified: false },
-            previousHash,
-            currentHash,
-          }
+        const auditRecord = await auditService.appendInTx(tx, {
+          tenantId: tenant.id,
+          eventType: 'USER_REGISTERED',
+          entityType: 'User',
+          entityId: user.id,
+          actorUserId: user.id,
+          operation: 'CREATE',
+          payload: { email, emailVerified: false },
         });
 
         // Admin role + department/team + role assignment for THIS user,
         // inside the same transaction. Throws on failure → full rollback.
         await orgInitService.initializeOrgRBACWithinTx(tx, tenant.id, user.id, {
-          previousAuditHash: currentHash,
+          previousAuditHash: auditRecord.currentHash,
         });
 
         // Org fully provisioned — leave PROVISIONING.
@@ -230,17 +213,14 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       );
       
       // Audit
-      await prisma.auditLog.create({
-        data: {
-          tenantId: user.tenantId,
-          eventType: 'USER_LOGIN',
-          entityType: 'Session',
-          entityId: session.id,
-          actorUserId: user.id,
-          operation: 'CREATE',
-          payload: { sessionId: session.id },
-          currentHash: crypto.randomBytes(32).toString('hex')
-        }
+      await auditService.log({
+        tenantId: user.tenantId,
+        eventType: 'USER_LOGIN',
+        entityType: 'Session',
+        entityId: session.id,
+        actorUserId: user.id,
+        operation: 'CREATE',
+        payload: { sessionId: session.id },
       });
       
       console.log('[LOGIN] Success');
@@ -345,17 +325,14 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         });
         
         // Audit
-        await tx.auditLog.create({
-          data: {
-            tenantId: user.tenantId,
-            eventType: 'EMAIL_VERIFIED',
-            entityType: 'User',
-            entityId: user.id,
-            actorUserId: user.id,
-            operation: 'UPDATE',
-            payload: { email: user.email },
-            currentHash: crypto.randomBytes(32).toString('hex')
-          }
+        await auditService.appendInTx(tx, {
+          tenantId: user.tenantId,
+          eventType: 'EMAIL_VERIFIED',
+          entityType: 'User',
+          entityId: user.id,
+          actorUserId: user.id,
+          operation: 'UPDATE',
+          payload: { email: user.email },
         });
         
         return user;
@@ -809,17 +786,14 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         { expiresIn: '7d' }
       );
 
-      await prisma.auditLog.create({
-        data: {
-          tenantId,
-          eventType: 'INVITATION_SESSION_CREATED',
-          entityType: 'Session',
-          entityId: session.id,
-          actorUserId: userId,
-          operation: 'CREATE',
-          payload: { invitationId, sessionId: session.id },
-          currentHash: crypto.randomBytes(32).toString('hex')
-        }
+      await auditService.log({
+        tenantId,
+        eventType: 'INVITATION_SESSION_CREATED',
+        entityType: 'Session',
+        entityId: session.id,
+        actorUserId: userId,
+        operation: 'CREATE',
+        payload: { invitationId, sessionId: session.id },
       });
 
       return res.status(200).json({
