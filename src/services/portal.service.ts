@@ -289,18 +289,30 @@ export class PortalService {
     ]);
     const visibleCount = visibleNotes + visibleDocs;
 
-    // Activation needs a phone to verify against; without one the portal is unusable.
-    const canActivate = visibleCount > 0 && !!docCase.portalPhoneLast4;
+    // Activation requires: visible content + phone + ACTIVE status.
+    const canActivate = visibleCount > 0 && !!docCase.portalPhoneLast4 && docCase.status === DocCaseStatus.ACTIVE;
 
-    const updated = await tx.docCase.update({
-      where: { id: caseId },
-      data: {
-        portalEnabledAt: canActivate ? (docCase.portalEnabledAt ?? new Date()) : null,
-        lastClientVisiblePublishAt: published ? new Date() : docCase.lastClientVisiblePublishAt,
-      },
-    });
+    if (canActivate && !docCase.portalEnabledAt) {
+      await this.enablePortalInTx(tx, {
+        caseId,
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.userId,
+        activationType: 'AUTO',
+      });
+    } else if (!canActivate && docCase.portalEnabledAt) {
+      await this.disablePortalInTx(tx, {
+        caseId,
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.userId,
+      });
+    }
 
     if (published) {
+      await tx.docCase.update({
+        where: { id: caseId },
+        data: { lastClientVisiblePublishAt: new Date() },
+      });
+
       await tx.docCaseEvent.create({
         data: {
           tenantId: ctx.tenantId, caseId,
@@ -311,16 +323,109 @@ export class PortalService {
       });
     }
 
-    // Deactivation revokes live sessions — a client mid-session must not keep
-    // reading a case that was just unpublished.
-    if (!canActivate && docCase.portalEnabledAt) {
-      await tx.portalSession.updateMany({
-        where: { caseId, revokedAt: null },
-        data: { revokedAt: new Date() },
+    return tx.docCase.findFirstOrThrow({ where: { id: caseId } });
+  }
+
+  /**
+   * Race-safe, idempotent portal enable. A single conditional updateMany
+   * checks every invariant (not deleted, not already enabled, ACTIVE status,
+   * phone set) and flips portalEnabledAt atomically — no read-then-write
+   * TOCTOU window. Audits only the transition, never a no-op.
+   */
+  private async enablePortalInTx(
+    tx: Prisma.TransactionClient,
+    opts: {
+      caseId: string;
+      tenantId: string;
+      actorUserId: string;
+      activationType: 'MANUAL' | 'AUTO';
+    },
+  ): Promise<{ alreadyEnabled: boolean; portalEnabledAt: Date }> {
+    const now = new Date();
+
+    const { count } = await tx.docCase.updateMany({
+      where: {
+        id: opts.caseId,
+        tenantId: opts.tenantId,
+        deletedAt: null,
+        portalEnabledAt: null,
+        status: DocCaseStatus.ACTIVE,
+        portalPhoneLast4: { not: null },
+      },
+      data: { portalEnabledAt: now },
+    });
+
+    if (count === 1) {
+      const eventType = opts.activationType === 'MANUAL' ? 'PORTAL_ACTIVATED' : 'PORTAL_AUTO_ACTIVATED';
+      await this.audit.appendInTx(tx, {
+        tenantId: opts.tenantId,
+        eventType,
+        entityType: 'DocCase',
+        entityId: opts.caseId,
+        actorUserId: opts.actorUserId,
+        operation: 'UPDATE',
+        payload: { caseId: opts.caseId, activationType: opts.activationType },
       });
+      return { alreadyEnabled: false, portalEnabledAt: now };
     }
 
-    return updated;
+    // Already enabled or conditions not met — check which.
+    const existing = await tx.docCase.findFirst({
+      where: { id: opts.caseId, tenantId: opts.tenantId, deletedAt: null },
+      select: { portalEnabledAt: true },
+    });
+
+    if (existing?.portalEnabledAt) {
+      return { alreadyEnabled: true, portalEnabledAt: existing.portalEnabledAt };
+    }
+
+    // Conditions not met (wrong status, no phone, etc.) — return as already
+    // enabled to avoid throwing on the auto-activation path. The manual path
+    // (activatePortal) re-checks the specific condition itself.
+    return { alreadyEnabled: true, portalEnabledAt: now };
+  }
+
+  /**
+   * Race-safe, idempotent portal disable. Clears portalEnabledAt only if it
+   * was set, then revokes every live session — a client mid-session must not
+   * keep reading a case that was just unpublished/disabled.
+   */
+  private async disablePortalInTx(
+    tx: Prisma.TransactionClient,
+    opts: {
+      caseId: string;
+      tenantId: string;
+      actorUserId: string;
+    },
+  ): Promise<{ alreadyDisabled: boolean }> {
+    const { count } = await tx.docCase.updateMany({
+      where: {
+        id: opts.caseId,
+        tenantId: opts.tenantId,
+        deletedAt: null,
+        portalEnabledAt: { not: null },
+      },
+      data: { portalEnabledAt: null },
+    });
+
+    if (count === 0) return { alreadyDisabled: true };
+
+    await tx.portalSession.updateMany({
+      where: { caseId: opts.caseId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+
+    await this.audit.appendInTx(tx, {
+      tenantId: opts.tenantId,
+      eventType: 'PORTAL_DEACTIVATED',
+      entityType: 'DocCase',
+      entityId: opts.caseId,
+      actorUserId: opts.actorUserId,
+      operation: 'UPDATE',
+      payload: { caseId: opts.caseId },
+    });
+
+    return { alreadyDisabled: false };
   }
 
   // ─── Portal contact change (manager-gated) ─────────────────────────────────
@@ -453,44 +558,24 @@ export class PortalService {
   }
 
   /**
-   * Race-safe portal activation: a single conditional updateMany checks every
-   * invariant (not deleted, not already enabled, ACTIVE status, phone set) and
-   * flips portalEnabledAt atomically. No read-then-write TOCTOU window.
+   * Manual (staff-initiated) portal activation. Delegates the race-safe,
+   * idempotent update + audit to enablePortalInTx, then diagnoses which
+   * invariant blocked activation when it didn't happen.
    */
   async activatePortal(ctx: TenantContext, caseId: string) {
     return this.prisma.$transaction(async (tx) => {
-      const now = new Date();
-
-      // Race-safe: conditional update succeeds only if ALL activation invariants hold.
-      // If another request already set portalEnabledAt, count will be 0 (idempotent).
-      const { count } = await tx.docCase.updateMany({
-        where: {
-          id: caseId,
-          tenantId: ctx.tenantId,
-          deletedAt: null,
-          portalEnabledAt: null,
-          status: DocCaseStatus.ACTIVE,
-          portalPhoneLast4: { not: null },
-        },
-        data: { portalEnabledAt: now },
+      const result = await this.enablePortalInTx(tx, {
+        caseId,
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.userId,
+        activationType: 'MANUAL',
       });
 
-      if (count === 1) {
-        // Activation succeeded — audit it
-        await this.audit.appendInTx(tx, {
-          tenantId: ctx.tenantId,
-          eventType: 'PORTAL_ACTIVATED',
-          entityType: 'DocCase',
-          entityId: caseId,
-          actorUserId: ctx.userId,
-          operation: 'UPDATE',
-          payload: { caseId, activationType: 'MANUAL' },
-        });
-
-        return { caseId, portalEnabledAt: now.toISOString(), alreadyEnabled: false };
+      if (!result.alreadyEnabled) {
+        return { caseId, portalEnabledAt: result.portalEnabledAt.toISOString(), alreadyEnabled: false };
       }
 
-      // count === 0 — determine why
+      // Either truly already enabled, or conditions weren't met — figure out which.
       const docCase = await tx.docCase.findFirst({
         where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null },
         select: { id: true, status: true, portalEnabledAt: true, portalPhoneLast4: true },
