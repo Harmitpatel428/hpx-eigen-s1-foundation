@@ -5,7 +5,7 @@ import { ActivityService } from '../../src/services/activity.service';
 import { ActivityType } from '@prisma/client';
 
 function makePrismaMock() {
-  return {
+  const mock: any = {
     activity: {
       create: jest.fn(),
       findFirst: jest.fn(),
@@ -14,9 +14,15 @@ function makePrismaMock() {
     },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({})
-    }
+      count: jest.fn().mockResolvedValue(0),
+      create: jest.fn().mockResolvedValue({ id: 'audit-1', currentHash: 'a'.repeat(64) })
+    },
+    $executeRaw: jest.fn().mockResolvedValue(undefined),
+    $queryRaw: jest.fn().mockResolvedValue([]),
+    $transaction: jest.fn()
   };
+  mock.$transaction.mockImplementation((fn: any) => fn(mock));
+  return mock;
 }
 
 const CTX = { tenantId: 'tenant-1', userId: 'user-1' };

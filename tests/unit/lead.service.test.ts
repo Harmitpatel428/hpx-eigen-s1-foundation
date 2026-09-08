@@ -22,7 +22,8 @@ function makePrismaMock() {
     pipeline: { create: jest.fn() },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({}),
+      count: jest.fn().mockResolvedValue(0),
+      create: jest.fn().mockResolvedValue({ id: 'audit-1', currentHash: 'a'.repeat(64) }),
     },
     notification: {
       create: jest.fn().mockResolvedValue({}),
@@ -32,6 +33,8 @@ function makePrismaMock() {
       create: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    $executeRaw: jest.fn().mockResolvedValue(undefined),
+    $queryRaw: jest.fn().mockResolvedValue([]),
     // Default $transaction implementation calls the callback with a copy of the mock itself
     $transaction: jest.fn(),
   };
@@ -355,7 +358,10 @@ describe('LeadService', () => {
           contact: { create: jest.fn().mockResolvedValue(contact) },
           opportunity: { create: jest.fn().mockResolvedValue(opportunity) },
           pipeline: { create: jest.fn().mockResolvedValue({}) },
-          lead: { update: jest.fn().mockResolvedValue({ ...lead, status: LeadStatus.CONVERTED }) }
+          lead: { update: jest.fn().mockResolvedValue({ ...lead, status: LeadStatus.CONVERTED }) },
+          auditLog: prisma.auditLog,
+          $executeRaw: prisma.$executeRaw,
+          $queryRaw: prisma.$queryRaw
         };
         return fn(tx);
       });

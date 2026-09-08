@@ -19,6 +19,7 @@ import { LeadStatus, UserStatus, NotificationType } from '@prisma/client';
 function makeTxMock(overrides: Record<string, any> = {}) {
   return {
     $executeRaw: jest.fn().mockResolvedValue(undefined),
+    $queryRaw: jest.fn().mockResolvedValue([]),
     lead: {
       findMany: jest.fn().mockResolvedValue([]),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -30,7 +31,8 @@ function makeTxMock(overrides: Record<string, any> = {}) {
     },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({}),
+      count: jest.fn().mockResolvedValue(0),
+      create: jest.fn().mockResolvedValue({ id: 'audit-1', currentHash: 'a'.repeat(64) }),
     },
     ...overrides,
   };
@@ -49,7 +51,8 @@ function makePrisma(txOverrides: Record<string, any> = {}) {
     },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({}),
+      count: jest.fn().mockResolvedValue(0),
+      create: jest.fn().mockResolvedValue({ id: 'audit-1', currentHash: 'a'.repeat(64) }),
     },
     notification: {
       create: jest.fn().mockResolvedValue({}),
@@ -228,7 +231,7 @@ describe('bulkAssign — AUTO', () => {
     await svc.bulkAssign(CTX, { leadIds: ['lead-1'], mode: 'AUTO', departmentId: 'dept-sales' });
 
     // Advisory lock must be the FIRST thing inside the transaction
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
     const rawCall = tx.$executeRaw.mock.calls[0][0];
     // Verify it's a tagged template containing pg_advisory_xact_lock
     expect(Array.isArray(rawCall) || typeof rawCall === 'string' || rawCall?.strings)
@@ -492,8 +495,8 @@ describe('advisory lock — concurrency hardening', () => {
       svc2.bulkAssign(ctx2, { leadIds: ['L1'], mode: 'AUTO', departmentId: 'dept-sales' }),
     ]).then(() => {
       // Both acquired their own advisory lock (different prisma instances → different transactions)
-      expect(tx1.$executeRaw).toHaveBeenCalledTimes(1);
-      expect(tx2.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(tx1.$executeRaw).toHaveBeenCalledTimes(2);
+      expect(tx2.$executeRaw).toHaveBeenCalledTimes(2);
     });
   });
 

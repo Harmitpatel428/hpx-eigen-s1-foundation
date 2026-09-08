@@ -21,8 +21,11 @@ function makePrismaMock() {
     },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({})
+      count: jest.fn().mockResolvedValue(0),
+      create: jest.fn().mockResolvedValue({ id: 'audit-1', currentHash: 'a'.repeat(64) })
     },
+    $executeRaw: jest.fn().mockResolvedValue(undefined),
+    $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn()
   };
 }
@@ -66,7 +69,10 @@ describe('OpportunityService', () => {
       prisma.$transaction.mockImplementation(async (fn: any) => {
         const tx = {
           opportunity: { create: jest.fn().mockResolvedValue(SAMPLE_OPP) },
-          pipeline: { create: jest.fn().mockResolvedValue({}) }
+          pipeline: { create: jest.fn().mockResolvedValue({}) },
+          auditLog: prisma.auditLog,
+          $executeRaw: prisma.$executeRaw,
+          $queryRaw: prisma.$queryRaw
         };
         return fn(tx);
       });
@@ -150,7 +156,10 @@ describe('OpportunityService', () => {
             updateMany: jest.fn().mockResolvedValue({ count: 1 }),
             create: jest.fn().mockResolvedValue({})
           },
-          opportunity: { update: jest.fn().mockResolvedValue(advanced) }
+          opportunity: { update: jest.fn().mockResolvedValue(advanced) },
+          auditLog: prisma.auditLog,
+          $executeRaw: prisma.$executeRaw,
+          $queryRaw: prisma.$queryRaw
         };
         return fn(tx);
       });
@@ -204,7 +213,10 @@ describe('OpportunityService', () => {
               stage: OpportunityStage.CLOSED_WON,
               closedAt: new Date()
             })
-          }
+          },
+          auditLog: prisma.auditLog,
+          $executeRaw: prisma.$executeRaw,
+          $queryRaw: prisma.$queryRaw
         });
       });
 
