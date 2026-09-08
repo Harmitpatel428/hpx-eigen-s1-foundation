@@ -73,7 +73,8 @@ export class AuditService {
       // Context unbound (e.g., background jobs, signup)
     }
 
-    const timestamp = new Date().toISOString();
+    const now = new Date();
+    const timestamp = now.toISOString();
     const hashVersion = 1;
 
     const hashInput = String(hashVersion) +
@@ -105,6 +106,7 @@ export class AuditService {
         previousHash,
         currentHash,
         hashVersion,
+        createdAt: now,
       },
       select: { id: true, currentHash: true },
     });
