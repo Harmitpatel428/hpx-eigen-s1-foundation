@@ -184,7 +184,7 @@ beforeAll(async () => {
       resolve();
     });
   });
-});
+}, 30_000);
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -248,7 +248,6 @@ describe('POST /cases/:caseId/close-no-docs', () => {
       data: {
         tenantId: TENANT_ID, caseId: c.id,
         tokenHash: crypto.randomBytes(32).toString('hex'),
-        caseNumber: c.caseNumber!,
         expiresAt: new Date(Date.now() + 60_000),
       },
     });

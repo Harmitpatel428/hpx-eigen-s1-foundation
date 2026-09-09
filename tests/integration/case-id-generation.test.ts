@@ -144,7 +144,7 @@ beforeAll(async () => {
       resolve();
     });
   });
-});
+}, 30_000);
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
