@@ -961,6 +961,8 @@ enum DocCaseStatus {
   TRANSFERRED_TO_PROCESS
   CLOSED
   CANCELLED
+  // CLOSED_NO_DOCS — closed by staff because the client failed to provide documentation.
+  CLOSED_NO_DOCS
 }
 
 // Handoff lifecycle, tracked separately from case status so that a returned case
@@ -1149,6 +1151,10 @@ model DocCase {
   transferredAt     DateTime?
   transferredBy     String?       @db.Uuid
   closedAt          DateTime?
+  closedReason      String?
+  closedByUserId    String?   @db.Uuid
+  reopenedAt        DateTime?
+  reopenedByUserId  String?   @db.Uuid
   notes             String?
   createdBy         String        @db.Uuid
   createdAt         DateTime      @default(now())
