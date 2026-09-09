@@ -390,7 +390,7 @@ export class PortalService {
    * was set, then revokes every live session — a client mid-session must not
    * keep reading a case that was just unpublished/disabled.
    */
-  private async disablePortalInTx(
+  async disablePortalInTx(
     tx: Prisma.TransactionClient,
     opts: {
       caseId: string;
