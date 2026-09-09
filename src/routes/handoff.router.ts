@@ -3,9 +3,15 @@ import { PrismaClient, HandoffReturnReason } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { HandoffService } from '../services/handoff.service';
 import { PortalService } from '../services/portal.service';
+import { CaseIdService } from '../services/case-id.service';
+import { CaseLifecycleService, CaseClosedReason } from '../services/case-lifecycle.service';
 import { ValidationError } from '../types/exceptions';
 
 const RETURN_REASONS = Object.values(HandoffReturnReason);
+
+const CLOSE_REASONS: CaseClosedReason[] = [
+  'CLIENT_FAILED_DOCS', 'CLIENT_UNRESPONSIVE', 'DUPLICATE_CASE', 'FIRM_DECISION',
+];
 
 function parseReason(value: unknown): HandoffReturnReason {
   if (typeof value !== 'string' || !RETURN_REASONS.includes(value as HandoffReturnReason))
@@ -13,11 +19,21 @@ function parseReason(value: unknown): HandoffReturnReason {
   return value as HandoffReturnReason;
 }
 
+function parseCloseReason(value: unknown): CaseClosedReason {
+  if (typeof value !== 'string' || !CLOSE_REASONS.includes(value as CaseClosedReason))
+    throw new ValidationError(`reason must be one of: ${CLOSE_REASONS.join(', ')}`);
+  return value as CaseClosedReason;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Mounted at /api/v1/cases — case-scoped handoff and portal-admin actions. */
 export function createCasesRouter(prisma: PrismaClient): Router {
   const router = Router();
   const handoff = new HandoffService(prisma);
   const portal = new PortalService(prisma);
+  const caseId = new CaseIdService(prisma);
+  const lifecycle = new CaseLifecycleService(prisma);
 
   /** GET /api/v1/cases/incoming — Documentation handoff inbox */
   router.get('/incoming', authMiddleware, permissionMiddleware('handoff:accept'),
@@ -131,6 +147,40 @@ export function createCasesRouter(prisma: PrismaClient): Router {
           throw new ValidationError('Invalid caseId format.');
         }
         res.json({ success: true, data: await portal.activatePortal({ tenantId, userId }, caseId) });
+      } catch (err) { next(err); }
+    });
+
+  /** POST /api/v1/cases/:caseId/generate-case-id — manually mint a Case ID */
+  router.post('/:caseId/generate-case-id', authMiddleware, permissionMiddleware('cases:generate-id'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const { caseId: cId } = req.params;
+        if (!UUID_RE.test(cId)) throw new ValidationError('Invalid caseId format.');
+        res.json({ success: true, data: await caseId.generateCaseIdManual({ tenantId, userId }, cId) });
+      } catch (err) { next(err); }
+    });
+
+  /** POST /api/v1/cases/:caseId/close-no-docs — close without documentation */
+  router.post('/:caseId/close-no-docs', authMiddleware, permissionMiddleware('cases:close'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const { caseId: cId } = req.params;
+        if (!UUID_RE.test(cId)) throw new ValidationError('Invalid caseId format.');
+        const reason = parseCloseReason((req.body as { reason?: unknown }).reason);
+        res.json({ success: true, data: await lifecycle.closeWithoutDocs({ tenantId, userId }, cId, reason) });
+      } catch (err) { next(err); }
+    });
+
+  /** POST /api/v1/cases/:caseId/reopen — reopen a CLOSED_NO_DOCS case */
+  router.post('/:caseId/reopen', authMiddleware, permissionMiddleware('cases:reopen'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const { caseId: cId } = req.params;
+        if (!UUID_RE.test(cId)) throw new ValidationError('Invalid caseId format.');
+        res.json({ success: true, data: await lifecycle.reopenCase({ tenantId, userId }, cId) });
       } catch (err) { next(err); }
     });
 
