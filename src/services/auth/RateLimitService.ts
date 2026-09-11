@@ -1,4 +1,4 @@
-﻿import { redisIncr, redisExpire } from '../../redis';
+import { redisIncr, redisExpire } from '../../redis';
 import { RateLimitExceededError, TemporaryServiceError } from '../../types/exceptions';
 
 // 10/hr per actor, 50/hr per tenant, 20/hr per IP â€” all three must pass
@@ -99,3 +99,12 @@ export async function checkBulkOperationLimit(actorUserId: string, tenantId: str
   }
 }
 
+// 5/hr per token hash — fail-CLOSED: brute-force protection on public upload endpoints.
+// Called by both upload-url and confirm-upload.
+export async function checkMandateUploadAttempts(tokenHash: string): Promise<void> {
+  const key = `mandate:upload:${tokenHash}:${Math.floor(Date.now() / 3600000)}`;
+  const count = await redisIncr(key);
+  if (count === null) throw new TemporaryServiceError();
+  if (count === 1) await redisExpire(key, 3600);
+  if (count > 5) throw new RateLimitExceededError();
+}

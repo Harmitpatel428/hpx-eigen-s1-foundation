@@ -53,6 +53,7 @@ import { createLeadActivitiesRouter } from './routes/lead-activities.router';
 import { createGlobalLeadActivitiesRouter } from './routes/global-lead-activities.router';
 import { createLeadWaChannelsRouter } from './routes/lead-wa-channels.router';
 import { createWhatsAppRouter } from './routes/whatsapp.router';
+import { createMandateRouter } from './routes/mandate.router';
 
 import * as Sentry from '@sentry/node';
 
@@ -169,6 +170,9 @@ app.use('/api/v1/leads/:leadId/activities', createLeadActivitiesRouter(prisma));
 app.use('/api/v1/lead-activities', createGlobalLeadActivitiesRouter(prisma));
 app.use('/api/v1/leads/:leadId/wa-channels', createLeadWaChannelsRouter(prisma));
 app.use('/api/v1/whatsapp', createWhatsAppRouter(prisma));
+// --- Mandate Lifecycle -----------------------------------------------------------------------
+// Public endpoints (upload-url, confirm-upload) deliberately have NO authMiddleware.
+app.use('/api/v1', createMandateRouter(prisma));
 
 // ─── Dashboard Router ─────────────────────────────────────────────────────────
 import { createDashboardRouter } from './routes/dashboard.router';

@@ -82,6 +82,15 @@ enum OrganizationStatus {
 
 // Removed assignment/domain event enums
 
+enum MandateRequestStatus {
+  PENDING_UPLOAD
+  UPLOADED
+  VERIFIED
+  REJECTED
+  EXPIRED
+  SUPERSEDED
+}
+
 enum NotificationType {
   ROLE_ASSIGNED
   ROLE_CHANGED
@@ -95,6 +104,7 @@ enum NotificationType {
   IMPORT_FAILED
   EXPORT_COMPLETED
   SYSTEM_ANNOUNCEMENT
+  MANDATE_UPLOAD_RECEIVED
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1050,6 +1060,14 @@ enum DocEventType {
   PORTAL_CONTACT_CHANGE_REQUESTED
   PORTAL_CONTACT_CHANGE_APPROVED
   PORTAL_SESSION_REVOKED
+  // --- Mandate lifecycle --------------------------------------------------
+  MANDATE_SENT
+  MANDATE_UPLOADED
+  MANDATE_VERIFIED
+  MANDATE_REJECTED
+  MANDATE_LINK_REGENERATED
+  MANDATE_SUPERSEDED
+  MANDATE_EXPIRED_BATCH
 }
 
 // ─── DocPreset — reusable document requirement template ───────────
@@ -1199,6 +1217,7 @@ model DocCase {
   portalSessions       PortalSession[]
   contactChangeRequests PortalContactChangeRequest[]
   portalAuthAttempts   PortalAuthAttempt[]
+  mandateRequests      MandateRequest[]
 
   @@unique([tenantId, leadId])
   @@index([tenantId])
@@ -1505,4 +1524,57 @@ model Message {
 
   @@index([conversationId])
   @@index([conversationId, createdAt])
+}
+
+// --- MandateRequest --- a request for a client to upload a signed mandate ---
+model MandateRequest {
+  id               String               @id @default(uuid()) @db.Uuid
+  tenantId         String               @db.Uuid
+  caseId           String               @db.Uuid
+  mandateType      String
+  description      String?
+  status           MandateRequestStatus @default(PENDING_UPLOAD)
+  uploadTokenHash  String               @unique @db.Char(64)
+  tokenExpiresAt   DateTime
+  maxFileSizeBytes Int                  @default(5242880)
+  allowedTypes     String[]             @default(["application/pdf", "image/jpeg", "image/png"])
+  sentToEmail      String?
+  sentToPhone      String?
+  sentByUserId     String               @db.Uuid
+  verifiedAt       DateTime?
+  verifiedBy       String?              @db.Uuid
+  rejectedAt       DateTime?
+  rejectedBy       String?              @db.Uuid
+  rejectionReason  String?
+  supersededBy     String?              @db.Uuid
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  case    DocCase          @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  uploads MandateUpload[]
+
+  @@index([tenantId])
+  @@index([caseId])
+  @@index([uploadTokenHash])
+  @@index([tokenExpiresAt])
+  @@index([tenantId, status])
+}
+
+// --- MandateUpload --- a file uploaded by a client in response to a mandate ---
+model MandateUpload {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @db.Uuid
+  mandateRequestId String   @db.Uuid
+  storageKey       String
+  fileName         String
+  contentType      String
+  fileSizeBytes    Int
+  uploadedAt       DateTime @default(now())
+  uploadIp         String?
+  uploadUserAgent  String?
+
+  mandateRequest MandateRequest @relation(fields: [mandateRequestId], references: [id], onDelete: Cascade)
+
+  @@index([mandateRequestId])
+  @@index([tenantId])
 }

@@ -6,6 +6,7 @@ import { logger } from './utils/logger';
 import { prisma } from './db';
 import { redisClose } from './redis';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
+import { expirePendingMandates } from './workers/mandate-expiry.worker';
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -40,6 +41,10 @@ async function purgeRecycleBin(): Promise<void> {
 void purgeRecycleBin();
 const purgeTimer = setInterval(() => void purgeRecycleBin(), 24 * 60 * 60 * 1000);
 purgeTimer.unref();
+
+// ─── Mandate expiry (hourly) ────────────────────────────────────────────────
+const mandateExpiryTimer = setInterval(() => void expirePendingMandates(prisma), 60 * 60 * 1000);
+mandateExpiryTimer.unref();
 
 interface ServerError extends NodeJS.ErrnoException {
   address?: string;

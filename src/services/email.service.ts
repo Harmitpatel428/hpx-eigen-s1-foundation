@@ -125,6 +125,79 @@ export class EmailService {
       `
     });
   }
+  async sendMandateUploadEmail(
+    email: string,
+    opts: { clientName?: string; mandateType: string; uploadUrl: string; expiresAt: Date; orgName?: string },
+  ): Promise<void> {
+    if (!canSend()) {
+      console.log(`\n[DEV MODE] Mandate upload URL: ${opts.uploadUrl}\n`);
+      return;
+    }
+
+    const expiryStr = opts.expiresAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    const greeting = opts.clientName ? `Dear ${opts.clientName},` : 'Hello,';
+    const org = opts.orgName || 'HPX Eigen';
+
+    await resend.emails.send({
+      from: 'HPX Eigen <noreply@hpxeigen.com>',
+      to: email,
+      subject: `Action required: Upload your ${opts.mandateType}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #0f172a; line-height: 1.6;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 32px;">
+            <h2 style="margin: 0 0 24px 0; font-size: 28px; font-weight: 700;">Document Upload Required</h2>
+            <p style="margin: 0 0 16px 0; color: #334155; font-size: 16px;">${greeting}</p>
+            <p style="margin: 0 0 16px 0; color: #334155; font-size: 16px;">
+              ${org} requires you to upload a signed <strong>${opts.mandateType}</strong>.
+            </p>
+            <p style="margin: 0 0 8px 0; color: #334155; font-size: 14px;">Accepted formats: PDF, JPEG, PNG. Maximum size: <strong>5 MB</strong>.</p>
+            <a href="${opts.uploadUrl}" style="display: inline-block; background: #0f172a; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; margin: 24px 0;">Upload Document</a>
+            <p style="margin: 24px 0 0 0; color: #64748b; font-size: 14px;">This link expires on ${expiryStr}.</p>
+            <hr style="margin: 32px 0; border: none; border-top: 1px solid #e2e8f0;" />
+            <p style="margin: 0; color: #94a3b8; font-size: 12px;">HPX Eigen CRM</p>
+          </div>
+        </div>
+      `
+    });
+  }
+
+  async sendMandateRejectedEmail(
+    email: string,
+    opts: { clientName?: string; mandateType: string; reason: string; uploadUrl: string; expiresAt: Date },
+  ): Promise<void> {
+    if (!canSend()) {
+      console.log(`\n[DEV MODE] Mandate rejected — new upload URL: ${opts.uploadUrl}\n`);
+      return;
+    }
+
+    const expiryStr = opts.expiresAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    const greeting = opts.clientName ? `Dear ${opts.clientName},` : 'Hello,';
+
+    await resend.emails.send({
+      from: 'HPX Eigen <noreply@hpxeigen.com>',
+      to: email,
+      subject: `Re-upload required: ${opts.mandateType}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #0f172a; line-height: 1.6;">
+          <div style="max-width: 600px; margin: 0 auto; padding: 32px;">
+            <h2 style="margin: 0 0 24px 0; font-size: 28px; font-weight: 700;">Re-upload Required</h2>
+            <p style="margin: 0 0 16px 0; color: #334155; font-size: 16px;">${greeting}</p>
+            <p style="margin: 0 0 16px 0; color: #334155; font-size: 16px;">
+              Your uploaded <strong>${opts.mandateType}</strong> could not be accepted.
+            </p>
+            <div style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px; margin: 0 0 24px 0; border-radius: 0 4px 4px 0;">
+              <p style="margin: 0; color: #991b1b; font-size: 14px;"><strong>Reason:</strong> ${opts.reason}</p>
+            </div>
+            <p style="margin: 0 0 8px 0; color: #334155; font-size: 14px;">Please upload a corrected document. Accepted formats: PDF, JPEG, PNG. Maximum size: <strong>5 MB</strong>.</p>
+            <a href="${opts.uploadUrl}" style="display: inline-block; background: #0f172a; color: white; padding: 12px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; margin: 24px 0;">Upload New Document</a>
+            <p style="margin: 24px 0 0 0; color: #64748b; font-size: 14px;">This link expires on ${expiryStr}.</p>
+            <hr style="margin: 32px 0; border: none; border-top: 1px solid #e2e8f0;" />
+            <p style="margin: 0; color: #94a3b8; font-size: 12px;">HPX Eigen CRM</p>
+          </div>
+        </div>
+      `
+    });
+  }
 }
 
 export const emailService = new EmailService();
