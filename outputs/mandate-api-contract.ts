@@ -98,9 +98,8 @@ export interface ConfirmUploadResponse {
 // No request body
 
 export interface VerifyMandateResponse {
-  id: string;
+  mandateRequestId: string;
   status: 'VERIFIED';
-  verifiedAt: string;  // ISO 8601
 }
 
 // Status codes: 200 ok | 400 invalid id | 403 forbidden | 404 not found/wrong tenant | 422 not in UPLOADED status
@@ -113,10 +112,8 @@ export interface RejectMandateRequest {
 }
 
 export interface RejectMandateResponse {
-  id: string;
+  mandateRequestId: string;
   status: 'REJECTED';
-  rejectedAt: string;     // ISO 8601
-  rejectionReason: string;
 }
 
 // Status codes: 200 ok | 400 validation | 403 forbidden | 404 not found/wrong tenant | 422 not in UPLOADED status
@@ -175,9 +172,9 @@ export interface MandateRequestSummary {
   uploads: MandateUploadSummary[];
 }
 
-export interface ListForCaseResponse {
-  requests: MandateRequestSummary[];
-}
+// NOTE: `data` is a bare array of MandateRequestSummary (ordered newest-first),
+// NOT wrapped in an object.
+export type ListForCaseResponse = MandateRequestSummary[];
 
 // Status codes: 200 ok | 400 invalid caseId | 403 forbidden | 404 case not found/wrong tenant
 
