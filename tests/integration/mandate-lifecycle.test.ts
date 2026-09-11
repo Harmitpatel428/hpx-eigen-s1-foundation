@@ -6,7 +6,7 @@
  * Runs against real PostgreSQL with mocked R2 storage, email, and rate-limit services.
  */
 import 'dotenv/config';
-import { describe, it, beforeAll, afterAll, expect, jest } from '@jest/globals';
+import { describe, it, beforeAll, afterAll, expect } from '@jest/globals';
 import { PrismaClient, DocCaseStatus, MandateRequestStatus, ScopeType } from '@prisma/client';
 import * as crypto from 'crypto';
 import * as http from 'http';
@@ -178,7 +178,8 @@ async function sendAndUpload(caseId: string) {
   const { uploadId } = urlRes.body.data;
   const confirm = await confirmUpload(uploadToken, uploadId);
   expect(confirm.status).toBe(200);
-  return { mandateRequestId, uploadId, uploadToken };
+  const dbUpload = await prisma.mandateUpload.findFirst({ where: { mandateRequestId } });
+  return { mandateRequestId, uploadId, uploadToken, dbUploadId: dbUpload!.id };
 }
 
 // ─── Seed & Cleanup ────────────────────────────────────────────────────────
@@ -454,7 +455,7 @@ describe('POST /mandate/confirm-upload', () => {
     const urlRes = await requestUploadUrl(uploadToken);
     const { uploadId } = urlRes.body.data;
 
-    (storageService.headObject as jest.Mock).mockResolvedValueOnce({ exists: false });
+    (storageService.headObject as any).mockResolvedValueOnce({ exists: false });
 
     const r = await confirmUpload(uploadToken, uploadId);
     expect(r.status).toBe(409);
@@ -546,9 +547,9 @@ describe('POST /mandate/:id/regenerate-link', () => {
 describe('GET /mandate/uploads/:uploadId/view-url', () => {
   it('21. get view URL with mandate:view → 200', async () => {
     const c = await createCase();
-    const { uploadId } = await sendAndUpload(c.id);
+    const { dbUploadId } = await sendAndUpload(c.id);
 
-    const r = await getViewUrl(uploadId, adminToken);
+    const r = await getViewUrl(dbUploadId, adminToken);
     expect(r.status).toBe(200);
     expect(r.body.data.viewUrl).toBe('https://fake-presigned-get');
     expect(r.body.data.fileName).toBeTruthy();
@@ -556,9 +557,9 @@ describe('GET /mandate/uploads/:uploadId/view-url', () => {
 
   it('22. get view URL without permission → 403', async () => {
     const c = await createCase();
-    const { uploadId } = await sendAndUpload(c.id);
+    const { dbUploadId } = await sendAndUpload(c.id);
 
-    const r = await getViewUrl(uploadId, noPermsToken);
+    const r = await getViewUrl(dbUploadId, noPermsToken);
     expect(r.status).toBe(403);
   });
 });
