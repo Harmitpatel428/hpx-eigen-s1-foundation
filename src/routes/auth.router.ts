@@ -248,10 +248,8 @@ export function createAuthRouter(prisma: PrismaClient): Router {
     try {
       const { token } = req.body;
       
-      console.log('[VERIFY-EMAIL] Request: token length =', token?.length);
       
       if (!token || typeof token !== 'string') {
-        console.log('[VERIFY-EMAIL] Invalid token format');
         return res.status(400).json({
           success: false,
           code: 'INVALID_TOKEN',
@@ -263,7 +261,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       // Using tokenService for hashing if crypto is unavailable or to maintain standard.
       // But we will use the raw crypto as specified for explicit tracing.
       const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-      console.log('[VERIFY-EMAIL] Looking up token hash:', tokenHash.substring(0, 20));
       
       // Find verification token
       const verificationToken = await prisma.verificationToken.findFirst({
@@ -277,7 +274,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       });
       
       if (!verificationToken) {
-        console.log('[VERIFY-EMAIL] Token not found, expired, or used');
         return res.status(400).json({
           success: false,
           code: 'INVALID_TOKEN',
@@ -285,7 +281,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         });
       }
       
-      console.log('[VERIFY-EMAIL] Token found, verifying user:', verificationToken.userId);
       
       // Atomic transaction: update user + invalidate token
       const result = await prisma.$transaction(async (tx) => {
@@ -298,7 +293,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
           }
         });
         
-        console.log('[VERIFY-EMAIL] User verified, emailVerified:', user.emailVerified);
         
         // Mark token as used
         await tx.verificationToken.update({
@@ -338,7 +332,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         return user;
       });
       
-      console.log('[VERIFY-EMAIL] Verification complete');
 
       return res.status(200).json({
         success: true,
@@ -349,7 +342,6 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       });
       
     } catch (error) {
-      console.error('[VERIFY-EMAIL] Error:', error);
       next(error);
     }
   });
