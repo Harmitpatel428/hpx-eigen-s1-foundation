@@ -12,4 +12,7 @@ try { require('dotenv').config(); } catch (_) {}
 // With REDIS_URL unset the rate limiters fail-open and the permission cache falls back
 // to the DB — the intended, proven-green test behavior. Suites that specifically need
 // Redis can set process.env.REDIS_URL themselves.
-delete process.env.REDIS_URL;
+// Set to '' (not delete): a test file's own `import 'dotenv/config'` re-loads .env
+// and dotenv re-adds a DELETED key, turning Redis back on mid-run; a present-but-empty
+// key is left alone, so '' survives the re-import and keeps Redis off the whole run.
+process.env.REDIS_URL = '';
