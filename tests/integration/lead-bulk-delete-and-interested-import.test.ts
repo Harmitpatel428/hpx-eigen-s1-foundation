@@ -144,7 +144,11 @@ describe('POST /api/v1/leads/bulk-delete — HTTP integration', () => {
     const b = await makeAdminTenant(['lead:view', 'lead:create', 'lead:delete']);
 
     const mk = async (t: typeof a, first: string) => {
-      const res = await api('POST', '/api/v1/leads', { token: t.token, body: { firstName: first, lastName: 'Bulk' } });
+      // A new lead must be reachable (audit S-10): supply an email so creation succeeds.
+      const res = await api('POST', '/api/v1/leads', {
+        token: t.token,
+        body: { firstName: first, lastName: 'Bulk', email: `${first.toLowerCase()}-${uid().slice(0, 8)}@test.invalid` },
+      });
       expect(res.status).toBe(201);
       return res.body.data.id as string;
     };
@@ -197,7 +201,10 @@ describe('POST /api/v1/leads/bulk-delete — HTTP integration', () => {
 
   it('BD2 — authorization: without lead:delete → 403', async () => {
     const c = await makeAdminTenant(['lead:view', 'lead:create']); // no delete perm
-    const res = await api('POST', '/api/v1/leads', { token: c.token, body: { firstName: 'NoPerm', lastName: 'User' } });
+    const res = await api('POST', '/api/v1/leads', {
+      token: c.token,
+      body: { firstName: 'NoPerm', lastName: 'User', email: `noperm-${uid().slice(0, 8)}@test.invalid` },
+    });
     expect(res.status).toBe(201);
     const del = await api('POST', '/api/v1/leads/bulk-delete', { token: c.token, body: { ids: [res.body.data.id] } });
     expect(del.status).toBe(403);
