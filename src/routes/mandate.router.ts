@@ -11,6 +11,8 @@ import {
   RateLimitExceededError,
   TemporaryServiceError,
   ConfigurationError,
+  ScannerUnavailableError,
+  InfectedFileError,
 } from '../types/exceptions';
 
 function isUuid(s: string): boolean {
@@ -26,6 +28,10 @@ function mapError(err: unknown, res: Response, next: NextFunction) {
       code: 'STORAGE_NOT_CONFIGURED',
       message: 'Document storage is not configured. Uploads are temporarily unavailable.',
     });
+  } else if (err instanceof ScannerUnavailableError) {
+    res.status(503).json({ error: 'SCANNER_UNAVAILABLE', code: 'SCANNER_UNAVAILABLE', message: (err as Error).message });
+  } else if (err instanceof InfectedFileError) {
+    res.status(422).json({ error: 'FILE_REJECTED', code: 'FILE_REJECTED', message: (err as Error).message });
   } else if (err instanceof RateLimitExceededError) {
     res.status(429).json({ error: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests. Try again later.' });
   } else if (err instanceof TemporaryServiceError) {

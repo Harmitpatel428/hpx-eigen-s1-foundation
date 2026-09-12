@@ -93,6 +93,16 @@ class StorageService {
     }
   }
 
+  /** Download the whole object into a Buffer. Used to stream a staged upload to
+   *  the virus scanner before promotion. Files are size-capped (<=5MB) upstream. */
+  async getObjectBytes(key: string): Promise<Buffer> {
+    const { client, bucket } = this.config();
+    const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const body = res.Body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined;
+    if (!body?.transformToByteArray) throw new Error('R2 object body is not readable.');
+    return Buffer.from(await body.transformToByteArray());
+  }
+
   async deleteObject(key: string): Promise<void> {
     const { client, bucket } = this.config();
     await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));

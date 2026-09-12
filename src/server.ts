@@ -8,6 +8,7 @@ import { redisClose } from './redis';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
 import { expirePendingMandates } from './workers/mandate-expiry.worker';
 import { isStorageConfigured } from './services/storage.service';
+import { virusScanService } from './services/virus-scan.service';
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -25,6 +26,11 @@ server.on('listening', () => {
   );
   const storageState = isStorageConfigured() ? 'configured' : 'NOT configured (uploads disabled)';
   logger.info({ storage: storageState }, `[HPX Eigen S1] storage provider: ${storageState}`);
+  const scanState = virusScanService.isEnabled() ? 'enabled' : 'DISABLED';
+  logger.info({ virusScan: scanState }, `[HPX Eigen S1] virus scanning: ${scanState}`);
+  if (!virusScanService.isEnabled() && (process.env.NODE_ENV ?? 'development') === 'production') {
+    logger.error('[HPX Eigen S1] SECURITY: virus scanning is DISABLED in production — mandate uploads fail closed (503) until VIRUS_SCAN_ENABLED=true.');
+  }
 });
 
 // ─── Recycle bin 14-day purge ────────────────────────────────────────────────

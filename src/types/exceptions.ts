@@ -148,6 +148,20 @@ export class ConfigurationError extends AppException {
   }
 }
 
+export class ScannerUnavailableError extends AppException {
+  constructor() {
+    super('SCANNER_UNAVAILABLE', 'Security scanning is temporarily unavailable. Please try again shortly.', RetryTag.RETRYABLE, 503);
+  }
+}
+
+export class InfectedFileError extends AppException {
+  // Deliberately generic: never leak the signature name or that malware was detected
+  // beyond "could not be accepted".
+  constructor() {
+    super('FILE_REJECTED', 'The uploaded file could not be accepted. Please contact your advisor.', RetryTag.NON_RETRYABLE, 422);
+  }
+}
+
 export class AuditWriteFailureError extends AppException {
   constructor() {
     super('AUDIT_WRITE_FAILURE', 'Operation temporarily unavailable.', RetryTag.RETRYABLE, 503);

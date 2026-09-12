@@ -11,12 +11,15 @@ import { AuditService } from './audit.service';
 import { NotificationService } from './notification.service';
 import { emailService } from './email.service';
 import { storageService } from './storage.service';
+import { virusScanService } from './virus-scan.service';
 import { checkMandateUploadAttempts } from './auth/RateLimitService';
 import {
   ResourceNotFoundError,
   BusinessRuleViolationError,
   ConflictError,
   ValidationError,
+  ScannerUnavailableError,
+  InfectedFileError,
 } from '../types/exceptions';
 import {
   MANDATE_POLICY,
@@ -217,6 +220,26 @@ export class MandateService {
       throw new ValidationError('Uploaded file type is not accepted.');
     }
 
+    // Virus scan gate: scan the staged bytes BEFORE marking UPLOADED or promoting to
+    // the final key. Fail closed — an unscanned file must never reach mandate-uploads/.
+    if (virusScanService.isEnabled()) {
+      let scan;
+      try {
+        const bytes = await storageService.getObjectBytes(stagingKey);
+        scan = await virusScanService.scan(bytes);
+      } catch {
+        // Unreachable / timeout / misconfigured — leave staging + PENDING_UPLOAD for retry.
+        throw new ScannerUnavailableError();
+      }
+      if (!scan.clean) {
+        await this.handleInfectedUpload(request, stagingKey, uploadId, safeName, ip, userAgent);
+        throw new InfectedFileError();
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      // Production must never accept an unscanned upload.
+      throw new ScannerUnavailableError();
+    }
+
     // A3: race-safe conditional transition
     const updated = await this.prisma.mandateRequest.updateMany({
       where: { id: request.id, tenantId: request.tenantId, status: MandateRequestStatus.PENDING_UPLOAD },
@@ -278,6 +301,56 @@ export class MandateService {
     }
 
     return { uploadId, status: 'UPLOADED' as const };
+  }
+
+  /** Infected upload: delete the staged object, reject the request, audit + notify.
+   *  Never stores the file, never logs the clamd signature (client sees a generic error). */
+  private async handleInfectedUpload(
+    request: { id: string; tenantId: string; caseId: string },
+    stagingKey: string,
+    uploadId: string,
+    safeName: string,
+    ip: string,
+    userAgent: string,
+  ): Promise<void> {
+    // Delete the infected staging object first — malware must never linger in R2.
+    await storageService.deleteObject(stagingKey);
+
+    // Race-safe transition PENDING_UPLOAD -> REJECTED (a concurrent confirm may have moved it).
+    const rejected = await this.prisma.mandateRequest.updateMany({
+      where: { id: request.id, tenantId: request.tenantId, status: MandateRequestStatus.PENDING_UPLOAD },
+      data: { status: MandateRequestStatus.REJECTED, rejectedAt: new Date(), rejectionReason: 'Uploaded file failed a security scan.' },
+    });
+    if (rejected.count !== 1) return;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.docCaseEvent.create({
+        data: {
+          tenantId: request.tenantId, caseId: request.caseId, eventType: DocEventType.MANDATE_REJECTED,
+          payload: { mandateRequestId: request.id, uploadId, reason: 'FAILED_SECURITY_SCAN', fileName: safeName } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await this.audit.appendInTx(tx, {
+        tenantId: request.tenantId, eventType: 'MANDATE_UPLOAD_REJECTED_INFECTED', entityType: 'MandateRequest',
+        entityId: request.id, actorIp: ip, actorUserAgent: userAgent, operation: 'UPDATE',
+        payload: { uploadId, reason: 'FAILED_SECURITY_SCAN', fileName: safeName },
+      });
+    });
+
+    const docCase = await this.prisma.docCase.findUnique({
+      where: { id: request.caseId },
+      select: { assignedTo: true, caseNumber: true },
+    });
+    if (docCase?.assignedTo) {
+      await this.notifications.create({
+        tenantId: request.tenantId,
+        recipientUserId: docCase.assignedTo,
+        type: NotificationType.MANDATE_UPLOAD_RECEIVED,
+        title: 'Mandate upload rejected',
+        message: `A mandate upload for case ${docCase.caseNumber || request.caseId} was rejected by the security scanner.`,
+        actionUrl: `/documentation/cases/${request.caseId}`,
+      });
+    }
   }
 
   // ─── 7d. verifyMandate ─────────────────────────────────────────────────────
