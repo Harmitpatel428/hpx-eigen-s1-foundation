@@ -10,6 +10,7 @@ import {
   ConflictError,
   RateLimitExceededError,
   TemporaryServiceError,
+  ConfigurationError,
 } from '../types/exceptions';
 
 function isUuid(s: string): boolean {
@@ -19,6 +20,12 @@ function isUuid(s: string): boolean {
 function mapError(err: unknown, res: Response, next: NextFunction) {
   if (err instanceof ValidationError) {
     res.status(400).json({ error: 'VALIDATION_ERROR', message: err.message });
+  } else if (err instanceof ConfigurationError) {
+    res.status(503).json({
+      error: 'STORAGE_NOT_CONFIGURED',
+      code: 'STORAGE_NOT_CONFIGURED',
+      message: 'Document storage is not configured. Uploads are temporarily unavailable.',
+    });
   } else if (err instanceof RateLimitExceededError) {
     res.status(429).json({ error: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests. Try again later.' });
   } else if (err instanceof TemporaryServiceError) {

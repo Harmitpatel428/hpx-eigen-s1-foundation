@@ -7,6 +7,7 @@ import { prisma } from './db';
 import { redisClose } from './redis';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
 import { expirePendingMandates } from './workers/mandate-expiry.worker';
+import { isStorageConfigured } from './services/storage.service';
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -22,6 +23,8 @@ server.on('listening', () => {
     },
     '[HPX Eigen S1] Server running'
   );
+  const storageState = isStorageConfigured() ? 'configured' : 'NOT configured (uploads disabled)';
+  logger.info({ storage: storageState }, `[HPX Eigen S1] storage provider: ${storageState}`);
 });
 
 // ─── Recycle bin 14-day purge ────────────────────────────────────────────────

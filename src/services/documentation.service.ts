@@ -532,13 +532,14 @@ export class DocumentationService {
       } : {}),
     };
 
-    const [data, total] = await this.prisma.$transaction([
+    const [rows, total] = await this.prisma.$transaction([
       this.prisma.docCase.findMany({
         where,
         include: {
           lead:   { select: { id: true, firstName: true, lastName: true, company: true, email: true, phone: true } },
           preset: { select: { id: true, name: true, category: true, color: true, icon: true } },
           _count: { select: { documents: true, caseNotes: true, reminders: true } },
+          mandateRequests: { orderBy: { createdAt: 'desc' }, take: 1, select: { status: true } },
         },
         orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
         skip,
@@ -546,6 +547,12 @@ export class DocumentationService {
       }),
       this.prisma.docCase.count({ where }),
     ]);
+
+    // Flatten the single latest mandate request into a scalar status for list rows.
+    const data = rows.map(({ mandateRequests, ...c }) => ({
+      ...c,
+      latestMandateStatus: mandateRequests[0]?.status ?? null,
+    }));
 
     return { data, total, page, pageSize };
   }

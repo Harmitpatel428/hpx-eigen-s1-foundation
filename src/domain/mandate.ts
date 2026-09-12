@@ -34,13 +34,13 @@ export function sanitizeFileName(name: string): string {
 export function mandateStagingKey(
   tenantId: string, requestId: string, uploadId: string, fileName: string,
 ): string {
-  return `tenants/${tenantId}/mandates/${requestId}/staging/${uploadId}/${sanitizeFileName(fileName)}`;
+  return `mandate-staging/${tenantId}/${requestId}/${uploadId}/${sanitizeFileName(fileName)}`;
 }
 
 export function mandateFinalKey(
   tenantId: string, requestId: string, uploadId: string, fileName: string,
 ): string {
-  return `tenants/${tenantId}/mandates/${requestId}/uploads/${uploadId}/${sanitizeFileName(fileName)}`;
+  return `mandate-uploads/${tenantId}/${requestId}/${uploadId}/${sanitizeFileName(fileName)}`;
 }
 
 export function isAllowedContentType(contentType: string): boolean {

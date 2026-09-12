@@ -142,6 +142,12 @@ export class DataIntegrityError extends AppException {
   }
 }
 
+export class ConfigurationError extends AppException {
+  constructor(message = 'A required service is not configured.') {
+    super('STORAGE_NOT_CONFIGURED', message, RetryTag.USER_ACTION_REQUIRED, 503);
+  }
+}
+
 export class AuditWriteFailureError extends AppException {
   constructor() {
     super('AUDIT_WRITE_FAILURE', 'Operation temporarily unavailable.', RetryTag.RETRYABLE, 503);
