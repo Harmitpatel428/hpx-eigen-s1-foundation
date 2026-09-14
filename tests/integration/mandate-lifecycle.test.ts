@@ -627,3 +627,39 @@ describe('Audit lifecycle', () => {
     expect(events).toHaveLength(3);
   });
 });
+
+describe('Magic-byte validation gate', () => {
+  it('26. confirm upload with mismatched magic bytes → 400, staging deleted', async () => {
+    const c = await createCase();
+    const send = await sendMandate(c.id, adminToken);
+    expect(send.status).toBe(201);
+    const { uploadToken } = send.body.data;
+
+    const urlRes = await requestUploadUrl(uploadToken);
+    expect(urlRes.status).toBe(200);
+    const { uploadId } = urlRes.body.data;
+
+    // Override: headObject says PDF, but bytes are JPEG magic
+    (storageService.getObjectBytes as jest.Mock).mockResolvedValueOnce(
+      Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]),
+    );
+
+    const confirm = await confirmUpload(uploadToken, uploadId);
+    expect(confirm.status).toBe(400);
+    expect(confirm.body.error).toBe('VALIDATION_ERROR');
+    expect(confirm.body.message).toMatch(/does not match/i);
+
+    // Staging object must be deleted
+    expect(storageService.deleteObject).toHaveBeenCalled();
+
+    // copyObject must NOT have been called (file never promoted)
+    const copyCalls = (storageService.copyObject as jest.Mock).mock.calls.length;
+    // Reset mock call counts for future tests
+    (storageService.getObjectBytes as jest.Mock).mockResolvedValue(Buffer.from('%PDF-1.7 mock content'));
+
+    // Mandate request stays PENDING_UPLOAD (never transitions to UPLOADED)
+    const send2 = send.body.data;
+    const req = await prisma.mandateRequest.findUnique({ where: { id: send2.mandateRequestId } });
+    expect(req!.status).toBe(MandateRequestStatus.PENDING_UPLOAD);
+  });
+});
