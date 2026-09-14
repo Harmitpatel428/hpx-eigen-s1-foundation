@@ -32,6 +32,7 @@ import {
   mandateFinalKey,
   isAllowedContentType,
   maskEmail,
+  matchesMagicBytes,
 } from '../domain/mandate';
 import type { TenantContext } from './documentation.service';
 
@@ -220,13 +221,22 @@ export class MandateService {
       throw new ValidationError('Uploaded file type is not accepted.');
     }
 
+    // Fetch staged bytes once — used for both magic-byte validation and virus scan.
+    const stagedBytes = await storageService.getObjectBytes(stagingKey);
+
+    // C9: magic-byte validation — reject files whose actual content doesn't match the
+    // declared Content-Type. Catches renamed executables, polyglots, etc.
+    if (!matchesMagicBytes(head.contentType!, stagedBytes)) {
+      await storageService.deleteObject(stagingKey);
+      throw new ValidationError('Uploaded file content does not match its declared type.');
+    }
+
     // Virus scan gate: scan the staged bytes BEFORE marking UPLOADED or promoting to
     // the final key. Fail closed — an unscanned file must never reach mandate-uploads/.
     if (virusScanService.isEnabled()) {
       let scan;
       try {
-        const bytes = await storageService.getObjectBytes(stagingKey);
-        scan = await virusScanService.scan(bytes);
+        scan = await virusScanService.scan(stagedBytes);
       } catch {
         // Unreachable / timeout / misconfigured — leave staging + PENDING_UPLOAD for retry.
         throw new ScannerUnavailableError();

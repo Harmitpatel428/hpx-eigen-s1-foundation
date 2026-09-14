@@ -47,6 +47,17 @@ export function isAllowedContentType(contentType: string): boolean {
   return MANDATE_POLICY.ALLOWED_CONTENT_TYPES.includes(contentType);
 }
 
+const MAGIC_BYTES: Record<string, (b: Buffer) => boolean> = {
+  'application/pdf': (b) => b.length >= 5 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 && b[4] === 0x2d,
+  'image/jpeg':      (b) => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/png':       (b) => b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47,
+};
+
+export function matchesMagicBytes(contentType: string, bytes: Buffer): boolean {
+  const check = MAGIC_BYTES[contentType];
+  return check ? check(bytes) : false;
+}
+
 export function maskEmail(email: string): string {
   const [local, domain] = email.split('@');
   if (!domain) return '***';
