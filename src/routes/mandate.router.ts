@@ -21,38 +21,36 @@ function isUuid(s: string): boolean {
 
 function mapError(err: unknown, res: Response, next: NextFunction) {
   if (err instanceof ValidationError) {
-    res.status(400).json({ error: 'VALIDATION_ERROR', message: err.message });
+    res.status(400).json({ code: 'VALIDATION_ERROR', message: err.message });
   } else if (err instanceof ConfigurationError) {
     res.status(503).json({
-      error: 'STORAGE_NOT_CONFIGURED',
       code: 'STORAGE_NOT_CONFIGURED',
       message: 'Document storage is not configured. Uploads are temporarily unavailable.',
     });
   } else if (err instanceof ScannerUnavailableError) {
-    res.status(503).json({ error: 'SCANNER_UNAVAILABLE', code: 'SCANNER_UNAVAILABLE', message: (err as Error).message });
+    res.status(503).json({ code: 'SCANNER_UNAVAILABLE', message: (err as Error).message });
   } else if (err instanceof InfectedFileError) {
-    res.status(422).json({ error: 'FILE_REJECTED', code: 'FILE_REJECTED', message: (err as Error).message });
+    res.status(422).json({ code: 'FILE_REJECTED', message: (err as Error).message });
   } else if (err instanceof RateLimitExceededError) {
-    res.status(429).json({ error: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests. Try again later.' });
+    res.status(429).json({ code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests. Try again later.' });
   } else if (err instanceof TemporaryServiceError) {
-    res.status(503).json({ error: 'SERVICE_UNAVAILABLE', message: 'Temporary service issue. Try again shortly.' });
+    res.status(503).json({ code: 'SERVICE_UNAVAILABLE', message: 'Temporary service issue. Try again shortly.' });
   } else if (err instanceof ResourceNotFoundError) {
-    res.status(404).json({ error: 'NOT_FOUND', message: 'Resource not found.' });
+    res.status(404).json({ code: 'NOT_FOUND', message: 'Resource not found.' });
   } else if (err instanceof ConflictError) {
-    res.status(409).json({ error: 'CONFLICT', message: (err as Error).message });
+    res.status(409).json({ code: 'CONFLICT', message: (err as Error).message });
   } else if (err instanceof BusinessRuleViolationError) {
     const msg = (err as Error).message;
-    // Map specific business rules to appropriate HTTP codes
     if (msg.includes('expired')) {
-      res.status(410).json({ error: 'GONE', message: msg });
+      res.status(410).json({ code: 'GONE', message: msg });
     } else if (msg.includes('no longer active') || msg.includes('no longer accepting')) {
-      res.status(410).json({ error: 'GONE', message: msg });
+      res.status(410).json({ code: 'GONE', message: msg });
     } else if (msg.includes('size') || msg.includes('exceeds')) {
-      res.status(413).json({ error: 'PAYLOAD_TOO_LARGE', message: msg });
+      res.status(413).json({ code: 'PAYLOAD_TOO_LARGE', message: msg });
     } else if (msg.includes('type') && msg.includes('not accepted')) {
-      res.status(415).json({ error: 'UNSUPPORTED_MEDIA_TYPE', message: msg });
+      res.status(415).json({ code: 'UNSUPPORTED_MEDIA_TYPE', message: msg });
     } else {
-      res.status(422).json({ error: 'BUSINESS_RULE_VIOLATION', message: msg });
+      res.status(422).json({ code: 'BUSINESS_RULE_VIOLATION', message: msg });
     }
   } else {
     next(err);
@@ -211,7 +209,7 @@ export function createMandateRouter(prisma: PrismaClient): Router {
         const result = await svc.confirmUpload(tokenHash, uploadId, fileName, clientIp(req), req.headers['user-agent'] || '');
 
         if (result.status === 'CONFLICT') {
-          res.status(409).json({ error: 'CONFLICT', message: 'Upload already confirmed.' });
+          res.status(409).json({ code: 'CONFLICT', message: 'Upload already confirmed.' });
           return;
         }
         res.json({ success: true, data: { uploadId: result.uploadId, status: result.status } });

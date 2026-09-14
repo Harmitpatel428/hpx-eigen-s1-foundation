@@ -646,7 +646,7 @@ describe('Magic-byte validation gate', () => {
 
     const confirm = await confirmUpload(uploadToken, uploadId);
     expect(confirm.status).toBe(400);
-    expect(confirm.body.error).toBe('VALIDATION_ERROR');
+    expect(confirm.body.code).toBe('VALIDATION_ERROR');
     expect(confirm.body.message).toMatch(/does not match/i);
 
     // Staging object must be deleted
