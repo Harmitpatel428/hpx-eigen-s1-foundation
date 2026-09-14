@@ -21,6 +21,7 @@ jest.mock('../../src/services/storage.service', () => ({
     generateUploadUrl: jest.fn().mockResolvedValue({ url: 'https://fake-presigned-put', expiresAt: new Date(Date.now() + 900_000) }),
     generateViewUrl: jest.fn().mockResolvedValue({ url: 'https://fake-presigned-get', expiresAt: new Date(Date.now() + 900_000) }),
     headObject: jest.fn().mockResolvedValue({ exists: true, contentLength: 1024, contentType: 'application/pdf' }),
+    getObjectBytes: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.7 mock content')),
     copyObject: jest.fn().mockResolvedValue(undefined),
     deleteObject: jest.fn().mockResolvedValue(undefined),
   },
