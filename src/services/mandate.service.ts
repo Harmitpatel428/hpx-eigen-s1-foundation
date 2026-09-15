@@ -328,7 +328,19 @@ export class MandateService {
     userAgent: string,
   ): Promise<void> {
     // Delete the infected staging object first — malware must never linger in R2.
-    await storageService.deleteObject(stagingKey);
+    // If deletion fails, do NOT swallow it: still reject the request (client gets a
+    // generic 422), but log an ERROR and flag the audit event so ops can manually
+    // remove the orphaned staging object.
+    let stagingDeleteFailed = false;
+    try {
+      await storageService.deleteObject(stagingKey);
+    } catch (err) {
+      stagingDeleteFailed = true;
+      logger.error(
+        { err, stagingKey, mandateRequestId: request.id },
+        'Failed to delete infected staging object after virus scan — manual cleanup required',
+      );
+    }
 
     // Race-safe transition PENDING_UPLOAD -> REJECTED (a concurrent confirm may have moved it).
     const rejected = await this.prisma.mandateRequest.updateMany({
@@ -347,7 +359,7 @@ export class MandateService {
       await this.audit.appendInTx(tx, {
         tenantId: request.tenantId, eventType: 'MANDATE_UPLOAD_REJECTED_INFECTED', entityType: 'MandateRequest',
         entityId: request.id, actorIp: ip, actorUserAgent: userAgent, operation: 'UPDATE',
-        payload: { uploadId, reason: 'FAILED_SECURITY_SCAN', fileName: safeName },
+        payload: { uploadId, reason: 'FAILED_SECURITY_SCAN', fileName: safeName, stagingDeleteFailed },
       });
     });
 

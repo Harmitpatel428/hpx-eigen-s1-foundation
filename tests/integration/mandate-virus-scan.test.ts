@@ -231,4 +231,26 @@ describe('confirmUpload — virus scan gate', () => {
       process.env.NODE_ENV = prev;
     }
   });
+
+  it('8. infected + staging delete fails → still 422 REJECTED, audit flags stagingDeleteFailed, no signature', async () => {
+    const { token, requestId } = await createPendingMandate();
+    scanMock.mockResolvedValue({ clean: false, signature: 'Win.Test.EICAR' });
+    deleteObjectMock.mockRejectedValueOnce(new Error('R2 delete failed'));
+
+    const res = await confirmUpload(token);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('FILE_REJECTED');
+    expect(res.body.message).not.toContain('EICAR'); // signature never leaked
+
+    const req = await prisma.mandateRequest.findUnique({ where: { id: requestId } });
+    expect(req?.status).toBe(MandateRequestStatus.REJECTED);
+
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, eventType: 'MANDATE_UPLOAD_REJECTED_INFECTED', entityId: requestId },
+    });
+    expect(audits.length).toBe(1);
+    const payload = audits[0].payload as { stagingDeleteFailed?: boolean };
+    expect(payload.stagingDeleteFailed).toBe(true);
+    expect(JSON.stringify(audits[0].payload)).not.toContain('EICAR'); // still sanitized
+  });
 });
