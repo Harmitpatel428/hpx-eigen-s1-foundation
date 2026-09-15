@@ -12,6 +12,7 @@ import { NotificationService } from './notification.service';
 import { emailService } from './email.service';
 import { storageService } from './storage.service';
 import { virusScanService } from './virus-scan.service';
+import { logger } from '../utils/logger';
 import { checkMandateUploadAttempts } from './auth/RateLimitService';
 import {
   ResourceNotFoundError,
@@ -242,6 +243,9 @@ export class MandateService {
         throw new ScannerUnavailableError();
       }
       if (!scan.clean) {
+        // Server-side only: record the scanner verdict/signature for observability.
+        // Never sent to the client, audit payload, case event, or notification.
+        logger.warn({ mandateRequestId: request.id, uploadId, signature: scan.signature }, 'Mandate upload rejected by virus scanner (FOUND)');
         await this.handleInfectedUpload(request, stagingKey, uploadId, safeName, ip, userAgent);
         throw new InfectedFileError();
       }
