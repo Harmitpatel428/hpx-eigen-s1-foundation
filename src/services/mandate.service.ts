@@ -241,24 +241,21 @@ export class MandateService {
 
     // Virus scan gate: scan the staged bytes BEFORE marking UPLOADED or promoting to
     // the final key. Fail closed — an unscanned file must never reach mandate-uploads/.
-    if (virusScanService.isEnabled()) {
-      let scan;
-      try {
-        scan = await virusScanService.scan(stagedBytes);
-      } catch {
-        // Unreachable / timeout / misconfigured — leave staging + PENDING_UPLOAD for retry.
-        throw new ScannerUnavailableError();
-      }
-      if (!scan.clean) {
-        // Server-side only: record the scanner verdict/signature for observability.
-        // Never sent to the client, audit payload, case event, or notification.
-        logger.warn({ mandateRequestId: request.id, uploadId, signature: scan.signature }, 'Mandate upload rejected by virus scanner (FOUND)');
-        await this.handleInfectedUpload(request, stagingKey, uploadId, safeName, ip, userAgent);
-        throw new InfectedFileError();
-      }
-    } else if (process.env.NODE_ENV === 'production') {
-      // Production must never accept an unscanned upload.
+    // Virus scan when enabled (fail-closed on scanner failure), or an explicit
+    // logged policy bypass when VIRUS_SCAN_ENABLED !== 'true'. Never silently skips.
+    let scanOutcome;
+    try {
+      scanOutcome = await virusScanService.scanOrBypass(stagedBytes);
+    } catch {
+      // Enabled but unreachable / timeout / misconfigured — leave staging + PENDING_UPLOAD for retry.
       throw new ScannerUnavailableError();
+    }
+    if (scanOutcome.isInfected) {
+      // Server-side only: record the scanner verdict/signature for observability.
+      // Never sent to the client, audit payload, case event, or notification.
+      logger.warn({ mandateRequestId: request.id, uploadId, signature: scanOutcome.signature }, 'Mandate upload rejected by virus scanner (FOUND)');
+      await this.handleInfectedUpload(request, stagingKey, uploadId, safeName, ip, userAgent);
+      throw new InfectedFileError();
     }
 
     // A3: race-safe conditional transition

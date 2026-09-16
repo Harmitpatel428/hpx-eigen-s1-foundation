@@ -33,7 +33,7 @@ server.on('listening', () => {
   const scanState = virusScanService.isEnabled() ? 'enabled' : 'DISABLED';
   logger.info({ virusScan: scanState }, `[HPX Eigen S1] virus scanning: ${scanState}`);
   if (!virusScanService.isEnabled() && (process.env.NODE_ENV ?? 'development') === 'production') {
-    logger.error('[HPX Eigen S1] SECURITY: virus scanning is DISABLED in production — mandate uploads fail closed (503) until VIRUS_SCAN_ENABLED=true.');
+    logger.warn('[HPX Eigen S1] SECURITY: virus scanning is DISABLED in production — uploads are ACCEPTED UNSCANNED (policy bypass). Set VIRUS_SCAN_ENABLED=true to restore fail-closed scanning.');
   }
 });
 

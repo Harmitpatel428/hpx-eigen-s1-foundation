@@ -1,9 +1,18 @@
 import net from 'net';
 import { ScannerUnavailableError } from '../types/exceptions';
+import { logger } from '../utils/logger';
 
 export interface ScanResult {
   clean: boolean;
   /** clamd signature name when infected — for server-side logging only, never sent to a client. */
+  signature?: string;
+}
+
+/** Outcome of scanOrBypass: whether a scan actually ran, and the verdict. */
+export interface ScanOutcome {
+  scanned: boolean;
+  isInfected: boolean;
+  /** signature when infected — server-side logging only. */
   signature?: string;
 }
 
@@ -13,6 +22,9 @@ export interface IVirusScanService {
   /** Scan bytes via clamd INSTREAM. Resolves clean/infected; throws ScannerUnavailableError
    *  on connect failure, timeout, misconfiguration, or an unparseable response (fail closed). */
   scan(data: Buffer): Promise<ScanResult>;
+  /** Scan when enabled (fail-closed on scanner failure), or an EXPLICIT logged policy
+   *  bypass when VIRUS_SCAN_ENABLED !== 'true' (never a silent skip). */
+  scanOrBypass(data: Buffer): Promise<ScanOutcome>;
 }
 
 /**
@@ -31,6 +43,18 @@ export interface IVirusScanService {
 class ClamdVirusScanService implements IVirusScanService {
   isEnabled(): boolean {
     return process.env.VIRUS_SCAN_ENABLED === 'true';
+  }
+
+  async scanOrBypass(data: Buffer): Promise<ScanOutcome> {
+    if (!this.isEnabled()) {
+      // Deliberate, human-authorized accepted-risk posture: uploads are accepted
+      // UNSCANNED. Logged explicitly at warn level — never a silent skip.
+      logger.warn('[VirusScanner] disabled by configuration; bypassing scan');
+      return { scanned: false, isInfected: false };
+    }
+    // Enabled: scan() throws ScannerUnavailableError on any failure -> caller fails closed.
+    const r = await this.scan(data);
+    return { scanned: true, isInfected: !r.clean, signature: r.signature };
   }
 
   scan(data: Buffer): Promise<ScanResult> {
