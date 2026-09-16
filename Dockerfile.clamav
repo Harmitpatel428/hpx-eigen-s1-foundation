@@ -8,19 +8,19 @@
 # Deviations from the original spec, and why:
 #   * Separate file (Dockerfile.clamav) — leaves the existing Dockerfile intact.
 #   * Full `npm ci` (not --omit=dev): `npm run build` (tsc) and the runtime
-#     `prisma migrate deploy` both need devDependencies / the prisma CLI, so
-#     --omit=dev would break the build and migrations.
-#   * The app process runs `prisma migrate deploy` before the server, preserving
-#     the migrate-on-start behavior of the existing Dockerfile.
+#     prisma CLI both need devDependencies, so --omit=dev would break them.
+#   * The app applies pending schema at startup (see supervisord.conf),
+#     preserving the behavior of the existing Dockerfile.
 # ─────────────────────────────────────────────────────────────────────────────
 FROM node:20-bookworm-slim
 
-# clamd (scanner), freshclam (signature updater), supervisor (process manager).
-RUN apt-get update  && apt-get install -y --no-install-recommends       clamav-daemon clamav-freshclam supervisor  && rm -rf /var/lib/apt/lists/*
+# clamd (scanner), freshclam (updater), supervisor (process mgr), and
+# ca-certificates (slim image omits it; freshclam needs it for HTTPS DB downloads).
+RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates clamav-daemon clamav-freshclam supervisor  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install ALL deps first (build + migrate need devDependencies / prisma CLI).
+# Install ALL deps first (build + runtime prisma CLI need devDependencies).
 # --ignore-scripts skips the root postinstall (`prisma generate`), which needs
 # prisma/schema.prisma — not copied at this layer. Keeping this COPY limited to
 # package*.json preserves the Docker cache: the install layer only rebuilds when
@@ -40,8 +40,10 @@ COPY deploy/freshclam.conf    /etc/clamav/freshclam.conf
 COPY deploy/supervisord.conf  /etc/supervisor/supervisord.conf
 
 # Bake the virus signature DB into the image so clamd is ready on first boot
-# (no cold-start wait for the first freshclam download).
-RUN freshclam --config-file=/etc/clamav/freshclam.conf
+# (no cold-start wait for the first freshclam download). Ensure the DB + log
+# dirs exist first (UpdateLogFile writes to /var/log/clamav).
+RUN mkdir -p /var/lib/clamav /var/log/clamav \
+ && freshclam --config-file=/etc/clamav/freshclam.conf
 
 # Only the HTTP app port is exposed. clamd 3310 is loopback-only and NOT exposed.
 EXPOSE 3000
