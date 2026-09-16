@@ -41,6 +41,7 @@ jest.mock('../../src/services/email.service', () => ({
 }));
 
 import { createMandateRouter } from '../../src/routes/mandate.router';
+import { CaseLifecycleService } from '../../src/services/case-lifecycle.service';
 import { AppException } from '../../src/types/exceptions';
 import { hashUploadToken, MANDATE_POLICY } from '../../src/domain/mandate';
 import { storageService } from '../../src/services/storage.service';
@@ -661,5 +662,93 @@ describe('Magic-byte validation gate', () => {
     const send2 = send.body.data;
     const req = await prisma.mandateRequest.findUnique({ where: { id: send2.mandateRequestId } });
     expect(req!.status).toBe(MandateRequestStatus.PENDING_UPLOAD);
+  });
+});
+
+// ─── D5: upload tokens must die when the parent case closes ──────────────────
+describe('D5: mandate upload tokens invalidated when case closes', () => {
+  const caseLifecycle = new CaseLifecycleService(prisma);
+  const closeCase = (caseId: string) =>
+    caseLifecycle.closeWithoutDocs({ tenantId: TENANT_ID, userId: USER_ID }, caseId, 'CLIENT_FAILED_DOCS');
+  const reopenCase = (caseId: string) =>
+    caseLifecycle.reopenCase({ tenantId: TENANT_ID, userId: USER_ID }, caseId);
+
+  it('27. closed case -> upload-url with previously valid token -> 410 CASE_CLOSED', async () => {
+    const c = await createCase();
+    const send = await sendMandate(c.id, adminToken);
+    expect(send.status).toBe(201);
+    const { uploadToken } = send.body.data;
+    await closeCase(c.id);
+    const res = await requestUploadUrl(uploadToken);
+    expect(res.status).toBe(410);
+    expect(res.body.code).toBe('CASE_CLOSED');
+  });
+
+  it('28. closed case -> confirm-upload -> 410 CASE_CLOSED', async () => {
+    const c = await createCase();
+    const send = await sendMandate(c.id, adminToken);
+    const { uploadToken } = send.body.data;
+    const urlRes = await requestUploadUrl(uploadToken);
+    expect(urlRes.status).toBe(200);
+    const { uploadId } = urlRes.body.data;
+    await closeCase(c.id);
+    const res = await confirmUpload(uploadToken, uploadId);
+    expect(res.status).toBe(410);
+    expect(res.body.code).toBe('CASE_CLOSED');
+  });
+
+  it('29. closed case -> regenerateLink -> 422', async () => {
+    const c = await createCase();
+    const send = await sendMandate(c.id, adminToken);
+    const { mandateRequestId } = send.body.data;
+    await closeCase(c.id);
+    const res = await regenerateLink(mandateRequestId, adminToken);
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('BUSINESS_RULE_VIOLATION');
+  });
+
+  it('30. closeWithoutDocs supersedes PENDING_UPLOAD + writes MANDATE_SUPERSEDED audit', async () => {
+    const c = await createCase();
+    const send = await sendMandate(c.id, adminToken);
+    const { mandateRequestId } = send.body.data;
+    const before = await prisma.mandateRequest.findUnique({ where: { id: mandateRequestId } });
+    expect(before!.status).toBe(MandateRequestStatus.PENDING_UPLOAD);
+
+    await closeCase(c.id);
+
+    const after = await prisma.mandateRequest.findUnique({ where: { id: mandateRequestId } });
+    expect(after!.status).toBe(MandateRequestStatus.SUPERSEDED);
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, eventType: 'MANDATE_SUPERSEDED', entityId: mandateRequestId },
+    });
+    expect(audits.length).toBe(1);
+    const events = await prisma.docCaseEvent.findMany({
+      where: { caseId: c.id, eventType: 'MANDATE_SUPERSEDED' },
+    });
+    expect(events.length).toBe(1);
+  });
+
+  it('31. UPLOADED mandate is preserved (not superseded) on close', async () => {
+    const c = await createCase();
+    const { mandateRequestId } = await sendAndUpload(c.id);
+    const up = await prisma.mandateRequest.findUnique({ where: { id: mandateRequestId } });
+    expect(up!.status).toBe(MandateRequestStatus.UPLOADED);
+    await closeCase(c.id);
+    const after = await prisma.mandateRequest.findUnique({ where: { id: mandateRequestId } });
+    expect(after!.status).toBe(MandateRequestStatus.UPLOADED);
+  });
+
+  it('32. reopen case -> old superseded token stays dead (410); a new send works', async () => {
+    const c = await createCase();
+    const send = await sendMandate(c.id, adminToken);
+    const { uploadToken: oldToken } = send.body.data;
+    await closeCase(c.id);
+    await reopenCase(c.id);
+    const oldRes = await requestUploadUrl(oldToken);
+    expect(oldRes.status).toBe(410);
+    const send2 = await sendMandate(c.id, adminToken);
+    expect(send2.status).toBe(201);
+    const newRes = await requestUploadUrl(send2.body.data.uploadToken);
+    expect(newRes.status).toBe(200);
   });
 });

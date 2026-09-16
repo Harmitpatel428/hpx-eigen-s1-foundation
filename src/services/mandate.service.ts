@@ -21,6 +21,7 @@ import {
   ValidationError,
   ScannerUnavailableError,
   InfectedFileError,
+  CaseClosedError,
 } from '../types/exceptions';
 import {
   MANDATE_POLICY,
@@ -154,9 +155,12 @@ export class MandateService {
 
     const request = await this.prisma.mandateRequest.findUnique({
       where: { uploadTokenHash: tokenHash },
-      select: { id: true, tenantId: true, status: true, tokenExpiresAt: true, maxFileSizeBytes: true, allowedTypes: true },
+      select: { id: true, tenantId: true, caseId: true, status: true, tokenExpiresAt: true, maxFileSizeBytes: true, allowedTypes: true },
     });
     if (!request) throw new ResourceNotFoundError();
+
+    // D5: a closed/cancelled/deleted parent case kills the upload link immediately.
+    await this.assertCaseAcceptsUploads(request.caseId, request.tenantId);
 
     if (request.status !== MandateRequestStatus.PENDING_UPLOAD) {
       throw new BusinessRuleViolationError(
@@ -202,6 +206,9 @@ export class MandateService {
       select: { id: true, tenantId: true, caseId: true, status: true, tokenExpiresAt: true, maxFileSizeBytes: true, allowedTypes: true },
     });
     if (!request) throw new ResourceNotFoundError();
+
+    // D5: a closed/cancelled/deleted parent case kills the upload link immediately.
+    await this.assertCaseAcceptsUploads(request.caseId, request.tenantId);
 
     if (request.status !== MandateRequestStatus.PENDING_UPLOAD || isTokenExpired(request.tokenExpiresAt)) {
       throw new BusinessRuleViolationError('This mandate request is no longer accepting uploads.');
@@ -458,6 +465,19 @@ export class MandateService {
 
     const result = await this.prisma.$transaction(async (tx) => {
       const old = await this.loadRequest(tx, ctx, mandateRequestId);
+      // D5: cannot regenerate a link for a closed/cancelled/deleted case.
+      const parentCase = await tx.docCase.findFirst({
+        where: { id: old.caseId, tenantId: ctx.tenantId },
+        select: { status: true, deletedAt: true },
+      });
+      if (
+        !parentCase || parentCase.deletedAt !== null ||
+        parentCase.status === DocCaseStatus.CLOSED_NO_DOCS ||
+        parentCase.status === DocCaseStatus.CLOSED ||
+        parentCase.status === DocCaseStatus.CANCELLED
+      ) {
+        throw new BusinessRuleViolationError('Cannot regenerate a link for a closed case.');
+      }
       if (!(old.status === MandateRequestStatus.PENDING_UPLOAD || old.status === MandateRequestStatus.EXPIRED || old.status === MandateRequestStatus.REJECTED)) {
         throw new BusinessRuleViolationError('Cannot regenerate link for this mandate request.');
       }
@@ -597,6 +617,23 @@ export class MandateService {
   }
 
   // ─── Internal helpers ─────────────────────────────────────────────────────
+
+  /** D5: reject public upload actions when the parent case is closed/cancelled/deleted. */
+  private async assertCaseAcceptsUploads(caseId: string, tenantId: string): Promise<void> {
+    const docCase = await this.prisma.docCase.findFirst({
+      where: { id: caseId, tenantId },
+      select: { status: true, deletedAt: true },
+    });
+    if (
+      !docCase ||
+      docCase.deletedAt !== null ||
+      docCase.status === DocCaseStatus.CLOSED_NO_DOCS ||
+      docCase.status === DocCaseStatus.CLOSED ||
+      docCase.status === DocCaseStatus.CANCELLED
+    ) {
+      throw new CaseClosedError();
+    }
+  }
 
   private async loadRequest(
     tx: Prisma.TransactionClient,

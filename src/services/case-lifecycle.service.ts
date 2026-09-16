@@ -1,4 +1,4 @@
-import { PrismaClient, Prisma, DocCaseStatus } from '@prisma/client';
+import { PrismaClient, Prisma, DocCaseStatus, MandateRequestStatus, DocEventType } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { PortalService } from './portal.service';
 import { ResourceNotFoundError, BusinessRuleViolationError } from '../types/exceptions';
@@ -91,6 +91,33 @@ export class CaseLifecycleService {
         operation: 'UPDATE',
         payload: { reason, caseNumber: updated.caseNumber ?? null },
       });
+
+      // D5: kill any live upload tokens — supersede PENDING_UPLOAD mandate requests
+      // on this case so their links stop working immediately. UPLOADED/VERIFIED untouched.
+      const pending = await tx.mandateRequest.findMany({
+        where: { caseId, tenantId: ctx.tenantId, status: MandateRequestStatus.PENDING_UPLOAD },
+        select: { id: true },
+      });
+      if (pending.length > 0) {
+        await tx.mandateRequest.updateMany({
+          where: { caseId, tenantId: ctx.tenantId, status: MandateRequestStatus.PENDING_UPLOAD },
+          data: { status: MandateRequestStatus.SUPERSEDED },
+        });
+        for (const p of pending) {
+          await tx.docCaseEvent.create({
+            data: {
+              tenantId: ctx.tenantId, caseId, eventType: DocEventType.MANDATE_SUPERSEDED,
+              actorUserId: ctx.userId,
+              payload: { supersededRequestId: p.id, reason: 'CASE_CLOSED' } as unknown as Prisma.InputJsonValue,
+            },
+          });
+          await this.audit.appendInTx(tx, {
+            tenantId: ctx.tenantId, eventType: 'MANDATE_SUPERSEDED', entityType: 'MandateRequest',
+            entityId: p.id, actorUserId: ctx.userId, operation: 'UPDATE',
+            payload: { supersededRequestId: p.id, reason: 'CASE_CLOSED' },
+          });
+        }
+      }
 
       return {
         caseId,

@@ -130,6 +130,12 @@ export class BusinessRuleViolationError extends AppException {
   }
 }
 
+export class CaseClosedError extends AppException {
+  constructor(message = 'This case is closed and no longer accepts uploads.') {
+    super('CASE_CLOSED', message, RetryTag.NON_RETRYABLE, 410);
+  }
+}
+
 export class InvitationAlreadyAcceptedError extends AppException {
   constructor() {
     super('INVITATION_ALREADY_ACCEPTED', 'This invitation has already been accepted.', RetryTag.NON_RETRYABLE, 409);

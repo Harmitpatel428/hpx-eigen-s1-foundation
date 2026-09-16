@@ -13,6 +13,7 @@ import {
   ConfigurationError,
   ScannerUnavailableError,
   InfectedFileError,
+  CaseClosedError,
 } from '../types/exceptions';
 
 function isUuid(s: string): boolean {
@@ -39,6 +40,8 @@ function mapError(err: unknown, res: Response, next: NextFunction) {
     res.status(404).json({ code: 'NOT_FOUND', message: 'Resource not found.' });
   } else if (err instanceof ConflictError) {
     res.status(409).json({ code: 'CONFLICT', message: (err as Error).message });
+  } else if (err instanceof CaseClosedError) {
+    res.status(410).json({ code: 'CASE_CLOSED', message: (err as Error).message });
   } else if (err instanceof BusinessRuleViolationError) {
     const msg = (err as Error).message;
     if (msg.includes('expired')) {
