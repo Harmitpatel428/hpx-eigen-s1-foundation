@@ -21,8 +21,11 @@ RUN apt-get update  && apt-get install -y --no-install-recommends       clamav-d
 WORKDIR /app
 
 # Install ALL deps first (build + migrate need devDependencies / prisma CLI).
+# Pin npm to the version that generated package-lock.json: node:20's bundled
+# npm 10.8.x rejects this lock ("Missing @aws-sdk/... from lock file") while
+# npm 10.9.2 accepts it. Pinning keeps `npm ci` reproducible across environments.
 COPY package*.json ./
-RUN npm ci
+RUN npm install -g npm@10.9.2  && npm ci
 
 # App source, then compile TypeScript -> dist/ (prisma generate + tsc).
 COPY . .
