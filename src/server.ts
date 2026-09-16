@@ -9,8 +9,12 @@ import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service
 import { expirePendingMandates } from './workers/mandate-expiry.worker';
 import { isStorageConfigured } from './services/storage.service';
 import { virusScanService } from './services/virus-scan.service';
+import { assertClientUrlsNotLocalhost } from './config/production-url-guard';
 
 const PORT = Number(process.env.PORT ?? 3000);
+
+// Fail fast at boot if a client-facing base URL still points at localhost in prod.
+assertClientUrlsNotLocalhost();
 
 const server = app.listen(PORT, '0.0.0.0');
 
