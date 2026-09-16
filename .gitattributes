@@ -1,3 +1,7 @@
 # Shell scripts must stay LF so they run on Linux/CI regardless of a dev's core.autocrlf.
 *.sh text eol=lf
 .githooks/* text eol=lf
+
+# Container/scanner configs must stay LF so clamd/supervisord parse them on Linux.
+Dockerfile.clamav text eol=lf
+deploy/*.conf text eol=lf

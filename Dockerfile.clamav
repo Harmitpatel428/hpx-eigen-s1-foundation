@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Backend runtime WITH an in-container ClamAV daemon for mandate virus scanning.
+#
+# Point Render's Docker runtime at THIS file (Dockerfile.clamav) to enable
+# production uploads. clamd binds 127.0.0.1:3310 ONLY and is never exposed;
+# supervisord runs clamd, freshclam, and the Node app together in one container.
+#
+# Deviations from the original spec, and why:
+#   * Separate file (Dockerfile.clamav) — leaves the existing Dockerfile intact.
+#   * Full `npm ci` (not --omit=dev): `npm run build` (tsc) and the runtime
+#     `prisma migrate deploy` both need devDependencies / the prisma CLI, so
+#     --omit=dev would break the build and migrations.
+#   * The app process runs `prisma migrate deploy` before the server, preserving
+#     the migrate-on-start behavior of the existing Dockerfile.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM node:20-bookworm-slim
+
+# clamd (scanner), freshclam (signature updater), supervisor (process manager).
+RUN apt-get update  && apt-get install -y --no-install-recommends       clamav-daemon clamav-freshclam supervisor  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install ALL deps first (build + migrate need devDependencies / prisma CLI).
+COPY package*.json ./
+RUN npm ci
+
+# App source, then compile TypeScript -> dist/ (prisma generate + tsc).
+COPY . .
+RUN npm run build
+
+# Scanner + process-manager configs.
+COPY deploy/clamd.conf        /etc/clamav/clamd.conf
+COPY deploy/freshclam.conf    /etc/clamav/freshclam.conf
+COPY deploy/supervisord.conf  /etc/supervisor/supervisord.conf
+
+# Bake the virus signature DB into the image so clamd is ready on first boot
+# (no cold-start wait for the first freshclam download).
+RUN freshclam --config-file=/etc/clamav/freshclam.conf
+
+# Only the HTTP app port is exposed. clamd 3310 is loopback-only and NOT exposed.
+EXPOSE 3000
+
+ENTRYPOINT ["supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
