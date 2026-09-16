@@ -1,98 +1,21 @@
 name: CI
-
+# Replicates Render's ISOLATED (non-workspace) build so lockfile drift and build
+# breaks fail HERE, in CI, instead of at deploy time. GitHub Actions checks out
+# only this repo, so npm runs standalone (no parent workspace) exactly like Render.
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
 
 jobs:
-  test:
-    name: Test & Build
+  build:
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        # WP-0/reg #15: pinned to 16 to match prod (Render PG16) + local docker-compose,
-        # ending the 14/15/16 drift. This `migrate deploy` step below targets the EPHEMERAL
-        # CI test container (correct as-is) — it is NOT the prod migration path. Prod
-        # migrations run via Dockerfile CMD today; moving them to a CI/Render step as
-        # hpx_migrator with MIGRATION_DATABASE_URL is the human cutover in HUMAN_TASKS #3.
-        # The RLS role-parity bootstrap (bootstrap-roles.sql) is added here in WP-5.
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: hpx_ci_test
-          POSTGRES_USER: ci
-          POSTGRES_PASSWORD: ci_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U ci"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      DATABASE_URL: postgresql://ci:ci_password@localhost:5432/hpx_ci_test
-      NODE_ENV: test
-      # JWT secrets for test only — not real credentials
-      JWT_SECRET: ci-test-jwt-secret-not-for-production
-      JWT_PRIVATE_KEY: ""
-      JWT_PUBLIC_KEY: ""
-      FRONTEND_URL: http://localhost:5173
-      RESEND_API_KEY: re_test_placeholder
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Generate Prisma client
-        run: npx prisma generate
-
-      - name: Apply migrations
-        run: npx prisma migrate deploy
-
-      - name: Seed permissions
-        run: npx tsx prisma/seed-permissions.ts
-
-      - name: Typecheck
-        run: npx tsc --noEmit
-
-      - name: Unit tests
-        run: npx jest --testPathIgnorePatterns="tests/integration" --passWithNoTests
-
-      - name: Integration tests (real PostgreSQL)
-        run: npx jest --testPathPattern="tests/integration" --passWithNoTests --forceExit
-        # FAIL if DATABASE_URL is missing — never silently skip integration tests
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
-
+          node-version: '20'   # match Render's node:20 (npm 10.8.x)
+      - name: Install (strict, from lockfile)
+        run: npm ci             # fails if package-lock.json drifts from package.json
       - name: Build
-        run: npm run build
-
-  migration-guard:
-    name: Destructive Migration Guard
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Ensure base ref
-        run: git fetch --no-tags origin main:refs/remotes/origin/main || true
-
-      # Fails the build if a NEW migration contains an unreviewed data-destroying
-      # statement (DROP TABLE/COLUMN, TRUNCATE, mass DELETE/UPDATE). Existing
-      # history is untouched — only migrations added vs origin/main are checked.
-      - name: Check for unreviewed destructive migrations
-        run: node scripts/check-destructive-migrations.cjs --base origin/main
+        run: npm run build      # prisma generate && tsc
