@@ -21,10 +21,16 @@ RUN apt-get update  && apt-get install -y --no-install-recommends       clamav-d
 WORKDIR /app
 
 # Install ALL deps first (build + migrate need devDependencies / prisma CLI).
+# --ignore-scripts skips the root postinstall (`prisma generate`), which needs
+# prisma/schema.prisma — not copied at this layer. Keeping this COPY limited to
+# package*.json preserves the Docker cache: the install layer only rebuilds when
+# dependencies change, not on every source edit.
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
-# App source, then compile TypeScript -> dist/ (prisma generate + tsc).
+# Now the full source (incl. prisma/) is present. `npm run build` is
+# `prisma generate && tsc`: it generates the Prisma Client (schema now available)
+# BEFORE tsc, which needs the generated types.
 COPY . .
 RUN npm run build
 
