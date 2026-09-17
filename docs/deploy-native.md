@@ -75,10 +75,20 @@ uses a **custom API domain** (`.env.production` → `VITE_API_URL`, currently
 `https://api.hpx-eigen.com`). Two swap mechanisms — **prefer the domain move**:
 
 **Preferred — move the custom domain (atomic, no frontend redeploy):**
+- [ ] **DNS TTL first (do this BEFORE the swap, well in advance).** At the DNS
+      provider for `api.hpx-eigen.com`, lower the record TTL to a small value
+      (e.g. 60 s) and wait for the OLD/high TTL to fully expire before touching
+      anything. Rushing the swap while a long TTL is still cached causes
+      split-brain routing: some clients keep resolving to the old service while
+      others hit the new one, so writes land on two backends at once. Confirm
+      the low TTL has propagated (`dig +noall +answer api.hpx-eigen.com` from a
+      couple of networks) before proceeding.
 - [ ] In Render, remove the custom API domain from the OLD Docker service and
       add it to the NEW native service. DNS/routing repoints; both frontend
       env vars (`VITE_API_URL` and `VITE_API_BASE_URL`) keep working unchanged.
-- [ ] Rollback = move the domain back. No redeploy either way.
+- [ ] Rollback = move the domain back (fast, because the TTL is already low).
+      No redeploy either way. Restore the TTL to its normal value only after the
+      48h window closes and the cutover is confirmed stable.
 
 **Alternative — repoint Vercel env (needs a frontend redeploy):**
 - [ ] Update BOTH `VITE_API_URL` and `VITE_API_BASE_URL` in Vercel to the new
