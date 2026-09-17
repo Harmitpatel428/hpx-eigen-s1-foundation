@@ -1,5 +1,13 @@
 # Deploy runbook — backend + ClamAV (Dockerfile.clamav)
 
+> **STATUS (Stage 2):** This Docker/ClamAV path is **NOT the live posture**. Production
+> currently runs the **native Node** service with scanning OFF — see
+> [deploy-native.md](deploy-native.md). This file is retained as the rollback /
+> re-enable-scanning path (needs a >= 2 GB plan). The "fail closed (503)" behaviour
+> below applies only when `VIRUS_SCAN_ENABLED=true`; with scanning off, uploads are
+> accepted UNSCANNED (explicit logged bypass).
+
+
 The backend deploys on Render as a **Docker** service using `Dockerfile.clamav`,
 which runs the Node app + an in-container `clamd` (loopback-only) under
 supervisord. clamd is required: mandate uploads **fail closed (503)** when the

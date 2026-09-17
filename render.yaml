@@ -1,0 +1,59 @@
+# Render Blueprint — native Node service (Stage 2 blue/green target).
+#
+# This is the source-of-truth spec for the scanner-off native runtime that
+# replaces the Docker/ClamAV service. Committing this file does NOTHING on its
+# own — Render only applies it when a human creates a Blueprint instance from
+# it, or uses it as a reference to enter the same settings by hand in the
+# dashboard. It defines a NEW service (distinct name) so it can run alongside
+# the old Docker service during the 48h blue/green window without collision.
+#
+# Not in here (Stage 2 accepted-risk posture): CLAMD_HOST / CLAMD_PORT /
+# VIRUS_SCAN_TIMEOUT_MS. VIRUS_SCAN_ENABLED stays "false" — uploads are
+# accepted UNSCANNED, exactly as in Stage 1 (commit 41b8397).
+
+services:
+  - type: web
+    name: hpx-eigen-backend-native
+    runtime: node
+    plan: starter                 # 512 MB is ample without clamd (~100-150 MB RSS)
+    region: oregon                # MUST match the existing service AND the Postgres region
+    branch: main
+    autoDeploy: false             # manual deploys only — same policy as the Docker service
+    healthCheckPath: /health      # unauthenticated, DB-free 200 — zero-downtime deploy gate
+    buildCommand: npm ci && npm run build
+    # startCommand is idempotent + multi-instance safe — see docs/deploy-native.md.
+    startCommand: npx prisma migrate deploy && node dist/src/server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VIRUS_SCAN_ENABLED
+        value: "false"            # Stage 1/2 posture: explicit logged bypass, uploads UNSCANNED
+      # ── Secrets — set in the Render dashboard, never committed (sync: false) ──
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_PRIVATE_KEY
+        sync: false
+      - key: JWT_PUBLIC_KEY
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: REDIS_URL
+        sync: false               # permission cache; graceful DB fallback if absent
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false               # optional; defaults to hpx-eigen-mandates in code
+      - key: MANDATE_UPLOAD_BASE_URL
+        sync: false               # prod URL — boot guard rejects localhost
+      - key: FRONTEND_URL
+        sync: false               # prod URL — boot guard rejects localhost
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false               # omit if the current service has none
