@@ -10,17 +10,41 @@ forward because clamd's resident signature DB (~1.2–1.5 GB) does not fit the
 The canonical settings live in [`render.yaml`](../render.yaml). This runbook is
 the human execution procedure. **Artifacts only — no automated deploys.**
 
+Throughout, `<NEW_SERVICE_ONRENDER_HOST>` is the raw host Render assigns to the
+new native service — its own `*.onrender.com` address. Never guess it — read it from the Render dashboard after the service is created, and
+substitute the real value everywhere before executing the cutover.
+
 ## Why native, why blue/green
 
 - 512 MB base plan OOM-kills clamd (verified on deploy `3ac0e6a`).
 - Native Node has no build-time signature download, no supervisord, no
   loopback clamd — the whole ClamAV surface disappears.
-- Blue/green (new service beside the old) means the traffic swap is a single
-  reversible domain move, and the old service is a warm rollback for 48h.
+- Blue/green (new service beside the old) means the cutover is a single
+  one-line `vercel.json` rewrite edit (see below), rolled back instantly by
+  promoting the previous Vercel deployment, and the old service stays a warm
+  rollback for 48h.
 
 `Dockerfile.clamav` and `deploy/*.conf` stay in the repo as the rollback path.
 They are archived only in Phase 7, after 48 clean hours AND explicit human
 confirmation.
+
+## How the frontend reaches the backend (the cutover hinge)
+
+The frontend (Vercel) does **not** use a custom API domain. Production requests
+to `hpxeigen.com/api/*` are proxied **server-side by a Vercel rewrite** in the
+frontend repo's `vercel.json`:
+
+```
+/api/:path*  ->  https://hpx-eigen-backend.onrender.com/api/:path*
+```
+
+Proven live: `GET hpxeigen.com/api/v1/leads` -> backend `401
+{"code":"MISSING_TOKEN"}` with `Server: Vercel` + `X-Render-Origin-Server:
+Render`; `GET hpxeigen.com/health` -> the SPA `index.html` (only `/api/*` is
+proxied). Frontend clients use `VITE_API_BASE_URL || ''`, i.e. relative `/api`
+paths in production; the repo's `.env.production` is gitignored and never
+reaches Vercel. **The cutover is therefore a one-line change to that rewrite
+`destination`** — not a DNS move, not a custom domain, no TTL to manage.
 
 ## Runtime command is idempotent + multi-instance safe
 
@@ -36,9 +60,9 @@ Start command: `npx prisma migrate deploy && node dist/src/server.js`
 
 ## Human steps — create the native service
 
-1. Render dashboard → New → **Web Service** → connect the
+1. Render dashboard -> New -> **Web Service** -> connect the
    `hpx-eigen-s1-foundation` repo, branch `main`.
-   (Or: New → Blueprint, pointing at `render.yaml`. Either yields the same
+   (Or: New -> Blueprint, pointing at `render.yaml`. Either yields the same
    service; the manual path is described here so nothing is implicit.)
 2. Set:
    - Runtime: **Node** (not Docker)
@@ -49,75 +73,91 @@ Start command: `npx prisma migrate deploy && node dist/src/server.js`
    - Plan: **Starter** (512 MB)
    - Region: **same as the existing service and the Postgres instance**
 3. Copy every env var from the current Docker service **except**
-   `CLAMD_HOST`, `CLAMD_PORT`, `VIRUS_SCAN_TIMEOUT_MS`. Keep
-   `VIRUS_SCAN_ENABLED=false`. Do not set `PORT` — Render injects it and the
-   app reads `process.env.PORT`.
-4. Manual Deploy → deploy `044dad5` (or later `main`).
+   `CLAMD_HOST`, `CLAMD_PORT`, `VIRUS_SCAN_TIMEOUT_MS`, and **`PORT`**
+   (`PORT` is platform-injected on the native runtime — Render sets it and the
+   app reads `process.env.PORT`; setting it yourself can bind the wrong port).
+   Keep `VIRUS_SCAN_ENABLED=false`.
+4. Manual Deploy -> deploy the latest `main` (currently `8121e52`).
+5. Read the new service's raw host from the dashboard — this is
+   `<NEW_SERVICE_ONRENDER_HOST>`; you need it for the rewrite edit.
 
-## Human steps — verify the native service (before any traffic swap)
+## Human steps — verify the native service (before the cutover)
 
-Hit the new service's raw `*.onrender.com` URL directly (not the custom domain):
+Hit `<NEW_SERVICE_ONRENDER_HOST>` directly (the frontend still points at the OLD
+service at this stage):
 
-- [ ] `GET /health` → `200 {"status":"ok",...}`
+- [ ] `GET /health` -> `200 {"status":"ok","commit":"8121e52…"}`.
 - [ ] Boot log shows `virus scanning: DISABLED` + the SECURITY warn line, and
       **no** clamd/freshclam/supervisord lines.
 - [ ] Memory well under 512 MB (expect ~100–150 MB RSS).
-- [ ] `GET /api/v1/...` behind auth returns 401 without a token (app is wired).
-- [ ] Mandate `upload-url` on a live token → `200` + presigned URL (R2 env OK).
-- [ ] `confirm-upload` on a clean PDF → success, and the log shows
+- [ ] `GET /api/v1/...` without a token -> `401` (app is wired).
+- [ ] Mandate `upload-url` on a live token -> `200` + presigned URL (R2 env OK).
+- [ ] `confirm-upload` on a clean PDF -> success, and the log shows
       `[VirusScanner] disabled by configuration; bypassing scan`.
 - [ ] Migrations applied cleanly in the deploy log (`prisma migrate deploy`).
 
-## Human steps — the traffic swap
+## Human steps — pre-swap baseline (OLD service, immediately before the swap)
 
-The frontend (Vercel) reaches the backend by env var, and the production build
-uses a **custom API domain** (`.env.production` → `VITE_API_URL`, currently
-`https://api.hpx-eigen.com`). Two swap mechanisms — **prefer the domain move**:
+Re-confirm the OLD Docker service is healthy so the cutover starts from a
+known-good baseline:
 
-**Preferred — move the custom domain (atomic, no frontend redeploy):**
-- [ ] **DNS TTL first (do this BEFORE the swap, well in advance).** At the DNS
-      provider for `api.hpx-eigen.com`, lower the record TTL to a small value
-      (e.g. 60 s) and wait for the OLD/high TTL to fully expire before touching
-      anything. Rushing the swap while a long TTL is still cached causes
-      split-brain routing: some clients keep resolving to the old service while
-      others hit the new one, so writes land on two backends at once. Confirm
-      the low TTL has propagated (`dig +noall +answer api.hpx-eigen.com` from a
-      couple of networks) before proceeding.
-- [ ] In Render, remove the custom API domain from the OLD Docker service and
-      add it to the NEW native service. DNS/routing repoints; both frontend
-      env vars (`VITE_API_URL` and `VITE_API_BASE_URL`) keep working unchanged.
-- [ ] Rollback = move the domain back (fast, because the TTL is already low).
-      No redeploy either way. Restore the TTL to its normal value only after the
-      48h window closes and the cutover is confirmed stable.
+- [ ] No clamd/freshclam spawns in recent logs.
+- [ ] RSS < ~350 MB.
+- [ ] `[VirusScanner] disabled by configuration; bypassing scan` warn present on
+      a recent upload.
 
-**Alternative — repoint Vercel env (needs a frontend redeploy):**
-- [ ] Update BOTH `VITE_API_URL` and `VITE_API_BASE_URL` in Vercel to the new
-      URL, then redeploy the frontend.
-- [ ] ⚠️ Both names are load-bearing: `VITE_API_URL` drives auth/signup/verify;
-      `VITE_API_BASE_URL` drives the main API client and the mandate upload
-      path (`src/services/mandate.service.ts`). Setting only one silently
-      breaks the other half. This is why the domain move is preferred.
+## Human steps — the cutover (edit the Vercel rewrite)
 
-## Human steps — CORS must admit the live frontend origin
+1. [ ] In the **frontend** repo (`hpx-eigen-frontend`), edit `vercel.json`:
+       change the `/api/:path*` rewrite `destination` from
+       `https://hpx-eigen-backend.onrender.com/api/:path*`
+       to `https://<NEW_SERVICE_ONRENDER_HOST>/api/:path*`.
+2. [ ] Commit & push `main` on the frontend repo -> **Vercel auto-deploys**
+       (frontend auto-deploys on Vercel; backend does not).
 
-CORS is **hardcoded** in `src/app.ts` (no env var), so the native service
-inherits the exact same allowlist. Before declaring cutover done:
+## Human steps — post-swap gates (ALL must pass)
 
-- [ ] Confirm the production frontend origin (`https://hpxeigen.com` /
-      `https://www.hpxeigen.com`) is in the `allowedOrigins` array.
-- [ ] Confirm the Vercel **preview** deployment URLs still match the regex
-      `^https://hpx-eigen-frontend[^.]*\.vercel\.app$`. If the Vercel project
-      was renamed or moved to a new team/org, preview URLs won't match and
-      preview builds will fail CORS — update the regex in `app.ts` if so.
-- [ ] From the live frontend, exercise a real cross-origin request (login +
-      one mandate upload) against the new service and confirm no CORS error.
+- [ ] (i) `curl -i https://hpxeigen.com/api/v1/leads` -> `401
+      {"code":"MISSING_TOKEN"}` with an `X-Render-Origin-Server` header
+      (proves the proxy now reaches the new origin).
+- [ ] (ii) `<NEW_SERVICE_ONRENDER_HOST>` `GET /health` `commit` == the deployed
+      `main` head.
+- [ ] (iii) OLD service request graph -> ~0 req/min (traffic has moved).
+- [ ] (iv) Browser: login + one clean PDF upload -> `200` + bypass warn log +
+      mandate `UPLOADED`.
+- [ ] (v) New service RSS steady < ~350 MB after ~10 min.
+
+## Rollback
+
+- **PRIMARY (instant, no build):** Vercel Dashboard -> Deployments -> the
+  previous production deployment (the pre-cutover one) -> **Promote to
+  Production**. It re-serves the build whose `vercel.json` still points at the
+  OLD service — instant, no rebuild.
+- **SECONDARY:** revert the one-line `vercel.json` change and push; Vercel
+  rebuilds and redeploys pointing back at the OLD service.
+- Either way, no backend redeploy.
+
+## CORS (no change in this cutover)
+
+Because the API is proxied server-side by Vercel, the browser sees same-origin
+requests to `hpxeigen.com` — the backend's hardcoded CORS allowlist does **not**
+gate the proxied `/api/*` path. CORS still governs the direct browser->R2
+presigned PUT (R2 bucket CORS, already configured) and any Vercel **preview**
+deployments that call the backend cross-origin.
+
+- **Do not edit `src/app.ts` during this cutover** — keep blast radius minimal.
+  The native service inherits the same hardcoded allowlist.
+- Known dead entry for a FUTURE cleanup (not now): `www.hpxeigen.com` is in the
+  allowlist but does not resolve in DNS. Harmless.
+- If the Vercel project is ever renamed/moved, preview URLs may stop matching
+  `^https://hpx-eigen-frontend[^.]*\.vercel\.app$` — revisit then.
 
 ## Post-cutover
 
-- [ ] Keep the OLD Docker service running, **stopped-but-not-deleted** or idle,
-      for **48 hours** as the rollback path.
+- [ ] Keep the OLD Docker service running (idle/warm, not deleted) for
+      **48 hours** as the rollback path.
 - [ ] Monitor `/health`, error rate, and memory on the native service.
-- [ ] After 48 clean hours + explicit human sign-off → Phase 7: archive
+- [ ] After 48 clean hours + explicit human sign-off -> Phase 7: archive
       `Dockerfile.clamav` + `deploy/*.conf`, strip `CLAMD_*` from code/docs.
 
 ## Re-enabling scanning later (out of scope here)
