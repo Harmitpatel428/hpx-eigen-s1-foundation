@@ -2,6 +2,9 @@
   "name": "hpx-eigen-s1-foundation",
   "version": "1.0.0",
   "description": "HPX Eigen S1 Foundation + S2 CRM Domain",
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/src/server.js",
   "type": "commonjs",
   "scripts": {
