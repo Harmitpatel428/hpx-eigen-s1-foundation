@@ -568,6 +568,19 @@ export class DocumentationService {
           orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
           include: { storageRefs: { orderBy: { createdAt: 'desc' } } },
         },
+        // Firm/client uploaded files (unified Document store). R5 payload contract —
+        // active only, storageKey excluded (view-url is the only path to bytes).
+        uploadedDocuments: {
+          where:   { deletedAt: null, isActive: true },
+          orderBy: [{ createdAt: 'desc' }],
+          select: {
+            id: true, category: true, name: true, originalFilename: true, mimeType: true,
+            sizeBytes: true, checksum: true, status: true, sourceChannel: true,
+            uploadedByParty: true, uploadedByUserId: true, clientVisible: true, internalNote: true,
+            isActive: true, receivedAt: true, expiresAt: true, versionOfId: true, requirementId: true,
+            verifiedAt: true, rejectedAt: true, rejectionReason: true, createdAt: true,
+          },
+        },
         events: {
           orderBy: { createdAt: 'desc' },
           take:    100,
@@ -953,6 +966,51 @@ export class DocumentationService {
 
       return tx.docCase.findFirst({ where: { id: caseId }, include: { lead: true, preset: true } });
     });
+  }
+
+  /**
+   * Apply a validated DocCaseDocument status transition inside an EXISTING transaction.
+   * Used by DocumentService when a firm upload lands on a requirement. Returns:
+   *  'applied'     — transition performed (+ event + case recalc)
+   *  'noop'        — target equals current status
+   *  'unreachable' — not a valid next status; caller leaves the status and logs a divergence (I3/I6)
+   */
+  async transitionRequirementInTx(
+    tx: Prisma.TransactionClient,
+    ctx: TenantContext,
+    requirementId: string,
+    toStatus: DocDocumentStatus,
+  ): Promise<'applied' | 'noop' | 'unreachable'> {
+    const doc = await tx.docCaseDocument.findFirst({
+      where: { id: requirementId, tenantId: ctx.tenantId, deletedAt: null },
+      select: { id: true, status: true, caseId: true },
+    });
+    if (!doc) throw new ResourceNotFoundError();
+    if (doc.status === toStatus) return 'noop';
+    if (!VALID_TRANSITIONS[doc.status].includes(toStatus)) return 'unreachable';
+
+    const now = new Date();
+    await tx.docCaseDocument.update({
+      where: { id: requirementId },
+      data: {
+        status: toStatus,
+        ...(toStatus === 'RECEIVED' ? { receivedAt: now } : {}),
+        ...(toStatus === 'APPROVED' ? { verifiedAt: now, verifiedBy: ctx.userId } : {}),
+      },
+    });
+    const eventTypeMap: Partial<Record<DocDocumentStatus, DocEventType>> = {
+      RECEIVED: 'DOCUMENT_RECEIVED', UNDER_VERIFICATION: 'DOCUMENT_VERIFIED', APPROVED: 'DOCUMENT_APPROVED',
+      REJECTED: 'DOCUMENT_REJECTED', WAIVED: 'DOCUMENT_WAIVED',
+    };
+    await tx.docCaseEvent.create({
+      data: {
+        tenantId: ctx.tenantId, caseId: doc.caseId, documentId: requirementId,
+        eventType: eventTypeMap[toStatus] ?? 'DOCUMENT_STATUS_CHANGED', actorUserId: ctx.userId,
+        fromStatus: doc.status, toStatus, payload: {} as Prisma.InputJsonValue,
+      },
+    });
+    await this._recalcAndUpdateCase(tx, doc.caseId, ctx.tenantId);
+    return 'applied';
   }
 
   // ─── Internals ─────────────────────────────────────────────────────────────

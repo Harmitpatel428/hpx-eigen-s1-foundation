@@ -5,6 +5,7 @@ import {
   HeadObjectCommand,
   DeleteObjectCommand,
   CopyObjectCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigurationError } from '../types/exceptions';
@@ -106,6 +107,16 @@ class StorageService {
   async deleteObject(key: string): Promise<void> {
     const { client, bucket } = this.config();
     await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  }
+
+  /** List objects under a prefix, one page (<=1000). Used by the staging-sweep worker. */
+  async listObjects(prefix: string, continuationToken?: string): Promise<{ objects: Array<{ key: string; lastModified?: Date }>; nextToken?: string }> {
+    const { client, bucket } = this.config();
+    const res = await client.send(new ListObjectsV2Command({
+      Bucket: bucket, Prefix: prefix, ContinuationToken: continuationToken, MaxKeys: 1000,
+    }));
+    const objects = (res.Contents ?? []).map((o) => ({ key: o.Key!, lastModified: o.LastModified }));
+    return { objects, nextToken: res.IsTruncated ? res.NextContinuationToken : undefined };
   }
 
   async copyObject(sourceKey: string, destKey: string): Promise<void> {

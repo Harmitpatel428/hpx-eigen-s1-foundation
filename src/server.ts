@@ -6,7 +6,7 @@ import { logger } from './utils/logger';
 import { prisma } from './db';
 import { redisClose } from './redis';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
-import { expirePendingMandates } from './workers/mandate-expiry.worker';
+import { expirePendingMandates, sweepStaleStagingObjects } from './workers/mandate-expiry.worker';
 import { isStorageConfigured } from './services/storage.service';
 import { virusScanService } from './services/virus-scan.service';
 import { assertClientUrlsNotLocalhost } from './config/production-url-guard';
@@ -58,6 +58,10 @@ purgeTimer.unref();
 // ─── Mandate expiry (hourly) ────────────────────────────────────────────────
 const mandateExpiryTimer = setInterval(() => void expirePendingMandates(prisma), 60 * 60 * 1000);
 mandateExpiryTimer.unref();
+
+// ─── Stale upload-staging sweep (every 6h) — backstop for abandoned uploads ──
+const stagingSweepTimer = setInterval(() => void sweepStaleStagingObjects(), 6 * 60 * 60 * 1000);
+stagingSweepTimer.unref();
 
 interface ServerError extends NodeJS.ErrnoException {
   address?: string;
