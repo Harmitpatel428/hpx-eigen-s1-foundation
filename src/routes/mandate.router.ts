@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, DocumentSourceChannel } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { MandateService } from '../services/mandate.service';
 import { hashUploadToken, MANDATE_POLICY, isAllowedContentType } from '../domain/mandate';
@@ -14,7 +14,19 @@ import {
   ScannerUnavailableError,
   InfectedFileError,
   CaseClosedError,
+  AuthorizationError,
 } from '../types/exceptions';
+
+const FIRM_SOURCE_CHANNELS = ['WHATSAPP', 'EMAIL', 'PHYSICAL', 'FIRM_UPLOAD', 'OTHER'] as const;
+
+/** Read a permission from the authenticated user's manifest (string scope or V2 decision). */
+function hasPermission(req: Request, slug: string): boolean {
+  const perms = (req as AuthenticatedRequest).user?.permissions as Record<string, unknown> | undefined;
+  const v = perms?.[slug];
+  if (v === undefined || v === null) return false;
+  if (typeof v === 'string') return true;
+  return (v as { allowed?: boolean }).allowed === true;
+}
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
@@ -42,6 +54,8 @@ function mapError(err: unknown, res: Response, next: NextFunction) {
     res.status(409).json({ code: 'CONFLICT', message: (err as Error).message });
   } else if (err instanceof CaseClosedError) {
     res.status(410).json({ code: 'CASE_CLOSED', message: (err as Error).message });
+  } else if (err instanceof AuthorizationError) {
+    res.status(403).json({ code: 'AUTHORIZATION_ERROR', message: (err as Error).message });
   } else if (err instanceof BusinessRuleViolationError) {
     const msg = (err as Error).message;
     if (msg.includes('expired')) {
@@ -91,6 +105,70 @@ export function createMandateRouter(prisma: PrismaClient): Router {
           { mandateType: mandateType.trim(), description: description?.trim(), sendEmail },
         );
         res.status(201).json({ success: true, data: result });
+      } catch (err) { mapError(err, res, next); }
+    }
+  );
+
+  /** POST /cases/:caseId/mandate/firm-upload-url — staff presigned PUT for a firm upload */
+  router.post('/cases/:caseId/mandate/firm-upload-url', authMiddleware, permissionMiddleware('mandate:upload'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        if (!isUuid(req.params.caseId)) throw new ValidationError('Invalid caseId.');
+        const { fileName, contentType, fileSizeBytes } = req.body as {
+          fileName?: string; contentType?: string; fileSizeBytes?: number;
+        };
+        if (!fileName || typeof fileName !== 'string' || fileName.length < 1 || fileName.length > 255) {
+          throw new ValidationError('fileName is required (1-255 characters).');
+        }
+        if (!contentType || typeof contentType !== 'string' || !isAllowedContentType(contentType)) {
+          throw new ValidationError(`contentType must be one of: ${MANDATE_POLICY.ALLOWED_CONTENT_TYPES.join(', ')}.`);
+        }
+        if (typeof fileSizeBytes !== 'number' || !Number.isInteger(fileSizeBytes) || fileSizeBytes < 1 || fileSizeBytes > MANDATE_POLICY.MAX_FILE_SIZE_BYTES) {
+          throw new ValidationError(`fileSizeBytes must be an integer between 1 and ${MANDATE_POLICY.MAX_FILE_SIZE_BYTES}.`);
+        }
+        const result = await svc.firmUploadUrl({ tenantId, userId }, req.params.caseId, { fileName, contentType, fileSizeBytes });
+        res.json({ success: true, data: result });
+      } catch (err) { mapError(err, res, next); }
+    }
+  );
+
+  /** POST /cases/:caseId/mandate/firm-confirm-upload — staff confirms a firm upload */
+  router.post('/cases/:caseId/mandate/firm-confirm-upload', authMiddleware, permissionMiddleware('mandate:upload'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        if (!isUuid(req.params.caseId)) throw new ValidationError('Invalid caseId.');
+        const { uploadId, fileName, mandateType, sourceChannel, internalNote, expiresAt, verify } = req.body as Record<string, unknown>;
+        if (typeof uploadId !== 'string' || !isUuid(uploadId)) throw new ValidationError('uploadId is required (uuid).');
+        if (typeof fileName !== 'string' || fileName.length < 1 || fileName.length > 255) throw new ValidationError('fileName is required (1-255 characters).');
+        if (mandateType !== undefined && (typeof mandateType !== 'string' || mandateType.length > 200)) throw new ValidationError('mandateType must be a string of at most 200 characters.');
+        if (typeof sourceChannel !== 'string' || !(FIRM_SOURCE_CHANNELS as readonly string[]).includes(sourceChannel)) {
+          throw new ValidationError(`sourceChannel must be one of: ${FIRM_SOURCE_CHANNELS.join(', ')}.`);
+        }
+        if (internalNote !== undefined && internalNote !== null && (typeof internalNote !== 'string' || internalNote.length > 2000)) throw new ValidationError('internalNote must be a string of at most 2000 characters.');
+        if (verify !== undefined && typeof verify !== 'boolean') throw new ValidationError('verify must be a boolean.');
+        let expires: Date | null = null;
+        if (expiresAt !== undefined && expiresAt !== null) {
+          const d = new Date(expiresAt as string);
+          if (isNaN(d.getTime()) || d.getTime() <= Date.now()) throw new ValidationError('expiresAt must be a future ISO datetime.');
+          expires = d;
+        }
+        const result = await svc.firmConfirmUpload(
+          { tenantId, userId },
+          req.params.caseId,
+          {
+            uploadId,
+            fileName,
+            mandateType: mandateType as string | undefined,
+            sourceChannel: sourceChannel as DocumentSourceChannel,
+            internalNote: (internalNote as string | undefined) ?? undefined,
+            expiresAt: expires,
+            verify: verify as boolean | undefined,
+          },
+          hasPermission(req, 'mandate:verify'),
+        );
+        res.json({ success: true, data: result });
       } catch (err) { mapError(err, res, next); }
     }
   );

@@ -4,6 +4,8 @@ import {
   DocEventType,
   DocCaseStatus,
   NotificationType,
+  UploadedByParty,
+  DocumentSourceChannel,
   Prisma,
 } from '@prisma/client';
 import crypto from 'crypto';
@@ -22,6 +24,7 @@ import {
   ScannerUnavailableError,
   InfectedFileError,
   CaseClosedError,
+  AuthorizationError,
 } from '../types/exceptions';
 import {
   MANDATE_POLICY,
@@ -32,6 +35,7 @@ import {
   sanitizeFileName,
   mandateStagingKey,
   mandateFinalKey,
+  mandateFirmStagingKey,
   isAllowedContentType,
   maskEmail,
   matchesMagicBytes,
@@ -319,6 +323,239 @@ export class MandateService {
     }
 
     return { uploadId, status: 'UPLOADED' as const };
+  }
+
+  // ─── 7b-firm. firmUploadUrl (staff direct upload) ──────────────────────────
+
+  /** Staff presigned PUT for a firm-uploaded mandate. No DB write; no token. */
+  async firmUploadUrl(
+    ctx: TenantContext,
+    caseId: string,
+    fileInfo: { fileName: string; contentType: string; fileSizeBytes: number },
+  ) {
+    await this.assertCaseAcceptsUploads(caseId, ctx.tenantId);
+
+    if (!isAllowedContentType(fileInfo.contentType)) {
+      throw new ValidationError(`File type ${fileInfo.contentType} is not accepted. Allowed: ${MANDATE_POLICY.ALLOWED_CONTENT_TYPES.join(', ')}`);
+    }
+    if (fileInfo.fileSizeBytes > MANDATE_POLICY.MAX_FILE_SIZE_BYTES) {
+      throw new ValidationError(`File size exceeds the ${MANDATE_POLICY.MAX_FILE_SIZE_BYTES} byte limit.`);
+    }
+
+    const uploadId = crypto.randomUUID();
+    const stagingKey = mandateFirmStagingKey(ctx.tenantId, caseId, uploadId, fileInfo.fileName);
+    const { url, expiresAt } = await storageService.generateUploadUrl(
+      stagingKey, fileInfo.contentType, fileInfo.fileSizeBytes, MANDATE_POLICY.PRESIGNED_URL_SECONDS,
+    );
+    return { uploadUrl: url, uploadId, expiresAt };
+  }
+
+  // ─── 7c-firm. firmConfirmUpload (staff direct upload) ──────────────────────
+
+  /**
+   * Confirm a firm-uploaded mandate. Reuses the client pipeline (headObject →
+   * magic bytes → scan → promote) but is staff-authed, tokenless, and always
+   * supersedes the transition-legal set of prior requests (never blocks; a prior
+   * VERIFIED request is retained as history — domain forbids VERIFIED→SUPERSEDED).
+   * `canVerify` is resolved by the router from the caller's mandate:verify permission.
+   */
+  async firmConfirmUpload(
+    ctx: TenantContext,
+    caseId: string,
+    input: {
+      uploadId: string;
+      fileName: string;
+      mandateType?: string;
+      sourceChannel: DocumentSourceChannel;
+      internalNote?: string;
+      expiresAt?: Date | null;
+      verify?: boolean;
+    },
+    canVerify: boolean,
+  ) {
+    // B1.2 replay (first-wins): a prior confirm for this uploadId returns unchanged.
+    const replay = await this.prisma.mandateUpload.findFirst({
+      where: { uploadId: input.uploadId, tenantId: ctx.tenantId },
+      select: { mandateRequestId: true, mandateRequest: { select: { status: true } } },
+    });
+    if (replay) {
+      return {
+        mandateRequestId: replay.mandateRequestId,
+        uploadId: input.uploadId,
+        status: replay.mandateRequest.status === MandateRequestStatus.VERIFIED ? ('VERIFIED' as const) : ('UPLOADED' as const),
+      };
+    }
+
+    // G4: verify-permission gate — after replay, before any object gate.
+    if (input.verify === true && !canVerify) throw new AuthorizationError();
+
+    await this.assertCaseAcceptsUploads(caseId, ctx.tenantId);
+
+    const safeName = sanitizeFileName(input.fileName);
+    const stagingKey = mandateFirmStagingKey(ctx.tenantId, caseId, input.uploadId, safeName);
+    const head = await storageService.headObject(stagingKey);
+    if (!head.exists) throw new ConflictError();
+
+    if (head.contentLength! > MANDATE_POLICY.MAX_FILE_SIZE_BYTES) {
+      await storageService.deleteObject(stagingKey);
+      throw new ValidationError('Uploaded file exceeds the size limit.');
+    }
+    if (!isAllowedContentType(head.contentType!)) {
+      await storageService.deleteObject(stagingKey);
+      throw new ValidationError('Uploaded file type is not accepted.');
+    }
+
+    const stagedBytes = await storageService.getObjectBytes(stagingKey);
+    if (!matchesMagicBytes(head.contentType!, stagedBytes)) {
+      await storageService.deleteObject(stagingKey);
+      throw new ValidationError('Uploaded file content does not match its declared type.');
+    }
+
+    let scanOutcome;
+    try {
+      scanOutcome = await virusScanService.scanOrBypass(stagedBytes);
+    } catch {
+      throw new ScannerUnavailableError(); // leave staging for retry
+    }
+    if (scanOutcome.isInfected) {
+      try {
+        await storageService.deleteObject(stagingKey);
+      } catch (err) {
+        logger.error({ err, stagingKey, caseId }, 'Failed to delete infected firm-upload staging object — manual cleanup required');
+      }
+      logger.warn({ caseId, uploadId: input.uploadId, signature: scanOutcome.signature }, 'Firm mandate upload rejected by virus scanner (FOUND)');
+      await this.audit.log({
+        tenantId: ctx.tenantId, eventType: 'MANDATE_FIRM_UPLOAD_REJECTED_INFECTED', entityType: 'DocCase',
+        entityId: caseId, actorUserId: ctx.userId, operation: 'CREATE',
+        payload: { uploadId: input.uploadId, reason: 'FAILED_SECURITY_SCAN', fileName: safeName },
+      });
+      throw new InfectedFileError();
+    }
+
+    // Pre-generate the request id so the final key can be built before promotion
+    // (storage ops stay OUT of the DB transaction). Orphan-on-tx-failure parity
+    // with the client confirmUpload flow.
+    const requestId = crypto.randomUUID();
+    const finalKey = mandateFinalKey(ctx.tenantId, requestId, input.uploadId, safeName);
+    await storageService.copyObject(stagingKey, finalKey);
+    await storageService.deleteObject(stagingKey);
+
+    const willVerify = input.verify === true && canVerify;
+    const newStatus = willVerify ? MandateRequestStatus.VERIFIED : MandateRequestStatus.UPLOADED;
+
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        // B1.3: serialize concurrent staff writes on this case.
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM "DocCase" WHERE id = ${caseId}::uuid AND "tenantId" = ${ctx.tenantId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
+        if (locked.length === 0) throw new ResourceNotFoundError();
+
+        // F6: detect a prior VERIFIED request that will be retained (not supersedable).
+        const retainedVerified = await tx.mandateRequest.findFirst({
+          where: { caseId, tenantId: ctx.tenantId, status: MandateRequestStatus.VERIFIED },
+          select: { id: true },
+        });
+
+        // E5: supersede only the transition-legal set (VERIFIED/SUPERSEDED excluded).
+        await tx.mandateRequest.updateMany({
+          where: { caseId, tenantId: ctx.tenantId, status: { in: [MandateRequestStatus.PENDING_UPLOAD, MandateRequestStatus.UPLOADED, MandateRequestStatus.REJECTED, MandateRequestStatus.EXPIRED] } },
+          data: { status: MandateRequestStatus.SUPERSEDED, supersededBy: requestId },
+        });
+
+        const request = await tx.mandateRequest.create({
+          data: {
+            id: requestId,
+            tenantId: ctx.tenantId,
+            caseId,
+            mandateType: input.mandateType?.trim() || 'Mandate',
+            uploadTokenHash: hashUploadToken(crypto.randomUUID()), // random; never issued to a client
+            tokenExpiresAt: new Date(), // immaterial: status is not PENDING_UPLOAD, the expiry worker ignores it
+            sentByUserId: ctx.userId,
+            status: newStatus,
+            verifiedAt: willVerify ? new Date() : null,
+            verifiedBy: willVerify ? ctx.userId : null,
+          },
+        });
+
+        await tx.mandateUpload.create({
+          data: {
+            tenantId: ctx.tenantId,
+            mandateRequestId: request.id,
+            storageKey: finalKey,
+            fileName: safeName,
+            contentType: head.contentType!,
+            fileSizeBytes: head.contentLength!,
+            uploadId: input.uploadId,
+            uploadedByParty: UploadedByParty.FIRM,
+            sourceChannel: input.sourceChannel,
+            uploadedByUserId: ctx.userId,
+            internalNote: input.internalNote ?? null,
+            expiresAt: input.expiresAt ?? null,
+          },
+        });
+
+        await tx.docCaseEvent.create({
+          data: {
+            tenantId: ctx.tenantId, caseId, eventType: DocEventType.MANDATE_FIRM_UPLOADED, actorUserId: ctx.userId,
+            payload: { mandateRequestId: request.id, uploadId: input.uploadId, fileName: safeName, sourceChannel: input.sourceChannel, verified: willVerify } as unknown as Prisma.InputJsonValue,
+          },
+        });
+        await this.audit.appendInTx(tx, {
+          tenantId: ctx.tenantId, eventType: 'MANDATE_FIRM_UPLOADED', entityType: 'MandateRequest',
+          entityId: request.id, actorUserId: ctx.userId, operation: 'CREATE',
+          payload: { uploadId: input.uploadId, sourceChannel: input.sourceChannel, verified: willVerify, previousStatus: null, newStatus },
+        });
+
+        if (retainedVerified) {
+          // F6: coexistence — a prior VERIFIED mandate is kept as history.
+          await tx.docCaseEvent.create({
+            data: {
+              tenantId: ctx.tenantId, caseId, eventType: DocEventType.MANDATE_SUPERSEDED, actorUserId: ctx.userId,
+              payload: { retainedVerifiedRequestId: retainedVerified.id, newRequestId: request.id, note: 'prior verified mandate retained as history; new request current' } as unknown as Prisma.InputJsonValue,
+            },
+          });
+          await this.audit.appendInTx(tx, {
+            tenantId: ctx.tenantId, eventType: 'MANDATE_VERIFIED_RETAINED', entityType: 'MandateRequest',
+            entityId: retainedVerified.id, actorUserId: ctx.userId, operation: 'UPDATE',
+            payload: { retainedVerifiedRequestId: retainedVerified.id, newRequestId: request.id },
+          });
+        }
+
+        return { mandateRequestId: request.id };
+      });
+
+      // Notify the assigned staffer (best-effort, post-tx).
+      const docCase = await this.prisma.docCase.findUnique({
+        where: { id: caseId }, select: { assignedTo: true, caseNumber: true },
+      });
+      if (docCase?.assignedTo && docCase.assignedTo !== ctx.userId) {
+        await this.notifications.create({
+          tenantId: ctx.tenantId, recipientUserId: docCase.assignedTo,
+          type: NotificationType.MANDATE_UPLOAD_RECEIVED,
+          title: 'Mandate uploaded by firm',
+          message: `A mandate document was uploaded for case ${docCase.caseNumber || caseId}.`,
+          actionUrl: `/documentation/cases/${caseId}`,
+        }).catch(() => {});
+      }
+
+      return { mandateRequestId: result.mandateRequestId, uploadId: input.uploadId, status: newStatus === MandateRequestStatus.VERIFIED ? ('VERIFIED' as const) : ('UPLOADED' as const) };
+    } catch (err) {
+      // B1.2 backstop: a concurrent confirm won the uploadId — return its result.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const won = await this.prisma.mandateUpload.findFirst({
+          where: { uploadId: input.uploadId, tenantId: ctx.tenantId },
+          select: { mandateRequestId: true, mandateRequest: { select: { status: true } } },
+        });
+        if (won) {
+          return {
+            mandateRequestId: won.mandateRequestId,
+            uploadId: input.uploadId,
+            status: won.mandateRequest.status === MandateRequestStatus.VERIFIED ? ('VERIFIED' as const) : ('UPLOADED' as const),
+          };
+        }
+      }
+      throw err;
+    }
   }
 
   /** Infected upload: delete the staged object, reject the request, audit + notify.

@@ -43,6 +43,14 @@ export function mandateFinalKey(
   return `mandate-uploads/${tenantId}/${requestId}/${uploadId}/${sanitizeFileName(fileName)}`;
 }
 
+// Firm direct upload: staging key is keyed by caseId (no mandate request exists yet
+// at presign time — the request is created at confirm). Promoted to mandateFinalKey.
+export function mandateFirmStagingKey(
+  tenantId: string, caseId: string, uploadId: string, fileName: string,
+): string {
+  return `mandate-firm-staging/${tenantId}/${caseId}/${uploadId}/${sanitizeFileName(fileName)}`;
+}
+
 export function isAllowedContentType(contentType: string): boolean {
   return MANDATE_POLICY.ALLOWED_CONTENT_TYPES.includes(contentType);
 }
