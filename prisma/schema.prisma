@@ -91,6 +91,42 @@ enum MandateRequestStatus {
   SUPERSEDED
 }
 
+// ─── Firm direct upload + unified document model (Phase 1) ──────────────────
+enum UploadedByParty {
+  CLIENT
+  FIRM
+  SYSTEM
+}
+
+enum DocumentSourceChannel {
+  CLIENT_PORTAL
+  WHATSAPP
+  EMAIL
+  PHYSICAL
+  FIRM_UPLOAD
+  OTHER
+}
+
+enum DocumentCategory {
+  MANDATE
+  REQUIREMENT
+  GENERAL
+  CUSTOM_GROUP_DOCUMENT
+  CUSTOM_FIELD_DOCUMENT
+}
+
+enum DocumentStatus {
+  UPLOADING
+  SCANNING
+  RECEIVED
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+  EXPIRED
+  ARCHIVED
+  MALWARE_DETECTED
+}
+
 enum NotificationType {
   ROLE_ASSIGNED
   ROLE_CHANGED
@@ -507,19 +543,19 @@ enum ActivityType {
 
 // ─── Lead ─────────────────────────────────────────────────────────
 model Lead {
-  id                String       @id @default(uuid()) @db.Uuid
-  tenantId          String       @db.Uuid
+  id                String                @id @default(uuid()) @db.Uuid
+  tenantId          String                @db.Uuid
   firstName         String
   lastName          String
   email             String?
   phone             String?
   company           String?
-  source            LeadSource   @default(OTHER)
-  status            LeadStatus   @default(NEW)
-  stage             LeadStage    @default(NEW)
-  score             Int          @default(0)
-  expectedValue     Decimal      @default(0) @db.Decimal(18, 2)
-  priority          LeadPriority @default(MEDIUM)
+  source            LeadSource            @default(OTHER)
+  status            LeadStatus            @default(NEW)
+  stage             LeadStage             @default(NEW)
+  score             Int                   @default(0)
+  expectedValue     Decimal               @default(0) @db.Decimal(18, 2)
+  priority          LeadPriority          @default(MEDIUM)
   expectedCloseDate DateTime?
   country           String?
   state             String?
@@ -527,26 +563,26 @@ model Lead {
   area              String?
   postalCode        String?
   freeformAddress   String?
-  ownerId           String?      @db.Uuid
+  ownerId           String?               @db.Uuid
   // Tracks who last assigned this lead (delegation chain). Set to ctx.userId on every ownerId change.
   // Enables OWN-scope users to retain visibility of leads they delegated downward.
-  managerId         String?      @db.Uuid
+  managerId         String?               @db.Uuid
   notes             String?
   // Current scheduling state: required when stage ∈ {FOLLOW_UP, CALL_BACK_REQUESTED, CALL_NOT_RECEIVED}
   followUpDate      DateTime?
-  customFieldValues Json         @default("[]")
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+  customFieldValues Json                  @default("[]")
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
   deletedAt         DateTime?
-  contacts       Contact[]      @relation("LeadContacts")
-  opportunities  Opportunity[]
-  docCases       DocCase[]
-  tags           LeadTagAssignment[]
-  leadNotes      LeadNote[]            @relation("LeadNotes")
-  leadActivities LeadActivity[]
-  waChannels     LeadWhatsAppChannel[]
-  conversations  Conversation[]
-  phones         LeadPhone[]
+  contacts          Contact[]             @relation("LeadContacts")
+  opportunities     Opportunity[]
+  docCases          DocCase[]
+  tags              LeadTagAssignment[]
+  leadNotes         LeadNote[]            @relation("LeadNotes")
+  leadActivities    LeadActivity[]
+  waChannels        LeadWhatsAppChannel[]
+  conversations     Conversation[]
+  phones            LeadPhone[]
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -1068,6 +1104,12 @@ enum DocEventType {
   MANDATE_LINK_REGENERATED
   MANDATE_SUPERSEDED
   MANDATE_EXPIRED_BATCH
+  // --- Firm direct upload + unified documents (Phase 1) -------------------
+  // NOTE: DOCUMENT_STATUS_CHANGED already exists above and is reused.
+  MANDATE_FIRM_UPLOADED
+  DOCUMENT_UPLOADED
+  DOCUMENT_REPLACED
+  DOCUMENT_REMOVED
 }
 
 // ─── DocPreset — reusable document requirement template ───────────
@@ -1170,9 +1212,9 @@ model DocCase {
   transferredBy     String?       @db.Uuid
   closedAt          DateTime?
   closedReason      String?
-  closedByUserId    String?   @db.Uuid
+  closedByUserId    String?       @db.Uuid
   reopenedAt        DateTime?
-  reopenedByUserId  String?   @db.Uuid
+  reopenedByUserId  String?       @db.Uuid
   notes             String?
   createdBy         String        @db.Uuid
   createdAt         DateTime      @default(now())
@@ -1214,10 +1256,11 @@ model DocCase {
   reminders DocReminder[]
   overrides DocManagerOverride[]
 
-  portalSessions       PortalSession[]
+  portalSessions        PortalSession[]
   contactChangeRequests PortalContactChangeRequest[]
-  portalAuthAttempts   PortalAuthAttempt[]
-  mandateRequests      MandateRequest[]
+  portalAuthAttempts    PortalAuthAttempt[]
+  mandateRequests       MandateRequest[]
+  uploadedDocuments     Document[]
 
   @@unique([tenantId, leadId])
   @@index([tenantId])
@@ -1322,9 +1365,10 @@ model DocCaseDocument {
   updatedAt             DateTime          @updatedAt
   deletedAt             DateTime?
 
-  case        DocCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  storageRefs DocStorageRef[]
-  events      DocCaseEvent[]
+  case          DocCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  storageRefs   DocStorageRef[]
+  events        DocCaseEvent[]
+  uploadedFiles Document[]
 
   @@index([caseId])
   @@index([tenantId])
@@ -1356,19 +1400,19 @@ model DocCaseEvent {
 
 // ─── DocCaseNote — internal or customer-facing notes ──────────────
 model DocCaseNote {
-  id        String      @id @default(uuid()) @db.Uuid
-  tenantId  String      @db.Uuid
-  caseId    String      @db.Uuid
-  noteType  DocNoteType @default(INTERNAL)
-  content   String
+  id              String      @id @default(uuid()) @db.Uuid
+  tenantId        String      @db.Uuid
+  caseId          String      @db.Uuid
+  noteType        DocNoteType @default(INTERNAL)
+  content         String
   // noteType records intent; clientVisible records the audited publish decision.
   // A CUSTOMER note is not on the portal until it is explicitly published.
-  clientVisible   Boolean   @default(false)
+  clientVisible   Boolean     @default(false)
   clientVisibleAt DateTime?
-  createdBy String      @db.Uuid
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
-  deletedAt DateTime?
+  createdBy       String      @db.Uuid
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
 
   case DocCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
@@ -1550,7 +1594,7 @@ model MandateRequest {
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
 
-  case    DocCase          @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  case    DocCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
   uploads MandateUpload[]
 
   @@index([tenantId])
@@ -1560,21 +1604,78 @@ model MandateRequest {
   @@index([tenantId, status])
 }
 
-// --- MandateUpload --- a file uploaded by a client in response to a mandate ---
+// --- MandateUpload --- a file uploaded in response to a mandate (client OR firm) ---
 model MandateUpload {
-  id               String   @id @default(uuid()) @db.Uuid
-  tenantId         String   @db.Uuid
-  mandateRequestId String   @db.Uuid
+  id               String                @id @default(uuid()) @db.Uuid
+  tenantId         String                @db.Uuid
+  mandateRequestId String                @db.Uuid
   storageKey       String
   fileName         String
   contentType      String
   fileSizeBytes    Int
-  uploadedAt       DateTime @default(now())
+  uploadedAt       DateTime              @default(now())
   uploadIp         String?
   uploadUserAgent  String?
+  // Firm direct upload (Phase 1). Existing rows default to the client-portal origin.
+  uploadId         String?               @unique @db.Uuid
+  uploadedByParty  UploadedByParty       @default(CLIENT)
+  sourceChannel    DocumentSourceChannel @default(CLIENT_PORTAL)
+  uploadedByUserId String?               @db.Uuid
+  internalNote     String?
+  expiresAt        DateTime? // informational only; the mandate expiry worker is token-scoped
 
   mandateRequest MandateRequest @relation(fields: [mandateRequestId], references: [id], onDelete: Cascade)
 
   @@index([mandateRequestId])
   @@index([tenantId])
+}
+
+// --- Document --- unified firm/client file store for the Documentation dept ---
+// Backs REQUIREMENT + GENERAL uploads (mandate files stay on MandateUpload).
+// groupInstanceId / fieldDefinitionId are nullable Phase-2 reserves (custom groups).
+// The active-requirement partial unique index lives in raw SQL in the migration.
+model Document {
+  id                String                @id @default(uuid()) @db.Uuid
+  tenantId          String                @db.Uuid
+  caseId            String                @db.Uuid
+  requirementId     String?               @db.Uuid
+  groupInstanceId   String?               @db.Uuid
+  fieldDefinitionId String?               @db.Uuid
+  uploadId          String?               @unique @db.Uuid
+  category          DocumentCategory
+  name              String
+  originalFilename  String
+  storageKey        String
+  mimeType          String
+  sizeBytes         Int
+  checksum          String?
+  status            DocumentStatus        @default(RECEIVED)
+  sourceChannel     DocumentSourceChannel
+  uploadedByParty   UploadedByParty
+  uploadedByUserId  String?               @db.Uuid
+  internalNote      String?
+  clientVisible     Boolean               @default(false)
+  versionOfId       String?               @db.Uuid
+  isActive          Boolean               @default(true)
+  receivedAt        DateTime              @default(now())
+  verifiedAt        DateTime?
+  verifiedByUserId  String?               @db.Uuid
+  rejectedAt        DateTime?
+  rejectedByUserId  String?               @db.Uuid
+  rejectionReason   String?
+  expiresAt         DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  deletedAt         DateTime?
+
+  case        DocCase          @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  requirement DocCaseDocument? @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+  versionOf   Document?        @relation("DocumentVersions", fields: [versionOfId], references: [id], onDelete: SetNull)
+  versions    Document[]       @relation("DocumentVersions")
+
+  @@index([tenantId])
+  @@index([caseId])
+  @@index([requirementId])
+  @@index([tenantId, category])
+  @@index([caseId, isActive])
 }

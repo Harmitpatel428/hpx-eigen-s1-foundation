@@ -84,6 +84,10 @@ const PERMISSIONS = [
   { slug: 'doc:transfer',       module: 'Documentation', description: 'Transfer documentation-ready cases to Process Department' },
   { slug: 'doc:preset:view',    module: 'Documentation', description: 'View document presets' },
   { slug: 'doc:preset:manage',  module: 'Documentation', description: 'Create, edit, and delete document presets' },
+  // Firm direct upload (Phase 1)
+  { slug: 'mandate:upload',     module: 'Documentation', description: 'Upload a mandate document directly from the CRM (firm-side)' },
+  { slug: 'doc:upload',         module: 'Documentation', description: 'Upload required/general documents directly from the CRM (firm-side)' },
+  { slug: 'doc:file:manage',    module: 'Documentation', description: 'Manage uploaded document files (status change, replace, remove)' },
 ] as const;
 
 const PRESET_ROLES: Record<string, string[]> = {
