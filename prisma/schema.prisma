@@ -1103,6 +1103,7 @@ enum DocEventType {
   MANDATE_REJECTED
   MANDATE_LINK_REGENERATED
   MANDATE_SUPERSEDED
+  MANDATE_VERIFIED_RETAINED
   MANDATE_EXPIRED_BATCH
   // --- Firm direct upload + unified documents (Phase 1) -------------------
   // NOTE: DOCUMENT_STATUS_CHANGED already exists above and is reused.

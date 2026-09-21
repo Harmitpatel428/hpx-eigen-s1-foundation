@@ -455,11 +455,12 @@ export class MandateService {
           SELECT id FROM "DocCase" WHERE id = ${caseId}::uuid AND "tenantId" = ${ctx.tenantId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
         if (locked.length === 0) throw new ResourceNotFoundError();
 
-        // F6: detect a prior VERIFIED request that will be retained (not supersedable).
-        const retainedVerified = await tx.mandateRequest.findFirst({
+        // F6: prior VERIFIED requests are retained (not supersedable). Collect them for the event payload.
+        const retainedVerified = await tx.mandateRequest.findMany({
           where: { caseId, tenantId: ctx.tenantId, status: MandateRequestStatus.VERIFIED },
           select: { id: true },
         });
+        const retainedRequestIds = retainedVerified.map((r) => r.id);
 
         // E5: supersede only the transition-legal set (VERIFIED/SUPERSEDED excluded).
         await tx.mandateRequest.updateMany({
@@ -511,18 +512,18 @@ export class MandateService {
           payload: { uploadId: input.uploadId, sourceChannel: input.sourceChannel, verified: willVerify, previousStatus: null, newStatus },
         });
 
-        if (retainedVerified) {
-          // F6: coexistence — a prior VERIFIED mandate is kept as history.
+        if (retainedRequestIds.length > 0) {
+          // F6: coexistence — prior VERIFIED mandate(s) kept as history alongside the new current request.
           await tx.docCaseEvent.create({
             data: {
-              tenantId: ctx.tenantId, caseId, eventType: DocEventType.MANDATE_SUPERSEDED, actorUserId: ctx.userId,
-              payload: { retainedVerifiedRequestId: retainedVerified.id, newRequestId: request.id, note: 'prior verified mandate retained as history; new request current' } as unknown as Prisma.InputJsonValue,
+              tenantId: ctx.tenantId, caseId, eventType: DocEventType.MANDATE_VERIFIED_RETAINED, actorUserId: ctx.userId,
+              payload: { caseId, newRequestId: request.id, retainedRequestIds } as unknown as Prisma.InputJsonValue,
             },
           });
           await this.audit.appendInTx(tx, {
             tenantId: ctx.tenantId, eventType: 'MANDATE_VERIFIED_RETAINED', entityType: 'MandateRequest',
-            entityId: retainedVerified.id, actorUserId: ctx.userId, operation: 'UPDATE',
-            payload: { retainedVerifiedRequestId: retainedVerified.id, newRequestId: request.id },
+            entityId: retainedRequestIds[0], actorUserId: ctx.userId, operation: 'UPDATE',
+            payload: { caseId, newRequestId: request.id, retainedRequestIds },
           });
         }
 
