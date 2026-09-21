@@ -206,9 +206,9 @@ export class DocumentService {
           if (outcome === 'unreachable') {
             await tx.docCaseEvent.create({
               data: {
-                tenantId: ctx.tenantId, caseId, documentId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
+                tenantId: ctx.tenantId, caseId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
                 actorUserId: ctx.userId,
-                payload: { divergence: true, note: `file attached; requirement status left unchanged (no valid transition to ${target})`, requirementId: input.requirementId, target } as unknown as Prisma.InputJsonValue,
+                payload: { fileId: documentId, divergence: true, note: `file attached; requirement status left unchanged (no valid transition to ${target})`, requirementId: input.requirementId, target } as unknown as Prisma.InputJsonValue,
               },
             });
           }
@@ -216,8 +216,8 @@ export class DocumentService {
 
         await tx.docCaseEvent.create({
           data: {
-            tenantId: ctx.tenantId, caseId, documentId, eventType: DocEventType.DOCUMENT_UPLOADED, actorUserId: ctx.userId,
-            payload: { category: input.category, name: resolvedName, sourceChannel: input.sourceChannel, verified: willVerify, requirementId: input.requirementId ?? null } as unknown as Prisma.InputJsonValue,
+            tenantId: ctx.tenantId, caseId, eventType: DocEventType.DOCUMENT_UPLOADED, actorUserId: ctx.userId,
+            payload: { fileId: documentId, category: input.category, name: resolvedName, sourceChannel: input.sourceChannel, verified: willVerify, requirementId: input.requirementId ?? null } as unknown as Prisma.InputJsonValue,
           },
         });
         await this.audit.appendInTx(tx, {
@@ -304,8 +304,8 @@ export class DocumentService {
 
       await tx.docCaseEvent.create({
         data: {
-          tenantId: ctx.tenantId, caseId: doc.caseId, documentId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
-          actorUserId: ctx.userId, payload: { fromStatus: fresh.status, toStatus: input.status } as unknown as Prisma.InputJsonValue,
+          tenantId: ctx.tenantId, caseId: doc.caseId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
+          actorUserId: ctx.userId, payload: { fileId: documentId, fromStatus: fresh.status, toStatus: input.status } as unknown as Prisma.InputJsonValue,
         },
       });
       await this.audit.appendInTx(tx, {
@@ -396,9 +396,9 @@ export class DocumentService {
           if (outcome === 'unreachable') {
             await tx.docCaseEvent.create({
               data: {
-                tenantId: ctx.tenantId, caseId: target.caseId, documentId: newId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
+                tenantId: ctx.tenantId, caseId: target.caseId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
                 actorUserId: ctx.userId,
-                payload: { divergence: true, note: `replacement attached; requirement status left unchanged (no valid transition to ${targetStatus})`, requirementId: target.requirementId, target: targetStatus } as unknown as Prisma.InputJsonValue,
+                payload: { fileId: newId, divergence: true, note: `replacement attached; requirement status left unchanged (no valid transition to ${targetStatus})`, requirementId: target.requirementId, target: targetStatus } as unknown as Prisma.InputJsonValue,
               },
             });
           }
@@ -406,8 +406,8 @@ export class DocumentService {
 
         await tx.docCaseEvent.create({
           data: {
-            tenantId: ctx.tenantId, caseId: target.caseId, documentId: newId, eventType: DocEventType.DOCUMENT_REPLACED, actorUserId: ctx.userId,
-            payload: { oldId: documentId, newId, sourceChannel: input.sourceChannel } as unknown as Prisma.InputJsonValue,
+            tenantId: ctx.tenantId, caseId: target.caseId, eventType: DocEventType.DOCUMENT_REPLACED, actorUserId: ctx.userId,
+            payload: { fileId: newId, oldId: documentId, newId, sourceChannel: input.sourceChannel } as unknown as Prisma.InputJsonValue,
           },
         });
         await this.audit.appendInTx(tx, {
@@ -442,8 +442,8 @@ export class DocumentService {
       await tx.document.update({ where: { id: documentId }, data: { deletedAt: new Date(), isActive: false } });
       await tx.docCaseEvent.create({
         data: {
-          tenantId: ctx.tenantId, caseId: doc.caseId, documentId, eventType: DocEventType.DOCUMENT_REMOVED, actorUserId: ctx.userId,
-          payload: {} as Prisma.InputJsonValue,
+          tenantId: ctx.tenantId, caseId: doc.caseId, eventType: DocEventType.DOCUMENT_REMOVED, actorUserId: ctx.userId,
+          payload: { fileId: documentId } as unknown as Prisma.InputJsonValue,
         },
       });
       await this.audit.appendInTx(tx, {

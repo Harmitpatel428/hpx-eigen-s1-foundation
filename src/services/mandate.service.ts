@@ -333,6 +333,9 @@ export class MandateService {
     caseId: string,
     fileInfo: { fileName: string; contentType: string; fileSizeBytes: number },
   ) {
+    // 404 for a missing / cross-tenant case (no existence leak); 410 only when closed.
+    const exists = await this.prisma.docCase.findFirst({ where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null }, select: { id: true } });
+    if (!exists) throw new ResourceNotFoundError();
     await this.assertCaseAcceptsUploads(caseId, ctx.tenantId);
 
     if (!isAllowedContentType(fileInfo.contentType)) {
@@ -389,6 +392,8 @@ export class MandateService {
     // G4: verify-permission gate — after replay, before any object gate.
     if (input.verify === true && !canVerify) throw new AuthorizationError();
 
+    const exists = await this.prisma.docCase.findFirst({ where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null }, select: { id: true } });
+    if (!exists) throw new ResourceNotFoundError();
     await this.assertCaseAcceptsUploads(caseId, ctx.tenantId);
 
     const safeName = sanitizeFileName(input.fileName);
@@ -838,6 +843,11 @@ export class MandateService {
             contentType: true,
             fileSizeBytes: true,
             uploadedAt: true,
+            uploadedByParty: true,
+            sourceChannel: true,
+            uploadedByUserId: true,
+            internalNote: true,
+            expiresAt: true,
           },
         },
       },
