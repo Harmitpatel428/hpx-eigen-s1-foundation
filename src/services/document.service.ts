@@ -130,13 +130,17 @@ export class DocumentService {
     });
     if (replay) return { documentId: replay.id, status: replay.status };
 
-    // G4: verify gate — after replay, before object gates.
-    if (input.verify === true && !canVerify) throw new AuthorizationError();
-
-    await this.assertCaseExists(caseId, ctx.tenantId);
-
     const safeName = sanitizeFileName(input.fileName);
     const stagingKey = docStagingKey(ctx.tenantId, caseId, input.uploadId, safeName);
+
+    // G4/G2: verify gate — after replay, before object gates. On reject, drop the staged
+    // object so a permission failure does not leave an orphan (symmetry with the mandate path).
+    if (input.verify === true && !canVerify) {
+      await storageService.deleteObject(stagingKey).catch(() => {});
+      throw new AuthorizationError();
+    }
+
+    await this.assertCaseExists(caseId, ctx.tenantId);
     const { bytes, head } = await this.gateStagedObject(stagingKey);
     const checksum = crypto.createHash('sha256').update(bytes).digest('hex');
 
