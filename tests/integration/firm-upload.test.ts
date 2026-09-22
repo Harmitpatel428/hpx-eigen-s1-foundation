@@ -10,6 +10,8 @@ import 'dotenv/config';
 import { describe, it, beforeAll, afterAll, expect } from '@jest/globals';
 import { PrismaClient, DocCaseStatus, MandateRequestStatus, DocumentStatus, DocDocumentStatus, ScopeType } from '@prisma/client';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
@@ -309,5 +311,38 @@ describe('Firm document upload (unified Document)', () => {
     expect(del.status).toBe(204);
     const row = await prisma.document.findUnique({ where: { id } });
     expect(row?.deletedAt).not.toBeNull();
+  });
+
+  it('rejects a requirement belonging to another case (E2 cross-case → 404)', async () => {
+    const caseA = await createCase();
+    const caseB = await createCase();
+    const reqB = await createRequirement(caseB.id);
+    const url = await post(`/api/v1/documentation/cases/${caseA.id}/files/upload-url`, adminToken, { fileName: 'd.pdf', contentType: 'application/pdf', fileSizeBytes: 1024 });
+    const confirm = await post(`/api/v1/documentation/cases/${caseA.id}/files/confirm-upload`, adminToken, { uploadId: url.body.data.uploadId, fileName: 'd.pdf', category: 'REQUIREMENT', requirementId: reqB.id, sourceChannel: 'EMAIL' });
+    expect(confirm.status).toBe(404);
+  });
+
+  it('persists the sha256 checksum of the staged bytes (I2)', async () => {
+    const c = await createCase();
+    const req = await createRequirement(c.id);
+    const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
+    expect(confirm!.status).toBe(200);
+    const doc = await prisma.document.findUnique({ where: { id: confirm!.body.data.documentId }, select: { checksum: true } });
+    // storage mock's getObjectBytes returns this fixed buffer; checksum must be its sha256.
+    const expected = crypto.createHash('sha256').update(Buffer.from('%PDF-1.7 mock content')).digest('hex');
+    expect(doc?.checksum).toBe(expected);
+  });
+
+  it('firm-upload permission seed is idempotent on re-run (R12)', async () => {
+    const migPath = path.join(__dirname, '../../prisma/migrations/20260918100200_seed_firm_upload_permissions/migration.sql');
+    const slugs = ['mandate:upload', 'doc:upload', 'doc:file:manage'];
+    const before = await prisma.permission.count({ where: { slug: { in: slugs } } });
+    expect(before).toBe(3); // already applied by globalSetup migrate deploy
+    const stmts = fs.readFileSync(migPath, 'utf8')
+      .split('\n').filter((l) => !l.trim().startsWith('--')).join('\n')
+      .split(';').map((s) => s.trim()).filter(Boolean);
+    for (const s of stmts) await prisma.$executeRawUnsafe(s);
+    const after = await prisma.permission.count({ where: { slug: { in: slugs } } });
+    expect(after).toBe(before); // ON CONFLICT DO NOTHING → no duplicate rows
   });
 });
