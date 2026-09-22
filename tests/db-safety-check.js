@@ -22,7 +22,8 @@ const PROD_PATTERNS = [
 ];
 
 module.exports = async function globalSetup() {
-  const url = (process.env.DATABASE_URL ?? '').toLowerCase();
+  const rawUrl = process.env.DATABASE_URL ?? '';
+  const url = rawUrl.toLowerCase();
   if (!url) {
     throw new Error(
       'DATABASE_URL is not set.\n' +
@@ -39,5 +40,25 @@ module.exports = async function globalSetup() {
         'Use a local or CI-provisioned isolated test database.'
       );
     }
+  }
+
+  // Apply pending migrations (schema + permission seeds) against the safety-checked
+  // test DB before any suite runs. Without this, a suite whose beforeAll grants a
+  // not-yet-seeded permission throws and fails ALL its tests — deterministically,
+  // not intermittently. The observed "run 1 all-fail → run 2 all-pass" was exactly a
+  // migrate-deploy gap closed between the two runs (there is no pretest/CI step that
+  // applies migrations), NOT lock contention: jest runs with maxWorkers:1 (serialized),
+  // so cross-worker contention is impossible. rawUrl (original case) is passed
+  // explicitly so Prisma's own .env loading cannot redirect the child at another DB.
+  const { execSync } = require('child_process');
+  try {
+    // execSync (shell) so Windows `npx.cmd` resolves; env override so Prisma's own
+    // .env load cannot redirect the child away from the safety-checked test DB.
+    execSync('npx prisma migrate deploy', {
+      stdio: 'inherit',
+      env: { ...process.env, DATABASE_URL: rawUrl },
+    });
+  } catch (_) {
+    throw new Error('prisma migrate deploy failed during test globalSetup (see output above).');
   }
 };
