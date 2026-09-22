@@ -43,6 +43,7 @@ jest.mock('../../src/services/virus-scan.service', () => ({
   virusScanService: {
     isEnabled: jest.fn().mockReturnValue(true),
     scan: jest.fn().mockResolvedValue({ clean: true }),
+    scanOrBypass: jest.fn().mockResolvedValue({ scanned: true, isInfected: false }),
   },
 }));
 
@@ -55,6 +56,7 @@ import { virusScanService } from '../../src/services/virus-scan.service';
 const prisma = new PrismaClient();
 const isEnabledMock = virusScanService.isEnabled as jest.Mock;
 const scanMock = virusScanService.scan as jest.Mock;
+const scanOrBypassMock = virusScanService.scanOrBypass as jest.Mock;
 const deleteObjectMock = storageService.deleteObject as jest.Mock;
 const copyObjectMock = storageService.copyObject as jest.Mock;
 
@@ -119,6 +121,7 @@ beforeAll(async () => {
 afterEach(() => {
   isEnabledMock.mockReturnValue(true);
   scanMock.mockReset().mockResolvedValue({ clean: true });
+  scanOrBypassMock.mockReset().mockResolvedValue({ scanned: true, isInfected: false });
   deleteObjectMock.mockClear();
   copyObjectMock.mockClear();
 });
@@ -140,7 +143,7 @@ afterAll(async () => {
 describe('confirmUpload — virus scan gate', () => {
   it('1. clean file → 200 UPLOADED, promoted, MandateUpload created', async () => {
     const { token, requestId } = await createPendingMandate();
-    scanMock.mockResolvedValue({ clean: true });
+    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: false });
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(200);
@@ -154,7 +157,7 @@ describe('confirmUpload — virus scan gate', () => {
 
   it('2. infected file → 422 FILE_REJECTED, staging deleted, request REJECTED, no MandateUpload', async () => {
     const { token, requestId } = await createPendingMandate();
-    scanMock.mockResolvedValue({ clean: false, signature: 'Eicar-Test-Signature' });
+    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: true, signature: 'Eicar-Test-Signature' });
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(422);
@@ -170,7 +173,7 @@ describe('confirmUpload — virus scan gate', () => {
 
   it('3. infected rejection writes an audit event (no signature in payload)', async () => {
     const { token, requestId } = await createPendingMandate();
-    scanMock.mockResolvedValue({ clean: false, signature: 'Win.Test.EICAR' });
+    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: true, signature: 'Win.Test.EICAR' });
 
     await confirmUpload(token);
     const audits = await prisma.auditLog.findMany({
@@ -182,7 +185,7 @@ describe('confirmUpload — virus scan gate', () => {
 
   it('4. scanner unavailable → 503 SCANNER_UNAVAILABLE, request stays PENDING_UPLOAD, not promoted, staging kept', async () => {
     const { token, requestId } = await createPendingMandate();
-    scanMock.mockRejectedValue(new ScannerUnavailableError());
+    scanOrBypassMock.mockRejectedValue(new ScannerUnavailableError());
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(503);
@@ -196,7 +199,7 @@ describe('confirmUpload — virus scan gate', () => {
   it('5. scanner timeout → 503 SCANNER_UNAVAILABLE, request safe', async () => {
     const { token, requestId } = await createPendingMandate();
     // A timeout surfaces as ScannerUnavailableError from the service.
-    scanMock.mockRejectedValue(new ScannerUnavailableError());
+    scanOrBypassMock.mockRejectedValue(new ScannerUnavailableError());
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(503);
@@ -208,6 +211,7 @@ describe('confirmUpload — virus scan gate', () => {
   it('6. scanning disabled in dev → upload proceeds unscanned, scanner not called', async () => {
     const { token, requestId } = await createPendingMandate();
     isEnabledMock.mockReturnValue(false);
+    scanOrBypassMock.mockResolvedValue({ scanned: false, isInfected: false });
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(200);
@@ -219,6 +223,8 @@ describe('confirmUpload — virus scan gate', () => {
   it('7. scanning disabled in production → 503 SCANNER_UNAVAILABLE (fail closed), request safe', async () => {
     const { token, requestId } = await createPendingMandate();
     isEnabledMock.mockReturnValue(false);
+    // Production policy: scanning disabled must fail closed, never bypass silently.
+    scanOrBypassMock.mockRejectedValue(new ScannerUnavailableError());
     const prev = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     try {
@@ -234,7 +240,7 @@ describe('confirmUpload — virus scan gate', () => {
 
   it('8. infected + staging delete fails → still 422 REJECTED, audit flags stagingDeleteFailed, no signature', async () => {
     const { token, requestId } = await createPendingMandate();
-    scanMock.mockResolvedValue({ clean: false, signature: 'Win.Test.EICAR' });
+    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: true, signature: 'Win.Test.EICAR' });
     deleteObjectMock.mockRejectedValueOnce(new Error('R2 delete failed'));
 
     const res = await confirmUpload(token);
