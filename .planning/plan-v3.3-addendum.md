@@ -66,3 +66,9 @@ server-truth.
 ## 7. Note — staging sweep axes
 The staging sweep RETENTION default is 24h; the 6h value is the sweep INTERVAL. These are distinct
 axes and were mistaken for a deviation. Not a deviation; do not re-raise.
+
+## 8. Operational Caveat (Virus Scanner)
+The system's fail-closed guarantee in production is CONFIG-DEPENDENT. It requires
+`VIRUS_SCAN_ENABLED='true'`. If this flag is set to false in any environment (including production),
+the system deliberately fails OPEN (accepts unscanned uploads) and logs a policy bypass warning. This
+is an intentional operational escape hatch for scanner outages, not a defect.
