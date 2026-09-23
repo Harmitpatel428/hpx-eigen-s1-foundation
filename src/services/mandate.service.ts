@@ -398,21 +398,29 @@ export class MandateService {
 
     const safeName = sanitizeFileName(input.fileName);
     const stagingKey = mandateFirmStagingKey(ctx.tenantId, caseId, input.uploadId, safeName);
+    // M4: every rejection emits a structured log keyed by uploadId+caseId (never the
+    // presigned URL) so ops can trace a rejected firm mandate upload.
     const head = await storageService.headObject(stagingKey);
-    if (!head.exists) throw new ConflictError();
+    if (!head.exists) {
+      logger.warn({ caseId, uploadId: input.uploadId, reason: 'staging_missing', code: 409 }, 'Firm mandate upload rejected: staging object missing');
+      throw new ConflictError();
+    }
 
     if (head.contentLength! > MANDATE_POLICY.MAX_FILE_SIZE_BYTES) {
       await storageService.deleteObject(stagingKey);
+      logger.warn({ caseId, uploadId: input.uploadId, reason: 'oversize', code: 400, sizeBytes: head.contentLength }, 'Firm mandate upload rejected: oversize');
       throw new ValidationError('Uploaded file exceeds the size limit.');
     }
     if (!isAllowedContentType(head.contentType!)) {
       await storageService.deleteObject(stagingKey);
+      logger.warn({ caseId, uploadId: input.uploadId, reason: 'content_type', code: 400 }, 'Firm mandate upload rejected: content type not accepted');
       throw new ValidationError('Uploaded file type is not accepted.');
     }
 
     const stagedBytes = await storageService.getObjectBytes(stagingKey);
     if (!matchesMagicBytes(head.contentType!, stagedBytes)) {
       await storageService.deleteObject(stagingKey);
+      logger.warn({ caseId, uploadId: input.uploadId, reason: 'magic_byte', code: 400 }, 'Firm mandate upload rejected: magic-byte mismatch');
       throw new ValidationError('Uploaded file content does not match its declared type.');
     }
 
@@ -428,7 +436,9 @@ export class MandateService {
       } catch (err) {
         logger.error({ err, stagingKey, caseId }, 'Failed to delete infected firm-upload staging object — manual cleanup required');
       }
-      logger.warn({ caseId, uploadId: input.uploadId, signature: scanOutcome.signature }, 'Firm mandate upload rejected by virus scanner (FOUND)');
+      // M4 infected>0 alert hook: error-level + `alert` field is the greppable marker
+      // ops alerting keys on. ponytail: wire a pager rule to `alert:'VIRUS_DETECTED'` if paging is needed.
+      logger.error({ alert: 'VIRUS_DETECTED', caseId, uploadId: input.uploadId, reason: 'infected', code: 422, signature: scanOutcome.signature }, 'Firm mandate upload rejected by virus scanner (FOUND)');
       await this.audit.log({
         tenantId: ctx.tenantId, eventType: 'MANDATE_FIRM_UPLOAD_REJECTED_INFECTED', entityType: 'DocCase',
         entityId: caseId, actorUserId: ctx.userId, operation: 'CREATE',

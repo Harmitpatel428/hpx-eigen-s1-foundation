@@ -141,7 +141,7 @@ export class DocumentService {
     }
 
     await this.assertCaseExists(caseId, ctx.tenantId);
-    const { bytes, head } = await this.gateStagedObject(stagingKey);
+    const { bytes, head } = await this.gateStagedObject(stagingKey, { caseId, uploadId: input.uploadId });
     const checksum = crypto.createHash('sha256').update(bytes).digest('hex');
 
     // Resolve the requirement (case-scoped, E2) and its default name up-front.
@@ -245,6 +245,7 @@ export class DocumentService {
           if (won) return { documentId: won.id, status: won.status };
         }
         // B1.4: an active REQUIREMENT document already exists.
+        logger.warn({ caseId, uploadId: input.uploadId, requirementId: input.requirementId ?? null, reason: 'duplicate_active_requirement', code: 409 }, 'Document upload rejected: active requirement document already exists');
         throw conflict('An active document already exists for this requirement; replace it instead.');
       }
       throw err;
@@ -292,6 +293,7 @@ export class DocumentService {
 
       const allowed = DOCUMENT_STATUS_TRANSITIONS[fresh.status];
       if (!allowed.includes(input.status)) {
+        logger.warn({ documentId, tenantId: ctx.tenantId, from: fresh.status, to: input.status, reason: 'invalid_transition', code: 422 }, 'Document status change rejected: invalid transition');
         throw new BusinessRuleViolationError(`Invalid status transition ${fresh.status} → ${input.status}. Allowed: ${allowed.join(', ') || '(none)'}`);
       }
 
@@ -344,7 +346,7 @@ export class DocumentService {
     const safeName = sanitizeFileName(input.fileName);
     // stage/confirm reuse: the client PUTs to a fresh doc-staging key under the same case.
     const stagingKey = docStagingKey(ctx.tenantId, target.caseId, input.uploadId, safeName);
-    const { bytes, head } = await this.gateStagedObject(stagingKey);
+    const { bytes, head } = await this.gateStagedObject(stagingKey, { caseId: target.caseId, uploadId: input.uploadId });
     const checksum = crypto.createHash('sha256').update(bytes).digest('hex');
 
     const willVerify = input.verify === true && canVerify;
@@ -468,21 +470,34 @@ export class DocumentService {
     if (!docCase) throw new ResourceNotFoundError();
   }
 
-  /** headObject re-check → magic bytes → virus scan. Deletes staging on reject (I7/G2). */
-  private async gateStagedObject(stagingKey: string): Promise<{ bytes: Buffer; head: { exists: boolean; contentLength?: number; contentType?: string } }> {
+  /**
+   * headObject re-check → magic bytes → virus scan. Deletes staging on reject (I7/G2).
+   * M4: every rejection emits a structured log keyed by uploadId+caseId (never the
+   * presigned URL or storage key alone) so ops can trace a rejected upload.
+   */
+  private async gateStagedObject(
+    stagingKey: string,
+    ctx: { caseId: string; uploadId: string },
+  ): Promise<{ bytes: Buffer; head: { exists: boolean; contentLength?: number; contentType?: string } }> {
     const head = await storageService.headObject(stagingKey);
-    if (!head.exists) throw new ConflictError();
+    if (!head.exists) {
+      logger.warn({ ...ctx, reason: 'staging_missing', code: 409 }, 'Document upload rejected: staging object missing');
+      throw new ConflictError();
+    }
     if (head.contentLength! > DOCUMENT_POLICY.MAX_FILE_SIZE_BYTES) {
       await storageService.deleteObject(stagingKey);
+      logger.warn({ ...ctx, reason: 'oversize', code: 400, sizeBytes: head.contentLength }, 'Document upload rejected: oversize');
       throw new ValidationError('Uploaded file exceeds the size limit.');
     }
     if (!isAllowedContentType(head.contentType!)) {
       await storageService.deleteObject(stagingKey);
+      logger.warn({ ...ctx, reason: 'content_type', code: 400 }, 'Document upload rejected: content type not accepted');
       throw new ValidationError('Uploaded file type is not accepted.');
     }
     const bytes = await storageService.getObjectBytes(stagingKey);
     if (!matchesMagicBytes(head.contentType!, bytes)) {
       await storageService.deleteObject(stagingKey);
+      logger.warn({ ...ctx, reason: 'magic_byte', code: 400 }, 'Document upload rejected: magic-byte mismatch');
       throw new ValidationError('Uploaded file content does not match its declared type.');
     }
     let scan;
@@ -493,8 +508,11 @@ export class DocumentService {
     }
     if (scan.isInfected) {
       try { await storageService.deleteObject(stagingKey); }
-      catch (err) { logger.error({ err, stagingKey }, 'Failed to delete infected document staging object'); }
-      logger.warn({ stagingKey, signature: scan.signature }, 'Document upload rejected by virus scanner (FOUND)');
+      catch (err) { logger.error({ err, ...ctx }, 'Failed to delete infected document staging object'); }
+      // M4 infected>0 alert hook: error-level + `alert` field is the greppable marker
+      // ops alerting keys on. Signature stays server-side only (never client/audit/event).
+      // ponytail: log-based alert, wire a pager rule to `alert:'VIRUS_DETECTED'` if paging is needed.
+      logger.error({ alert: 'VIRUS_DETECTED', ...ctx, reason: 'infected', code: 422, signature: scan.signature }, 'Document upload rejected by virus scanner (FOUND)');
       throw new InfectedFileError();
     }
     return { bytes, head };
