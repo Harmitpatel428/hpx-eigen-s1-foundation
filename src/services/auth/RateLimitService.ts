@@ -108,3 +108,16 @@ export async function checkMandateUploadAttempts(tokenHash: string): Promise<voi
   if (count === 1) await redisExpire(key, 3600);
   if (count > 5) throw new RateLimitExceededError();
 }
+
+// M3: per-user (userId scoped within tenant) cap on the two firm presign endpoints so an
+// authenticated firm user cannot request unbounded presigned PUT URLs. Generous default,
+// env-overridable (FIRM_UPLOAD_URL_CAP_PER_HOUR). fail-OPEN: this is an availability guard,
+// not a security primitive, so a Redis outage must not block legitimate firm uploads.
+export async function checkFirmUploadUrlAttempts(userId: string, tenantId: string): Promise<void> {
+  const limit = Number(process.env.FIRM_UPLOAD_URL_CAP_PER_HOUR) || 100;
+  const key = `firm-upload-url:${tenantId}:${userId}:${Math.floor(Date.now() / 3600000)}`;
+  const count = await redisIncr(key);
+  if (count === null) return; // fail-OPEN: allow presign when Redis unavailable
+  if (count === 1) await redisExpire(key, 3600);
+  if (count > limit) throw new RateLimitExceededError();
+}

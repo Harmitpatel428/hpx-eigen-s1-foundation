@@ -3,6 +3,7 @@ import { PrismaClient, DocCaseStatus, DocDocumentStatus, DocNoteType, DocStorage
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { DocumentationService, getSuggestions } from '../services/documentation.service';
 import { DocumentService } from '../services/document.service';
+import { checkFirmUploadUrlAttempts } from '../services/auth/RateLimitService';
 import { ValidationError } from '../types/exceptions';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -316,6 +317,7 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
         if (!fileName || typeof fileName !== 'string' || fileName.length < 1 || fileName.length > 255) throw new ValidationError('fileName is required (1-255 characters).');
         if (!contentType || typeof contentType !== 'string' || !DOC_MIME_ALLOWLIST.includes(contentType)) throw new ValidationError(`contentType must be one of: ${DOC_MIME_ALLOWLIST.join(', ')}.`);
         if (typeof fileSizeBytes !== 'number' || !Number.isInteger(fileSizeBytes) || fileSizeBytes < 1 || fileSizeBytes > DOC_MAX_BYTES) throw new ValidationError(`fileSizeBytes must be an integer between 1 and ${DOC_MAX_BYTES}.`);
+        await checkFirmUploadUrlAttempts(userId, tenantId);
         const result = await docFiles.uploadUrl({ tenantId, userId }, req.params.caseId, { fileName, contentType, fileSizeBytes });
         res.json({ success: true, data: result });
       } catch (err) { next(err); }

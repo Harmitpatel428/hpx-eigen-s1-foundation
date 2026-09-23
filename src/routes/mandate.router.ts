@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient, DocumentSourceChannel } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { MandateService } from '../services/mandate.service';
+import { checkFirmUploadUrlAttempts } from '../services/auth/RateLimitService';
 import { hashUploadToken, MANDATE_POLICY, isAllowedContentType } from '../domain/mandate';
 import {
   ValidationError,
@@ -127,6 +128,7 @@ export function createMandateRouter(prisma: PrismaClient): Router {
         if (typeof fileSizeBytes !== 'number' || !Number.isInteger(fileSizeBytes) || fileSizeBytes < 1 || fileSizeBytes > MANDATE_POLICY.MAX_FILE_SIZE_BYTES) {
           throw new ValidationError(`fileSizeBytes must be an integer between 1 and ${MANDATE_POLICY.MAX_FILE_SIZE_BYTES}.`);
         }
+        await checkFirmUploadUrlAttempts(userId, tenantId);
         const result = await svc.firmUploadUrl({ tenantId, userId }, req.params.caseId, { fileName, contentType, fileSizeBytes });
         res.json({ success: true, data: result });
       } catch (err) { mapError(err, res, next); }
