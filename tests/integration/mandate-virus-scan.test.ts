@@ -3,8 +3,11 @@
  *
  * Exercises the clamd scan gate inside confirmUpload with a mocked scanner and mocked
  * R2 storage against real PostgreSQL. Covers: clean promotion, infected rejection,
- * scanner-unavailable/timeout fail-closed, disabled-in-dev skip, and disabled-in-prod
- * fail-closed.
+ * scanner-unavailable/timeout fail-closed, and the disabled-scanner bypass.
+ *
+ * IMPORTANT: `virusScanService` is the REAL implementation here (not jest.mock'd). Only
+ * the scanner-client boundary (`scan`) is spied on, and `process.env.VIRUS_SCAN_ENABLED`
+ * is driven per test, so the actual `scanOrBypass` enabled/disabled decision runs for real.
  */
 import 'dotenv/config';
 import { describe, it, beforeAll, afterAll, afterEach, expect } from '@jest/globals';
@@ -39,26 +42,28 @@ jest.mock('../../src/services/email.service', () => ({
   },
 }));
 
-jest.mock('../../src/services/virus-scan.service', () => ({
-  virusScanService: {
-    isEnabled: jest.fn().mockReturnValue(true),
-    scan: jest.fn().mockResolvedValue({ clean: true }),
-    scanOrBypass: jest.fn().mockResolvedValue({ scanned: true, isInfected: false }),
-  },
-}));
+// NOTE: virus-scan.service is intentionally NOT jest.mock'd. We use the real
+// `virusScanService` (real scanOrBypass + real isEnabled) and only spy on the
+// scanner-client method (`scan`) below, so the enabled/disabled/fail-closed
+// decision logic actually executes during these tests.
 
 import { createMandateRouter } from '../../src/routes/mandate.router';
 import { AppException, ScannerUnavailableError } from '../../src/types/exceptions';
 import { hashUploadToken } from '../../src/domain/mandate';
 import { storageService } from '../../src/services/storage.service';
 import { virusScanService } from '../../src/services/virus-scan.service';
+import { logger } from '../../src/utils/logger';
 
 const prisma = new PrismaClient();
-const isEnabledMock = virusScanService.isEnabled as jest.Mock;
-const scanMock = virusScanService.scan as jest.Mock;
-const scanOrBypassMock = virusScanService.scanOrBypass as jest.Mock;
 const deleteObjectMock = storageService.deleteObject as jest.Mock;
 const copyObjectMock = storageService.copyObject as jest.Mock;
+
+// Spy on the scanner-client boundary only. The real scanOrBypass (isEnabled + bypass
+// warn log + fail-closed error propagation) is untouched and runs for real.
+const scanSpy = jest.spyOn(virusScanService, 'scan');
+
+const ORIGINAL_VIRUS_SCAN_ENABLED = process.env.VIRUS_SCAN_ENABLED;
+const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 
 const TENANT_ID = crypto.randomUUID();
 const USER_ID = crypto.randomUUID();
@@ -119,14 +124,18 @@ beforeAll(async () => {
 }, 30_000);
 
 afterEach(() => {
-  isEnabledMock.mockReturnValue(true);
-  scanMock.mockReset().mockResolvedValue({ clean: true });
-  scanOrBypassMock.mockReset().mockResolvedValue({ scanned: true, isInfected: false });
+  // Restore env + spies so no test's config leaks into the next.
+  if (ORIGINAL_VIRUS_SCAN_ENABLED === undefined) delete process.env.VIRUS_SCAN_ENABLED;
+  else process.env.VIRUS_SCAN_ENABLED = ORIGINAL_VIRUS_SCAN_ENABLED;
+  if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+  scanSpy.mockReset();
   deleteObjectMock.mockClear();
   copyObjectMock.mockClear();
 });
 
 afterAll(async () => {
+  scanSpy.mockRestore();
   await new Promise<void>((res) => server.close(() => res()));
   const cases = await prisma.docCase.findMany({ where: { tenantId: TENANT_ID }, select: { id: true, leadId: true } });
   await prisma.mandateUpload.deleteMany({ where: { tenantId: TENANT_ID } });
@@ -142,8 +151,9 @@ afterAll(async () => {
 
 describe('confirmUpload — virus scan gate', () => {
   it('1. clean file → 200 UPLOADED, promoted, MandateUpload created', async () => {
+    process.env.VIRUS_SCAN_ENABLED = 'true';
+    scanSpy.mockResolvedValue({ clean: true });
     const { token, requestId } = await createPendingMandate();
-    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: false });
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(200);
@@ -156,8 +166,9 @@ describe('confirmUpload — virus scan gate', () => {
   });
 
   it('2. infected file → 422 FILE_REJECTED, staging deleted, request REJECTED, no MandateUpload', async () => {
+    process.env.VIRUS_SCAN_ENABLED = 'true';
+    scanSpy.mockResolvedValue({ clean: false, signature: 'Eicar-Test-Signature' });
     const { token, requestId } = await createPendingMandate();
-    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: true, signature: 'Eicar-Test-Signature' });
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(422);
@@ -172,8 +183,9 @@ describe('confirmUpload — virus scan gate', () => {
   });
 
   it('3. infected rejection writes an audit event (no signature in payload)', async () => {
+    process.env.VIRUS_SCAN_ENABLED = 'true';
+    scanSpy.mockResolvedValue({ clean: false, signature: 'Win.Test.EICAR' });
     const { token, requestId } = await createPendingMandate();
-    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: true, signature: 'Win.Test.EICAR' });
 
     await confirmUpload(token);
     const audits = await prisma.auditLog.findMany({
@@ -184,8 +196,9 @@ describe('confirmUpload — virus scan gate', () => {
   });
 
   it('4. scanner unavailable → 503 SCANNER_UNAVAILABLE, request stays PENDING_UPLOAD, not promoted, staging kept', async () => {
+    process.env.VIRUS_SCAN_ENABLED = 'true';
+    scanSpy.mockRejectedValue(new ScannerUnavailableError());
     const { token, requestId } = await createPendingMandate();
-    scanOrBypassMock.mockRejectedValue(new ScannerUnavailableError());
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(503);
@@ -197,9 +210,10 @@ describe('confirmUpload — virus scan gate', () => {
   });
 
   it('5. scanner timeout → 503 SCANNER_UNAVAILABLE, request safe', async () => {
-    const { token, requestId } = await createPendingMandate();
+    process.env.VIRUS_SCAN_ENABLED = 'true';
     // A timeout surfaces as ScannerUnavailableError from the service.
-    scanOrBypassMock.mockRejectedValue(new ScannerUnavailableError());
+    scanSpy.mockRejectedValue(new ScannerUnavailableError());
+    const { token, requestId } = await createPendingMandate();
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(503);
@@ -208,40 +222,51 @@ describe('confirmUpload — virus scan gate', () => {
     expect(req?.status).toBe(MandateRequestStatus.PENDING_UPLOAD);
   });
 
-  it('6. scanning disabled in dev → upload proceeds unscanned, scanner not called', async () => {
+  it('6. scanning disabled → bypass, scanner client not invoked', async () => {
+    delete process.env.VIRUS_SCAN_ENABLED; // unset = disabled (isEnabled() requires === 'true')
     const { token, requestId } = await createPendingMandate();
-    isEnabledMock.mockReturnValue(false);
-    scanOrBypassMock.mockResolvedValue({ scanned: false, isInfected: false });
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(200);
-    expect(scanMock).not.toHaveBeenCalled();
+    expect(res.body.data.status).toBe('UPLOADED');
+    // Real scanOrBypass short-circuits before calling this.scan() when disabled.
+    expect(scanSpy).not.toHaveBeenCalled();
+    expect(copyObjectMock).toHaveBeenCalled(); // unscanned file still promoted (accepted-risk bypass)
     const req = await prisma.mandateRequest.findUnique({ where: { id: requestId } });
     expect(req?.status).toBe(MandateRequestStatus.UPLOADED);
+    const uploads = await prisma.mandateUpload.count({ where: { mandateRequestId: requestId } });
+    expect(uploads).toBe(1);
   });
 
-  it('7. scanning disabled in production → 503 SCANNER_UNAVAILABLE (fail closed), request safe', async () => {
-    const { token, requestId } = await createPendingMandate();
-    isEnabledMock.mockReturnValue(false);
-    // Production policy: scanning disabled must fail closed, never bypass silently.
-    scanOrBypassMock.mockRejectedValue(new ScannerUnavailableError());
-    const prev = process.env.NODE_ENV;
+  it('7. scanning disabled -> bypass -> 200 with warn log (all envs)', async () => {
+    delete process.env.VIRUS_SCAN_ENABLED;
+    // Demonstrate the bypass is NOT gated by environment: even with NODE_ENV=production,
+    // the real scanOrBypass fails OPEN (200) when VIRUS_SCAN_ENABLED isn't 'true'.
     process.env.NODE_ENV = 'production';
+    const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
     try {
+      const { token, requestId } = await createPendingMandate();
+
       const res = await confirmUpload(token);
-      expect(res.status).toBe(503);
-      expect(res.body.code).toBe('SCANNER_UNAVAILABLE');
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe('UPLOADED');
+      expect(scanSpy).not.toHaveBeenCalled();
+      const warnedBypass = warnSpy.mock.calls.some((call) =>
+        call.some((arg) => typeof arg === 'string' && arg.includes('bypassing scan'))
+      );
+      expect(warnedBypass).toBe(true);
       const req = await prisma.mandateRequest.findUnique({ where: { id: requestId } });
-      expect(req?.status).toBe(MandateRequestStatus.PENDING_UPLOAD);
+      expect(req?.status).toBe(MandateRequestStatus.UPLOADED);
     } finally {
-      process.env.NODE_ENV = prev;
+      warnSpy.mockRestore();
     }
   });
 
   it('8. infected + staging delete fails → still 422 REJECTED, audit flags stagingDeleteFailed, no signature', async () => {
-    const { token, requestId } = await createPendingMandate();
-    scanOrBypassMock.mockResolvedValue({ scanned: true, isInfected: true, signature: 'Win.Test.EICAR' });
+    process.env.VIRUS_SCAN_ENABLED = 'true';
+    scanSpy.mockResolvedValue({ clean: false, signature: 'Win.Test.EICAR' });
     deleteObjectMock.mockRejectedValueOnce(new Error('R2 delete failed'));
+    const { token, requestId } = await createPendingMandate();
 
     const res = await confirmUpload(token);
     expect(res.status).toBe(422);
