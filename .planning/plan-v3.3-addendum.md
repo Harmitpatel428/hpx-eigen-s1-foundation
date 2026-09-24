@@ -74,14 +74,26 @@ the system deliberately fails OPEN (accepts unscanned uploads) and logs a policy
 is an intentional operational escape hatch for scanner outages, not a defect.
 
 ## 9. Test Gate Determinism
-The backend gate command is `jest --runInBand --forceExit`. Evidence trail: (1) an intermittent exit-1
-on an otherwise green tree was first traced to a same-millisecond timestamp race in
-`tests/lead-notes.test.ts` (a `.not.toEqual`/`.not.toBe` assertion needing the clock to advance) — that
-is fixed. (2) A second, distinct artifact remained: `jest --runInBand` still exited 1 intermittently
-(~1 in 3) with ZERO test failures and no diagnostic (green summary, then process code 1). (3)
-`jest --detectOpenHandles --runInBand` reported ZERO open handles — the event loop is clean. Therefore
-`--forceExit` is applied to bypass a phantom Node/Jest teardown exit-code quirk; Jest exits on the
-green test result, and nothing known is masked (there is no detected leak). `--runInBand` is retained
-because the suite is already serialized (`maxWorkers:1`), so it is semantics-neutral. If worker-mode
-parallelism is ever wanted, split unit vs DB-integration suites and parallelize only the unit suites;
-do not remove `--forceExit` without first re-confirming a clean `--detectOpenHandles` run.
+The backend gate command is `jest --runInBand --forceExit`. Three separate phenomena were diagnosed
+and resolved while stabilizing the gate:
+
+- **A — lead-notes same-millisecond flake (FIXED, Task I):** two `.not.toEqual`/`.not.toBe` timestamp
+  assertions in `tests/lead-notes.test.ts` required the wall clock to advance a full millisecond
+  between create and edit and intermittently failed (~1 in 6). They now compare
+  `updatedAt.getTime() >= createdAt.getTime()`; the createdAt-immutability assertion is unchanged.
+- **B — spurious exit-1 with zero failures (MITIGATED, Task J):** `jest --runInBand` intermittently
+  exited with process code 1 (~1 in 3) on a fully green tree, with no failing test and no diagnostic
+  (green summary printed, then code 1). `jest --detectOpenHandles --runInBand` reported ZERO open
+  handles, so `--forceExit` is applied to bypass a phantom Node/Jest teardown exit-code quirk; it
+  masks no known leak. Root cause remains UNIDENTIFIED and is tracked in the closure cleanup task. Do
+  not remove `--forceExit` without first re-confirming a clean `--detectOpenHandles` run.
+- **C — load-induced beforeAll timeout (FIXED, Task K):** under machine/DB load the DB-seeding
+  `beforeAll` hooks in `firm-upload.test.ts` and `document-status-lifecycle.test.ts` exceeded Jest's
+  5000ms default, and the `afterAll` then crashed on an unassigned `server`. Those hooks now carry
+  explicit 30_000ms timeouts and null-safe teardown; the per-test 5000ms default is unchanged. Sibling
+  DB-integration suites share the same heavy-`beforeAll` pattern and carry the same latent risk
+  (tracked for follow-up).
+
+`--runInBand` is retained because the suite is already serialized (`maxWorkers:1`), so it is
+semantics-neutral (identical test order and behavior). Forward path for parallelism: split unit vs
+DB-integration suites and parallelize only the unit suites.
