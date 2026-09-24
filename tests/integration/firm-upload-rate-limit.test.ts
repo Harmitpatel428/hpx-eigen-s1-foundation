@@ -101,7 +101,7 @@ beforeAll(async () => {
 
   server = makeTestApp().listen(0);
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-});
+}, 30_000);
 
 afterAll(async () => {
   await prisma.docCase.deleteMany({ where: { tenantId: TENANT_ID } });
@@ -112,9 +112,9 @@ afterAll(async () => {
   await prisma.role.deleteMany({ where: { tenantId: TENANT_ID } });
   await prisma.user.deleteMany({ where: { tenantId: TENANT_ID } });
   await prisma.tenant.deleteMany({ where: { id: TENANT_ID } });
-  await new Promise<void>((r) => server.close(() => r()));
+  if (server) await new Promise<void>((r) => server.close(() => r()));
   await prisma.$disconnect();
-});
+}, 30_000);
 
 beforeEach(() => {
   checkFirmUploadUrlAttempts.mockReset();

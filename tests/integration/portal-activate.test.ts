@@ -179,13 +179,13 @@ beforeAll(async () => {
       resolve();
     });
   });
-});
+}, 30_000);
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   await cleanupTestData();
   await prisma.$disconnect();
-});
+}, 30_000);
 
 describe('POST /cases/:caseId/portal/activate', () => {
   it('1. unauthenticated → 401', async () => {

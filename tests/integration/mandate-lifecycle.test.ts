@@ -283,10 +283,10 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   await cleanupTestData();
   await prisma.$disconnect();
-});
+}, 30_000);
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
