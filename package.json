@@ -13,7 +13,7 @@
     "build": "prisma generate && tsc",
     "postinstall": "prisma generate",
     "migrate:v2": "node dist/scripts/migrate-v1-to-v2.js",
-    "test": "jest --runInBand",
+    "test": "jest --runInBand --forceExit",
     "test:cov": "jest --coverage",
     "prisma:studio": "prisma studio",
     "prisma:migrate": "prisma migrate dev",
