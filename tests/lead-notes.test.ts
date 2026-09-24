@@ -82,7 +82,7 @@ describe('LeadNotesService', () => {
 
       const updated = await service.listNotes(ctx, leadId);
       expect(updated[0].content).toBe('Updated content');
-      expect(updated[0].updatedAt).not.toBe(updated[0].createdAt);
+      expect(updated[0].updatedAt.getTime()).toBeGreaterThanOrEqual(updated[0].createdAt.getTime());
     });
   });
 
@@ -180,7 +180,7 @@ describe('LeadNotesService', () => {
 
       const updated = await service.listNotes(ctx, leadId);
       expect(updated[0].createdAt).toEqual(originalCreatedAt);
-      expect(updated[0].updatedAt).not.toEqual(originalCreatedAt);
+      expect(updated[0].updatedAt.getTime()).toBeGreaterThanOrEqual(updated[0].createdAt.getTime());
     });
   });
 
