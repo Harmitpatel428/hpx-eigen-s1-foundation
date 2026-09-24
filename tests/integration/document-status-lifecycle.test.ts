@@ -152,7 +152,7 @@ beforeAll(async () => {
 
   server = makeTestApp().listen(0);
   baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-});
+}, 30_000);
 
 afterAll(async () => {
   const tenants = [TENANT_ID, OTHER_TENANT_ID];
@@ -171,9 +171,9 @@ afterAll(async () => {
   await prisma.role.deleteMany({ where: { tenantId: { in: tenants } } });
   await prisma.user.deleteMany({ where: { tenantId: { in: tenants } } });
   await prisma.tenant.deleteMany({ where: { id: { in: tenants } } });
-  await new Promise<void>((r) => server.close(() => r()));
+  if (server) await new Promise<void>((r) => server.close(() => r()));
   await prisma.$disconnect();
-});
+}, 30_000);
 
 // ─── helpers specific to this suite ────────────────────────────────────────
 
