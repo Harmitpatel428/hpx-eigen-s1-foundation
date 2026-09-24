@@ -72,3 +72,15 @@ The system's fail-closed guarantee in production is CONFIG-DEPENDENT. It require
 `VIRUS_SCAN_ENABLED='true'`. If this flag is set to false in any environment (including production),
 the system deliberately fails OPEN (accepts unscanned uploads) and logs a policy bypass warning. This
 is an intentional operational escape hatch for scanner outages, not a defect.
+
+## 9. Test Gate Determinism
+The backend gate command is `jest --runInBand`. Earlier intermittent exit-1s on an otherwise fully
+green tree were root-caused to a same-millisecond timestamp race in `tests/lead-notes.test.ts` (a
+`.not.toEqual`/`.not.toBe` assertion that required the clock to advance a full millisecond between
+create and edit); this is fixed. It was NOT a worker-teardown handle leak, as first hypothesized.
+`--runInBand` is retained because the suite is already serialized (`maxWorkers:1`): it is
+semantics-neutral (identical test order and behavior), gives a truthful process exit code, and avoids
+worker-spawn overhead. A residual, rare worker-mode teardown exit anomaly (observed once with zero test
+failures, not reproduced across three clean in-band runs) is tracked at low priority in the closure
+cleanup task. Forward path for parallelism: split unit vs DB-integration suites and parallelize only the
+unit suites.
