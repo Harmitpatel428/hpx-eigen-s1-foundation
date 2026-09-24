@@ -74,13 +74,14 @@ the system deliberately fails OPEN (accepts unscanned uploads) and logs a policy
 is an intentional operational escape hatch for scanner outages, not a defect.
 
 ## 9. Test Gate Determinism
-The backend gate command is `jest --runInBand`. Earlier intermittent exit-1s on an otherwise fully
-green tree were root-caused to a same-millisecond timestamp race in `tests/lead-notes.test.ts` (a
-`.not.toEqual`/`.not.toBe` assertion that required the clock to advance a full millisecond between
-create and edit); this is fixed. It was NOT a worker-teardown handle leak, as first hypothesized.
-`--runInBand` is retained because the suite is already serialized (`maxWorkers:1`): it is
-semantics-neutral (identical test order and behavior), gives a truthful process exit code, and avoids
-worker-spawn overhead. A residual, rare worker-mode teardown exit anomaly (observed once with zero test
-failures, not reproduced across three clean in-band runs) is tracked at low priority in the closure
-cleanup task. Forward path for parallelism: split unit vs DB-integration suites and parallelize only the
-unit suites.
+The backend gate command is `jest --runInBand --forceExit`. Evidence trail: (1) an intermittent exit-1
+on an otherwise green tree was first traced to a same-millisecond timestamp race in
+`tests/lead-notes.test.ts` (a `.not.toEqual`/`.not.toBe` assertion needing the clock to advance) — that
+is fixed. (2) A second, distinct artifact remained: `jest --runInBand` still exited 1 intermittently
+(~1 in 3) with ZERO test failures and no diagnostic (green summary, then process code 1). (3)
+`jest --detectOpenHandles --runInBand` reported ZERO open handles — the event loop is clean. Therefore
+`--forceExit` is applied to bypass a phantom Node/Jest teardown exit-code quirk; Jest exits on the
+green test result, and nothing known is masked (there is no detected leak). `--runInBand` is retained
+because the suite is already serialized (`maxWorkers:1`), so it is semantics-neutral. If worker-mode
+parallelism is ever wanted, split unit vs DB-integration suites and parallelize only the unit suites;
+do not remove `--forceExit` without first re-confirming a clean `--detectOpenHandles` run.
