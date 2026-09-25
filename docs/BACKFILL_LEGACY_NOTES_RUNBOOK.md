@@ -6,6 +6,11 @@ after a replica dry-run whose numbers are reviewed and **approved in writing** b
 Script: `scripts/backfill-legacy-notes.ts` · Migrations: `20260924000000_add_leadnote_source`,
 `20260925000000_leadnote_legacy_backfill_unique` · Tag: `source='legacy_backfill'`.
 
+## Deploy order — BACKEND BEFORE FRONTEND
+Deploy the backend first. Backend closes the legacy writers (createLead / updateLead / import) so no
+new writes land in `Lead.notes`; the frontend then removes legacy visibility. Frontend-first would
+open a window where the create form still writes `Lead.notes` but nothing renders it — invisible notes.
+
 ## What it does
 For each lead with non-empty `Lead.notes` and **no live** `leadNote` rows, inserts ONE `leadNote`
 (content = legacy text, `source='legacy_backfill'`, `authorId=NIL_UUID` → renders "Migrated",

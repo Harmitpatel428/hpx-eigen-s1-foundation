@@ -16,9 +16,11 @@
  *       NOT nulled or dropped here.
  *   (c) No silent truncation: leadNote.content is VARCHAR(500). Legacy notes >500 chars are SKIPPED
  *       into their own bucket for manual handling — never truncated.
- *   Idempotent: a re-run finds the backfilled row (now a live row) and re-classifies the lead as
- *       already-backfilled, so it inserts 0. A per-lead transaction re-checks live-row count before
- *       inserting, making it race-safe.
+ *   Idempotent: a re-run classifies any lead that has EVER been backfilled (a legacy_backfill row,
+ *       live OR soft-deleted) as already-backfilled, so it inserts 0. If a migrated note is later
+ *       soft-deleted, re-backfill is skipped BY DESIGN (respect the deletion — do not resurrect it).
+ *       The partial unique index is scoped to live rows and would permit a re-insert; the procedure
+ *       governs. A per-lead transaction also re-checks live-row count before inserting (race-safe).
  *
  * Rollback: DELETE FROM "LeadNote" WHERE source = 'legacy_backfill';
  */
@@ -69,6 +71,15 @@ export async function runBackfill(prisma: PrismaClient, opts: { apply: boolean; 
     live.set(n.leadId, e);
   }
 
+  // Leads ever backfilled — INCLUDING soft-deleted backfill rows. If an operator/user deleted a
+  // migrated note, we must NOT resurrect it on a later run. The procedure governs here: the partial
+  // unique index is scoped to live rows and would permit a re-insert, but this check skips it.
+  const backfilledRows = await prisma.leadNote.findMany({
+    where: { source: 'legacy_backfill', ...tenantScope },
+    select: { leadId: true },
+  });
+  const everBackfilled = new Set(backfilledRows.map((r) => r.leadId));
+
   const buckets = {
     legacyOnly: [] as typeof legacyLeads,        // migrate
     legacyOnlyOversize: [] as typeof legacyLeads, // skip: >500 chars, manual
@@ -79,14 +90,13 @@ export async function runBackfill(prisma: PrismaClient, opts: { apply: boolean; 
 
   for (const lead of legacyLeads) {
     if (!nonEmpty(lead.notes)) { buckets.whitespaceOnly.push(lead); continue; }
+    if (everBackfilled.has(lead.id)) { buckets.alreadyBackfilled.push(lead); continue; } // live OR soft-deleted backfill → never re-migrate
     const l = live.get(lead.id);
     if (!l || l.total === 0) {
       if ((lead.notes as string).trim().length > MAX_LEN) buckets.legacyOnlyOversize.push(lead);
       else buckets.legacyOnly.push(lead);
-    } else if (l.nonBackfill > 0) {
-      buckets.legacyPlusLive.push(lead);
     } else {
-      buckets.alreadyBackfilled.push(lead);
+      buckets.legacyPlusLive.push(lead);
     }
   }
 

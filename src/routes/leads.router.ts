@@ -21,6 +21,33 @@ import { logger } from '../utils/logger';
  *  Changing this here changes both; shapes cannot drift. */
 export const OWNER_SELECT = { id: true, firstName: true, lastName: true } as const;
 
+/**
+ * Import note routing — single source of truth for how an imported row's note is stored.
+ * One entry point for notes = the leadNote table. A note ≤500 chars becomes a real leadNote row;
+ * an oversize note (>500, won't fit VARCHAR(500)) is preserved verbatim in the legacy Lead.notes
+ * column for the backfill's oversize/manual-review bucket — never truncated, never silently dropped.
+ */
+export function routeImportNote(rawNotes?: string | null): { legacyColumn: string | null; noteContent: string | null } {
+  const trimmed = rawNotes?.trim();
+  if (!trimmed) return { legacyColumn: null, noteContent: null };
+  if (trimmed.length > 500) return { legacyColumn: rawNotes as string, noteContent: null };
+  return { legacyColumn: null, noteContent: trimmed };
+}
+
+/** Create the leadNote row for an imported note (≤500), atomically within the caller's transaction. */
+export async function createImportNote(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  leadId: string,
+  userId: string,
+  rawNotes?: string | null,
+): Promise<void> {
+  const { noteContent } = routeImportNote(rawNotes);
+  if (noteContent) {
+    await tx.leadNote.create({ data: { tenantId, leadId, authorId: userId, content: noteContent, source: 'user' } });
+  }
+}
+
 export function createLeadsRouter(prisma: PrismaClient): Router {
   const router = Router();
   const leadService = new LeadService(prisma);
@@ -685,10 +712,9 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           status: LeadStatus.NEW,
           stage: rowStage,
           priority: (row.priority as LeadPriority | undefined) ?? LeadPriority.MEDIUM,
-          // One entry point for notes: an imported note ≤500 chars becomes a real leadNote row below.
-          // Only oversize notes (>500, won't fit VARCHAR(500)) are preserved in the legacy column for
-          // the backfill's oversize/manual-review bucket — never truncated, never silently dropped.
-          notes: (row.notes && row.notes.trim().length > 500) ? row.notes : null,
+          // One entry point for notes — see routeImportNote: ≤500 becomes a leadNote row below,
+          // only oversize (>500) is preserved verbatim in the legacy column for manual review.
+          notes: routeImportNote(row.notes).legacyColumn,
           score: typeof row.score === 'number' ? row.score : 0,
           expectedValue: row.expectedValue !== undefined
             ? new Prisma.Decimal(Number(row.expectedValue))
@@ -730,12 +756,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 },
               });
               // Route an imported note (≤500) into the leadNote table atomically with the lead.
-              const noteText = row.notes?.trim();
-              if (noteText && noteText.length <= 500) {
-                await tx.leadNote.create({
-                  data: { tenantId, leadId: created.id, authorId: userId, content: noteText, source: 'user' },
-                });
-              }
+              await createImportNote(tx, tenantId, created.id, userId, row.notes);
             });
             imported++;
           } catch (err: any) {
@@ -1246,7 +1267,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           phone,
           company,
           source,
-          notes,
           ownerId,
           status,
           score,
@@ -1270,7 +1290,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           phone?: string;
           company?: string;
           source?: LeadSource;
-          notes?: string;
+          // `notes` intentionally not accepted on update — notes live in the notes API (leadNote).
           ownerId?: string;
           status?: LeadStatus;
           score?: number;
@@ -1319,7 +1339,6 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             phone,
             company,
             source,
-            notes,
             ownerId,
             status,
             score,

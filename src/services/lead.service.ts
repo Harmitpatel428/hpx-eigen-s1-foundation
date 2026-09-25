@@ -135,7 +135,8 @@ export interface UpdateLeadInput {
   phone?: string;
   company?: string;
   source?: LeadSource;
-  notes?: string;
+  // No `notes` here on purpose: notes are managed via the notes API (leadNote table). Lead updates
+  // never write the legacy Lead.notes column — see updateLead. createLead keeps a first-note input.
   ownerId?: string;
   status?: LeadStatus;
   score?: number;
