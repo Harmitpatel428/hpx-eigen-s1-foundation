@@ -97,3 +97,11 @@ and resolved while stabilizing the gate:
 `--runInBand` is retained because the suite is already serialized (`maxWorkers:1`), so it is
 semantics-neutral (identical test order and behavior). Forward path for parallelism: split unit vs
 DB-integration suites and parallelize only the unit suites.
+
+## 10. Shared-Checkout Certification (Process Rule)
+With worktrees forbidden, only one writer session per repository at a time. Concurrent sessions must be
+read-only or confined to disjoint repos. Certifications performed on shared checkouts must record tree
+fingerprints and per-gate scope in a Verification Surface section. Under the no-branch/no-worktree rule,
+concurrent workstreams sharing `main` produce combined push scopes: certifications must enumerate the
+combined `origin/main..HEAD` scope and obtain explicit approval covering every commit in it, and push
+order between workstreams must be coordinated before either pushes.
