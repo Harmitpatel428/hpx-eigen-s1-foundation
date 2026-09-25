@@ -105,3 +105,11 @@ fingerprints and per-gate scope in a Verification Surface section. Under the no-
 concurrent workstreams sharing `main` produce combined push scopes: certifications must enumerate the
 combined `origin/main..HEAD` scope and obtain explicit approval covering every commit in it, and push
 order between workstreams must be coordinated before either pushes.
+
+## 11. Phase 1 Frontend Test Gate (Definition)
+Phase 1 frontend test gate = `tsc -b` + `lint` + `build` + scoped vitest (all suites except the
+tracked-red auth files `api.test.ts`, `ProtectedRoute.test.tsx`, `integration.test.tsx`) green x2 +
+targeted RTL/self-check evidence. Full frontend vitest is RED on those three pre-existing files
+(undeclared dev-deps post-deferral); tracked in A1 (task_59917d5a). Lockfile/workspace architecture
+tracked in B1 (task_695f26fc). Do not re-litigate this gate definition without closing A1 and B1.
+
