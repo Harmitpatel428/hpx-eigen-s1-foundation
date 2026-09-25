@@ -685,7 +685,10 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           status: LeadStatus.NEW,
           stage: rowStage,
           priority: (row.priority as LeadPriority | undefined) ?? LeadPriority.MEDIUM,
-          notes: row.notes ?? null,
+          // One entry point for notes: an imported note ≤500 chars becomes a real leadNote row below.
+          // Only oversize notes (>500, won't fit VARCHAR(500)) are preserved in the legacy column for
+          // the backfill's oversize/manual-review bucket — never truncated, never silently dropped.
+          notes: (row.notes && row.notes.trim().length > 500) ? row.notes : null,
           score: typeof row.score === 'number' ? row.score : 0,
           expectedValue: row.expectedValue !== undefined
             ? new Prisma.Decimal(Number(row.expectedValue))
@@ -726,6 +729,13 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                   company: row.company ?? null, isMain: true,
                 },
               });
+              // Route an imported note (≤500) into the leadNote table atomically with the lead.
+              const noteText = row.notes?.trim();
+              if (noteText && noteText.length <= 500) {
+                await tx.leadNote.create({
+                  data: { tenantId, leadId: created.id, authorId: userId, content: noteText, source: 'user' },
+                });
+              }
             });
             imported++;
           } catch (err: any) {
@@ -777,7 +787,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                   source: row.source as LeadSource | undefined,
                   stage: row.stage as LeadStage | undefined,
                   priority: row.priority as LeadPriority | undefined,
-                  notes: row.notes ?? null,
+                  // Re-import never clobbers or duplicates notes — notes live in the leadNote table
+                  // and are managed there, not overwritten by a bulk lead update.
                   score: typeof row.score === 'number' ? row.score : undefined,
                   expectedValue: row.expectedValue !== undefined
                     ? new Prisma.Decimal(Number(row.expectedValue))

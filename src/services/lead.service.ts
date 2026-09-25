@@ -270,10 +270,31 @@ export class LeadService {
           postalCode: input.postalCode ?? null,
           freeformAddress: input.freeformAddress ?? null,
           customFieldValues: input.customFieldValues ?? [],
-          notes: input.notes ?? null,
+          // Notes have a single source of truth: the leadNote table. An initial note supplied at
+          // creation is written as a real note row below (in this same transaction), never to the
+          // legacy Lead.notes column.
+          notes: null,
           ownerId: input.ownerId ?? null,
         } as any,
       });
+
+      // Route an initial note into the leadNote table atomically with the lead.
+      const initialNote = input.notes?.trim();
+      if (initialNote) {
+        if (initialNote.length > 500) {
+          // Same 500-char cap as the notes API (LeadNote.content is VARCHAR(500)). No truncation.
+          throw new ValidationError('Note exceeds 500 characters');
+        }
+        await tx.leadNote.create({
+          data: {
+            tenantId: ctx.tenantId,
+            leadId: created.id,
+            authorId: ctx.userId,
+            content: initialNote,
+            source: 'user',
+          },
+        });
+      }
 
       // Attach phone to LeadPhone history
       if (input.phone) {
@@ -463,7 +484,8 @@ export class LeadService {
           ...(input.phone !== undefined ? { phone: input.phone } : {}),
           ...(input.company !== undefined ? { company: input.company } : {}),
           ...(input.source !== undefined ? { source: input.source } : {}),
-          ...(input.notes !== undefined ? { notes: input.notes } : {}),
+          // Notes are managed only through the notes API (leadNote table); lead updates never write
+          // the legacy Lead.notes column. Single entry point — see createLead + LeadNotesModal.
           ...(input.ownerId !== undefined ? {
             ownerId: input.ownerId,
             // Track who last delegated this lead so they retain OWN-scope visibility.

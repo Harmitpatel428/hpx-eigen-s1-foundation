@@ -623,6 +623,9 @@ model LeadNote {
   leadId       String    @db.Uuid
   authorId     String    @db.Uuid
   content      String    @db.VarChar(500)
+  // Provenance tag. 'user' = created in-app; 'legacy_backfill' = migrated from Lead.notes
+  // (see scripts/backfill-legacy-notes.ts). Enables a tagged, reversible rollback of the backfill.
+  source       String    @default("user") @db.VarChar(32)
   followUpDate DateTime?
   followUpTime String? // HH:mm stored as string for timezone handling
   createdAt    DateTime  @default(now())
