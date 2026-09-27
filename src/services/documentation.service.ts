@@ -9,6 +9,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { AuditService } from './audit.service';
+import { logger } from '../utils/logger';
 import {
   ValidationError,
   ResourceNotFoundError,
@@ -71,6 +72,18 @@ function calcProgress(docs: Array<{
 
   return { totalDocs, receivedDocs, verifiedDocs, approvedDocs, rejectedDocs, mandatoryDocs, mandatoryApproved, completionPercent, isReady };
 }
+
+// ─── Case recalculation status groups (race-safe guard) ───────────────────────
+// A case in a RECALC_MUTABLE status has its status recomputed on every document
+// event. A TERMINAL case is frozen — never touched. A PROTECTED_NON_TERMINAL
+// case (mid-handoff) gets its progress counters refreshed but its status is
+// left alone, since recalc has no business overriding a handoff-owned status.
+const RECALC_MUTABLE_STATUSES: DocCaseStatus[] = ['ACTIVE', 'DOCUMENTATION_READY'];
+const TERMINAL_STATUSES: DocCaseStatus[] = ['CLOSED', 'CANCELLED', 'CLOSED_NO_DOCS'];
+// Not queried directly (the guard excludes TERMINAL_STATUSES via `notIn` instead, so a
+// concurrent transition into terminal is still handled safely) — kept for readability
+// and to name the statuses the progress-only branch below applies to.
+const PROTECTED_NON_TERMINAL_STATUSES: DocCaseStatus[] = ['INCOMING', 'RETURNED', 'TRANSFERRED_TO_PROCESS'];
 
 // ─── Smart suggestion keyword map ────────────────────────────────────────────
 
@@ -1020,18 +1033,55 @@ export class DocumentationService {
     caseId: string,
     tenantId: string
   ) {
+    const current = await tx.docCase.findFirst({
+      where: { id: caseId, tenantId, deletedAt: null },
+      select: { status: true },
+    });
+    if (!current) return;
+
+    if (TERMINAL_STATUSES.includes(current.status)) {
+      logger.debug(
+        { caseId, tenantId, currentStatus: current.status, reason: 'TERMINAL_SKIP' },
+        'Case recalc skipped: case is terminal'
+      );
+      return;
+    }
+
     const docs = await tx.docCaseDocument.findMany({
       where: { caseId, tenantId },
       select: { isMandatory: true, status: true, deletedAt: true },
     });
     const progress = calcProgress(docs);
+    const newStatus: DocCaseStatus = progress.isReady ? 'DOCUMENTATION_READY' : 'ACTIVE';
 
-    let newStatus: DocCaseStatus = 'ACTIVE';
-    if (progress.isReady) newStatus = 'DOCUMENTATION_READY';
-
-    await tx.docCase.update({
-      where: { id: caseId },
+    const statusResult = await tx.docCase.updateMany({
+      where: { id: caseId, tenantId, deletedAt: null, status: { in: RECALC_MUTABLE_STATUSES } },
       data: { ...progress, status: newStatus },
     });
+
+    if (statusResult.count === 0) {
+      // Case was not in a recalc-mutable status (PROTECTED_NON_TERMINAL, e.g. mid-handoff) —
+      // refresh progress counters only, never the status. Excluding TERMINAL_STATUSES here
+      // (rather than matching PROTECTED_NON_TERMINAL_STATUSES) keeps this race-safe: a case
+      // that transitioned into terminal between step 1 and here is correctly left untouched.
+      const protectedResult = await tx.docCase.updateMany({
+        where: { id: caseId, tenantId, deletedAt: null, status: { notIn: TERMINAL_STATUSES } },
+        data: { ...progress },
+      });
+
+      if (protectedResult.count === 1) {
+        logger.debug(
+          { caseId, tenantId, currentStatus: current.status, reason: 'PROTECTED_STATUS_SKIP', statusUpdateCount: statusResult.count, protectedUpdateCount: protectedResult.count },
+          'Case recalc: status update skipped (protected non-terminal status), progress refreshed'
+        );
+      } else {
+        // count === 0: the case moved to a terminal status (or vanished) concurrently between
+        // step 1 and here — ambiguous outcome, not a clean PROTECTED_STATUS_SKIP.
+        logger.warn(
+          { caseId, tenantId, currentStatus: current.status, reason: 'STATUS_CHANGED_CONCURRENTLY', statusUpdateCount: statusResult.count, protectedUpdateCount: protectedResult.count },
+          'Case recalc: status changed concurrently, no update applied'
+        );
+      }
+    }
   }
 }
