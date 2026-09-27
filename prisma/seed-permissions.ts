@@ -181,11 +181,17 @@ async function main(): Promise<void> {
 
     // Organization Admin gets ALL permissions in the database, not just the seeded subset.
     const allPerms = await prisma.permission.findMany({ select: { id: true } });
-    await prisma.rolePermission.deleteMany({ where: { roleId: adminRole.id } });
-    await prisma.rolePermission.createMany({
-      data: allPerms.map(p => ({ roleId: adminRole.id, permissionId: p.id })),
-      skipDuplicates: true,
-    });
+    // This seed now runs on every deploy, so delete+recreate must be one atomic
+    // swap: a reader (concurrent boot, or a live admin request rebuilding its
+    // permission manifest) must never observe the moment between delete and
+    // recreate where Organization Admin's grants are momentarily empty.
+    await prisma.$transaction(async (tx) => {
+      await tx.rolePermission.deleteMany({ where: { roleId: adminRole.id } });
+      await tx.rolePermission.createMany({
+        data: allPerms.map(p => ({ roleId: adminRole.id, permissionId: p.id })),
+        skipDuplicates: true,
+      });
+    }, { maxWait: 5000, timeout: 15000 });
 
     // ── Step 4: Upsert preset roles — additive only (no existing perms deleted) ─
     for (const [roleName, slugs] of Object.entries(PRESET_ROLES)) {

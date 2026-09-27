@@ -98,9 +98,8 @@ dist/src/server.js` never runs).
 `prisma:seed-permissions` invokes the local `node_modules/.bin/tsx` binary
 directly (no `npx` registry fetch at boot). The seed also now closes the
 Redis client (`redisClose()`) in its `finally`, alongside `prisma.$disconnect()`
-— without this the lazy-connect ioredis client (once touched by
-`invalidatePermissionCache`) keeps the event loop alive and the process never
-exits when `REDIS_URL` is set, which would hang the deploy.
+— without this, the deploy would hang. See the `finally` block in
+`prisma/seed-permissions.ts` for the underlying ioredis mechanism.
 
 The manual sequence in (a)–(c) above remains the documented fallback for any
 environment outside Render's three entry points (e.g. a bare VM or a manual
