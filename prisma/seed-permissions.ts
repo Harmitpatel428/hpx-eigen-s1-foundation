@@ -88,6 +88,46 @@ const PERMISSIONS = [
   { slug: 'mandate:upload',     module: 'Documentation', description: 'Upload a mandate document directly from the CRM (firm-side)' },
   { slug: 'doc:upload',         module: 'Documentation', description: 'Upload required/general documents directly from the CRM (firm-side)' },
   { slug: 'doc:file:manage',    module: 'Documentation', description: 'Manage uploaded document files (status change, replace, remove)' },
+  // Handoff (Phase 1 (A) reconciliation — previously seeded only via migration 20260830010000)
+  { slug: 'handoff:submit',         module: 'Handoff', description: 'Confirm a qualified lead and hand it off to Documentation' },
+  { slug: 'handoff:accept',         module: 'Handoff', description: 'Accept an incoming handoff into Documentation' },
+  { slug: 'handoff:reject',         module: 'Handoff', description: 'Reject an incoming handoff before acceptance' },
+  { slug: 'handoff:return',         module: 'Handoff', description: 'Return a case to Sales after acceptance' },
+  { slug: 'handoff:resend',         module: 'Handoff', description: 'Fix and resend a rejected or returned handoff' },
+  { slug: 'handoff:manager_review', module: 'Handoff', description: 'Clear the manager review lock after repeated returns' },
+  // Client Portal (Phase 1 (A) reconciliation — previously seeded only via migrations 20260830010000 / 20260908030000)
+  { slug: 'portal:view',            module: 'Client Portal', description: 'View client portal status and settings' },
+  { slug: 'portal:publish',         module: 'Client Portal', description: 'Publish notes and documents to the client portal' },
+  { slug: 'portal:contact_request', module: 'Client Portal', description: 'Request a change to the portal contact number' },
+  { slug: 'portal:contact_approve', module: 'Client Portal', description: 'Approve a portal contact change and revoke active sessions' },
+  { slug: 'portal:preview',         module: 'Client Portal', description: 'Open the internal staff preview of a client portal' },
+  { slug: 'portal:session_revoke',  module: 'Client Portal', description: 'Revoke active client portal sessions' },
+  { slug: 'portal:activate',        module: 'Client Portal', description: 'Activate client portal access for a DocCase' },
+  // Case lifecycle (Phase 1 (A) reconciliation — previously seeded only via migration 20260909110000)
+  { slug: 'cases:generate-id',      module: 'Documentation', description: 'Manually generate a Case ID for a DocCase' },
+  { slug: 'cases:close',            module: 'Documentation', description: 'Close a case without documentation' },
+  { slug: 'cases:reopen',           module: 'Documentation', description: 'Reopen a closed case' },
+  // Mandate lifecycle (Phase 1 (A) reconciliation — previously seeded only via migration 20260911110000)
+  { slug: 'mandate:send',           module: 'Documentation', description: 'Send mandate upload requests to clients' },
+  { slug: 'mandate:verify',         module: 'Documentation', description: 'Verify or reject uploaded mandate documents' },
+  { slug: 'mandate:view',           module: 'Documentation', description: 'View mandate requests and uploads for a case' },
+  // Case Operations Engine (Phase 1 (A) — new)
+  { slug: 'case-engine:manage',      module: 'Case Engine', description: 'Enable or disable the Case Operations Engine for the tenant' },
+  { slug: 'case-field:view',         module: 'Case Engine', description: 'View custom case field definitions' },
+  { slug: 'case-field:manage',       module: 'Case Engine', description: 'Create, edit, and delete custom case field definitions' },
+  { slug: 'case-type:view',          module: 'Case Engine', description: 'View case type definitions' },
+  { slug: 'case-type:manage',        module: 'Case Engine', description: 'Create and edit case type definitions' },
+  { slug: 'case-type:publish',       module: 'Case Engine', description: 'Publish a case type definition for use on new cases' },
+  { slug: 'case-timeline:view',      module: 'Case Engine', description: 'View a case timeline and its stage history' },
+  { slug: 'case-timeline:manage',    module: 'Case Engine', description: 'Configure the stages and structure of a case timeline' },
+  { slug: 'case-stage:start',        module: 'Case Engine', description: 'Start a case stage' },
+  { slug: 'case-stage:complete',     module: 'Case Engine', description: 'Complete a case stage' },
+  { slug: 'case-stage:skip',         module: 'Case Engine', description: 'Skip a case stage' },
+  { slug: 'case-stage:reopen',       module: 'Case Engine', description: 'Reopen a completed or skipped case stage' },
+  { slug: 'case-stage:override',     module: 'Case Engine', description: 'Override case stage requirements (manager)' },
+  { slug: 'case-exception:approve',  module: 'Case Engine', description: 'Approve an exception raised against a case' },
+  { slug: 'case-calendar:manage',    module: 'Case Engine', description: 'Manage case calendar scheduling and deadlines' },
+  { slug: 'sla:unlock',              module: 'Case Engine', description: 'Unlock an SLA-locked case action' },
 ] as const;
 
 const PRESET_ROLES: Record<string, string[]> = {

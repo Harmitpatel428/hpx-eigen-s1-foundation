@@ -1491,6 +1491,8 @@ model TenantSettings {
   updatedAt             DateTime @updatedAt
   // 'name' | 'company' — org-level setting, mutable by role:manage; default 'name'
   leadHeaderPreference  String   @default("name")
+  // Phase 1 (A): tenant-level kill switch for the Case Operations Engine; gated by case-engine:manage
+  caseOperationsEngineEnabled Boolean @default(false)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }

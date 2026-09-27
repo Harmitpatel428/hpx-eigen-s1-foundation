@@ -18,6 +18,7 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
       res.json({
         leadHeaderPreference: row?.leadHeaderPreference ?? 'name',
         allowImpersonation: row?.allowImpersonation ?? false,
+        caseOperationsEngineEnabled: row?.caseOperationsEngineEnabled ?? false,
       });
     } catch (err) { next(err); }
   });
@@ -67,6 +68,52 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
         }
 
         res.json({ success: true, leadHeaderPreference: preference });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // POST /api/v1/settings/crm/case-operations-engine — tenant kill switch; case-engine:manage gate
+  router.post(
+    '/case-operations-engine',
+    authMiddleware,
+    permissionMiddleware('case-engine:manage'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const { enabled } = req.body as { enabled?: unknown };
+
+        if (typeof enabled !== 'boolean') {
+          throw new ValidationError('enabled must be a boolean');
+        }
+
+        const userAgent = Array.isArray(req.headers['user-agent'])
+          ? req.headers['user-agent'][0]
+          : req.headers['user-agent'];
+
+        await prisma.$transaction(async (tx) => {
+          const before = await tx.tenantSettings.findUnique({ where: { tenantId } });
+
+          await tx.tenantSettings.upsert({
+            where: { tenantId },
+            create: { tenantId, caseOperationsEngineEnabled: enabled },
+            update: { caseOperationsEngineEnabled: enabled },
+          });
+
+          await auditService.appendInTx(tx, {
+            tenantId,
+            eventType: 'TENANT_ENGINE_FLAG_UPDATED',
+            entityType: 'TenantSettings',
+            entityId: tenantId,
+            actorUserId: userId,
+            actorIp: req.ip,
+            actorUserAgent: userAgent,
+            operation: 'UPDATE',
+            payload: { enabled },
+            beforeState: { caseOperationsEngineEnabled: before?.caseOperationsEngineEnabled ?? false },
+          });
+        }, { maxWait: 5000, timeout: 15000 });
+
+        res.json({ success: true, caseOperationsEngineEnabled: enabled });
       } catch (err) { next(err); }
     },
   );
