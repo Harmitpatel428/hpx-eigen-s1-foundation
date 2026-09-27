@@ -25,6 +25,7 @@
 import 'dotenv/config';
 import { PrismaClient, ScopeType } from '@prisma/client';
 import { PermissionService } from '../src/services/permission.service';
+import { redisClose } from '../src/redis';
 
 const prisma = new PrismaClient();
 const permissionService = new PermissionService(prisma);
@@ -256,4 +257,8 @@ main()
   })
   .finally(async () => {
     await prisma.$disconnect();
+    // Without this, ioredis (lazyConnect) keeps the event loop alive once
+    // invalidatePermissionCache touches it, hanging the deploy when
+    // REDIS_URL is set (prod). See docs/DEPLOYMENT.md.
+    await redisClose();
   });

@@ -18,5 +18,6 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
-# Run migrations and start app
-CMD ["sh", "-c", "npx prisma migrate deploy && npm run start"]
+# Run migrations, seed permissions (Redis cache invalidation for raw-SQL
+# permission migrations — see docs/DEPLOYMENT.md), then start app
+CMD ["sh", "-c", "npm run deploy:db && npm run start"]

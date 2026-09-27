@@ -22,7 +22,9 @@ services:
     healthCheckPath: /health      # unauthenticated, DB-free 200 — zero-downtime deploy gate
     buildCommand: npm ci && npm run build
     # startCommand is idempotent + multi-instance safe — see docs/deploy-native.md.
-    startCommand: npx prisma migrate deploy && node dist/src/server.js
+    # deploy:db = migrate deploy && permission seed (Redis cache invalidation
+    # for raw-SQL permission migrations — see docs/DEPLOYMENT.md).
+    startCommand: npm run deploy:db && node dist/src/server.js
     envVars:
       - key: NODE_ENV
         value: production

@@ -11,10 +11,11 @@
 1. Deploy application code (see `docs/deploy.md` / `docs/deploy-native.md` for
    the platform-specific build/start commands).
 2. `npx prisma migrate deploy`
-3. Seed permissions — run **`npm run deploy:db`** (added in this change; see
-   below), which chains steps 2 and 3 for local/manual use. The underlying
-   seed command is `npm run prisma:seed-permissions`, i.e.
-   `npx tsx prisma/seed-permissions.ts`.
+3. Seed permissions — run **`npm run deploy:db`**, which chains steps 2 and 3
+   (this is also what all three production entry points run automatically —
+   see RESOLVED below). The underlying seed command is `npm run
+   prisma:seed-permissions`, i.e. `tsx prisma/seed-permissions.ts` (local
+   binary; `tsx` is a declared devDependency).
 4. Verify: see (d) below.
 
 `deploy:db` script (`package.json`):
@@ -80,20 +81,30 @@ you don't want in a deploy context.
   { "enabled": false }
   ```
 
-## ACTION NEEDED — production deploy path does not run the seed yet
+## RESOLVED — production deploy path now runs the seed automatically
 
-`render-deploy.sh` (and the native-runtime start commands in `render.yaml`
-and `Dockerfile`) currently run `npx prisma migrate deploy` **without** a
-following permission-seed step. That means step 3 above is **not yet
-automated in production** — today, after any raw-SQL permission migration, a
-human must manually run `npm run prisma:seed-permissions` (with the
-production `DATABASE_URL` / `REDIS_URL`) immediately after the deploy
-completes, or admins will see transient 403s as described in (b).
+`render-deploy.sh`, `render.yaml` (`startCommand`), and `Dockerfile` (`CMD`)
+all now run `npm run deploy:db` (`prisma migrate deploy && prisma:seed-permissions`)
+instead of a bare `prisma migrate deploy`. Step 3 above is automated in every
+deploy path — no manual post-deploy seed step is required.
 
-Wiring `npm run deploy:db` (or an equivalent seed step) into `render-deploy.sh`
-is a deliberate follow-up, **out of scope for this change** — it touches the
-production deploy path and needs explicit human sign-off before editing
-`render-deploy.sh` / `render.yaml` / `Dockerfile`.
+Failure semantics are fail-loud by construction, not by extra scripting: each
+entry point chains the seed with `&&` (`render.yaml`, `Dockerfile`) or relies
+on `render-deploy.sh`'s existing `set -e`, so a non-zero exit from either half
+of `deploy:db` aborts before the app starts (`exec npm run start` / `node
+dist/src/server.js` never runs).
+
+`tsx` (the seed's TS runner) is now a declared `devDependency` and
+`prisma:seed-permissions` invokes the local `node_modules/.bin/tsx` binary
+directly (no `npx` registry fetch at boot). The seed also now closes the
+Redis client (`redisClose()`) in its `finally`, alongside `prisma.$disconnect()`
+— without this the lazy-connect ioredis client (once touched by
+`invalidatePermissionCache`) keeps the event loop alive and the process never
+exits when `REDIS_URL` is set, which would hang the deploy.
+
+The manual sequence in (a)–(c) above remains the documented fallback for any
+environment outside Render's three entry points (e.g. a bare VM or a manual
+hotfix run).
 
 ## CI
 

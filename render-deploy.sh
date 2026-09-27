@@ -19,9 +19,10 @@ fi
 echo "📦 Generating Prisma Client..."
 npx prisma generate
 
-# 2. Run pending migrations
-echo "🗄️  Running database migrations..."
-npx prisma migrate deploy
+# 2. Run pending migrations, then seed permissions (Redis cache invalidation
+#    for permission slugs granted by raw-SQL migrations — see docs/DEPLOYMENT.md)
+echo "🗄️  Running database migrations + permission seed..."
+npm run deploy:db
 
 # 3. Seed database (optional — only if database is empty)
 if [ "$SEED_DATABASE" = "true" ]; then

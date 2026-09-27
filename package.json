@@ -19,7 +19,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:reset": "bash scripts/safe-reset.sh",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "prisma:seed-permissions": "npx tsx prisma/seed-permissions.ts",
+    "prisma:seed-permissions": "tsx prisma/seed-permissions.ts",
     "deploy:db": "npx prisma migrate deploy && npm run prisma:seed-permissions",
     "check:migrations": "node scripts/check-destructive-migrations.cjs",
     "db:backup": "bash scripts/backup-db.sh"
@@ -50,6 +50,7 @@
     "jest": "^29.7.0",
     "prisma": "^5.22.0",
     "ts-node": "^10.9.2",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   }
 }
