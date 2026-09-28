@@ -142,6 +142,24 @@ describe('POST /auth/refresh — opaque token contract', () => {
     expect(me.body.id).toBe(USER_ID);
   });
 
+  it('refresh-minted access token has the SAME TTL as the login-minted one (single source, no drift)', async () => {
+    // Proves login, signup/accept-invite and refresh all mint from the one signAccessToken source:
+    // decode both JWTs and compare exp - iat. Any divergence means a second, un-consolidated signer.
+    const login = await post('/api/v1/auth/login', { email: `g1-refresh-${TENANT_ID.slice(0, 8)}@x.com`, password: 'TestPass123!' });
+    expect(login.status).toBe(200);
+    const loginDecoded = jwt.decode(login.body.data.accessToken) as { iat: number; exp: number };
+    const loginTtl = loginDecoded.exp - loginDecoded.iat;
+
+    const refresh = await post('/api/v1/auth/refresh', { refreshToken: login.body.data.refreshToken });
+    expect(refresh.status).toBe(200);
+    const refreshDecoded = jwt.decode(refresh.body.accessToken) as { iat: number; exp: number };
+    const refreshTtl = refreshDecoded.exp - refreshDecoded.iat;
+
+    expect(refreshTtl).toBe(loginTtl);
+    // ...and both derive from the single sanctioned interim constant (7d = 604800s).
+    expect(loginTtl).toBe(604800);
+  });
+
   it('createSession (shared by login AND signup/accept-invite) yields a refreshable opaque token', async () => {
     const { sessionId, refreshToken } = await authService.createSession(USER_ID, TENANT_ID);
     expect(refreshToken.split('.')[0]).toBe(sessionId);

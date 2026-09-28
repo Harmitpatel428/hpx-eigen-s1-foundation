@@ -1,6 +1,6 @@
 import { PrismaClient, SessionStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import jwt, { type SignOptions } from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import {
   AuthenticationFailedError,
@@ -14,13 +14,19 @@ export interface RefreshResult {
 }
 
 const BCRYPT_COST = parseInt(process.env.BCRYPT_COST ?? '12', 10);
-// reg #9: the ACCESS token is short-lived; the session-day lifetime must NOT leak into the
-// access-token expiry (that was the multi-day-token bug). Single source of truth for the
-// access-token TTL — signAccessToken() is the ONE signer used by login, signup/accept-invite
-// (router delegates) AND refresh, so every access token is minted identically.
-const ACCESS_TTL = (process.env.ACCESS_TTL ?? '15m') as SignOptions['expiresIn'];
+// Single source of truth for the access-token TTL. signAccessToken() is the ONE signer used by
+// login, signup/accept-invite (router delegates) AND refresh, so every access token is minted
+// identically. A NUMBER of seconds (never a day-based string literal like '7d'), so the reg#9
+// multi-day-token bug cannot reappear as an un-parsed expiry.
+//
+// DELIBERATE, TIME-BOXED INTERIM (architect decision): pinned to the CURRENT production TTL of
+// 7 days, NOT the 15m target — shipping the consolidated single signer must not change production
+// access-token lifetime in this workstream. Workstream G3 will flip this to 900 (15m) and restore
+// the unconditional <=15m assertion in reg#9, >= 7 days AFTER the G2 (unified refreshing client)
+// deploy.
+const ACCESS_TOKEN_TTL_SECONDS = 604800; // 7 days
 // Session-row / refresh lifetime — matches the live login & signup/accept-invite behavior (7d).
-// Distinct from ACCESS_TTL: this is how long the Session row (and thus the refresh token) lives.
+// Distinct from ACCESS_TOKEN_TTL_SECONDS: this is how long the Session row (and thus the refresh token) lives.
 const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Fixed 32-byte buffer for constant-time dummy comparisons on the no-session / malformed-token
@@ -72,7 +78,7 @@ export class AuthService {
    * JWT payload is stateless: userId, tenantId, sessionId only.
    */
   signAccessToken(claims: { userId: string; tenantId: string; sessionId: string }): string {
-    return jwt.sign(claims, JWT_SECRET, { expiresIn: ACCESS_TTL });
+    return jwt.sign(claims, JWT_SECRET, { expiresIn: ACCESS_TOKEN_TTL_SECONDS });
   }
 
   /**
