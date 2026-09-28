@@ -97,7 +97,7 @@ const corsOptions = {
     else { callback(new Error('CORS: origin not allowed')); }
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-tenant-id', 'x-department-id', 'x-department-context'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'x-tenant-id', 'x-department-id', 'x-department-context', 'x-correlation-id'],
   credentials: true,
   optionsSuccessStatus: 204
 };
