@@ -1,0 +1,13 @@
+-- Drift item #1 (Workstream F forensics, wsF-report.md).
+-- AuditLog_currentHash_idx (plain index on currentHash, from the original
+-- 20260718052927_s1_s2_full_schema migration) was superseded by the composite
+-- unique AuditLog_tenantId_currentHash_key added in
+-- 20260908010000_audit_hash_version_and_indexes, but the old plain index was
+-- never dropped. Verified: every currentHash lookup in the codebase
+-- (audit.service.ts leaf-finder, auth.router.ts, OrgInitService.ts) filters by
+-- tenantId first, so nothing depends on a standalone currentHash index. Dead
+-- weight, safe to drop. (Prod: this index operation can optionally be
+-- pre-applied as a lock-free, non-transactional ops step ahead of `migrate
+-- deploy` — see docs/DEPLOYMENT.md Workstream F apply sequence for the exact
+-- command; this migration's IF EXISTS guard no-ops if that already ran.)
+DROP INDEX IF EXISTS "AuditLog_currentHash_idx";
