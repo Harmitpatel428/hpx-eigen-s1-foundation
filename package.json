@@ -22,6 +22,7 @@
     "prisma:seed-permissions": "tsx prisma/seed-permissions.ts",
     "deploy:db": "npx prisma migrate deploy && npm run prisma:seed-permissions",
     "check:migrations": "node scripts/check-destructive-migrations.cjs",
+    "drift:check": "bash scripts/check-drift.sh",
     "db:backup": "bash scripts/backup-db.sh"
   },
   "dependencies": {

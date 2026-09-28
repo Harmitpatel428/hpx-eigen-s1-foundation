@@ -107,6 +107,56 @@ hotfix run).
 
 ## CI
 
-`.github/workflows/ci.yml` does not run `prisma migrate deploy` — it only
-runs `npm ci` and `npm run build` (`prisma generate && tsc`) against no
-database. No CI change was needed for this runbook.
+The `build` job in `.github/workflows/ci.yml` does not run `prisma migrate
+deploy` — it only runs `npm ci` and `npm run build` (`prisma generate &&
+tsc`) against no database. No CI change was needed for this runbook.
+
+A separate `drift` job (added for Workstream F, see below) does spin up a
+disposable Postgres service for `npm run drift:check` — that DB is scratch
+space for `prisma migrate diff` only, never a target for `migrate deploy`,
+and has no bearing on the permission-cache runbook above.
+
+## Workstream F — prod apply sequence (Prisma drift reconciliation)
+
+Context: `scripts/expected-drift.sql` and the CI `drift` job (above) guard
+against schema.prisma / migration-history drift going forward. The
+corrective migrations that first closed the drift (item #1 `DROP INDEX`,
+item #3 `CREATE INDEX`, item #5 index rename, items #6–14 `DROP DEFAULT`)
+are plain, transactional Prisma migrations — safe on any table size, except
+items #1 and #3, whose non-concurrent `DROP INDEX` / `CREATE INDEX` take a
+share lock for the duration of the operation. On a small table this is
+instant; on a large, busy `AuditLog` or `Lead` table in prod it can hold up
+writes. `CONCURRENTLY` cannot run inside Prisma's transactional migration
+wrapper, so it is applied here, as a manual ops step, instead of inside the
+migration SQL (`grep -rn CONCURRENTLY prisma/migrations` must stay empty).
+
+1. **Record baseline row counts** (for the decision log, and to sanity-check
+   nothing unexpected happened):
+   ```sql
+   SELECT count(*) FROM "AuditLog";
+   SELECT count(*) FROM "Lead";
+   ```
+2. **Optional but recommended — pre-apply the two lock-sensitive indexes
+   concurrently**, via `psql` or `npx prisma db execute --stdin`, *before*
+   `migrate deploy` runs:
+   ```sql
+   DROP INDEX CONCURRENTLY IF EXISTS "AuditLog_currentHash_idx";
+   CREATE INDEX CONCURRENTLY IF NOT EXISTS "Lead_tenantId_stage_idx"
+     ON "Lead" ("tenantId", "stage");
+   ```
+   `CONCURRENTLY` cannot run inside a transaction, so this must be a
+   standalone `psql`/`db execute` call, not part of `migrate deploy`.
+3. **Deploy as usual**: `npm run deploy:db` (`prisma migrate deploy && prisma
+   :seed-permissions`, per (a) above). Migrations M1 (`DROP INDEX IF EXISTS`)
+   and M2 (`CREATE INDEX IF NOT EXISTS`) no-op if step 2 already ran; M3
+   (index rename) and M4 (`DROP DEFAULT` ×10) apply normally either way —
+   both are fast, non-locking catalog-only operations safe to run inside the
+   transactional migration wrapper.
+4. **Fallback**: skipping step 2 is correct too — `migrate deploy` will then
+   build the two indexes non-concurrently as part of M1/M2, taking a brief
+   write lock on `AuditLog`/`Lead` for the duration. Record which path was
+   taken (concurrent pre-apply vs. in-migration) in the deploy log; there is
+   no functional difference afterward, only a difference in lock duration
+   during the deploy window.
+5. **Then the standing seed-permissions step** — already covered by
+   `deploy:db` in step 3; do not skip it (see (b)/(c) above for why).
