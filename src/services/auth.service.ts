@@ -4,35 +4,29 @@ import jwt, { type SignOptions } from 'jsonwebtoken';
 import crypto from 'crypto';
 import {
   AuthenticationFailedError,
-  SessionExpiredError,
-  SessionRevokedError,
   ResourceNotFoundError,
-  TenantNotFoundError,
-  ValidationError,
-  AppException,
-  RetryTag
 } from '../types/exceptions';
+import { checkRefreshAttempts } from './auth/RateLimitService';
 import { AuditService } from './audit.service';
-
-export interface LoginResult {
-  accessToken: string;
-  refreshToken?: string;
-  sessionId: string;
-  expiresAt: Date;
-  userId: string;
-  tenantId: string;
-}
 
 export interface RefreshResult {
   accessToken: string;
 }
 
 const BCRYPT_COST = parseInt(process.env.BCRYPT_COST ?? '12', 10);
-const SESSION_LIFETIME_DAYS = parseInt(process.env.SESSION_LIFETIME_DAYS ?? '30', 10);
-// reg #9: the ACCESS token is short-lived; SESSION_LIFETIME_DAYS is the REFRESH/session-row
-// lifetime and must NOT leak into the access-token expiry (that was the multi-day-token bug).
-// Single source of truth for the access-token TTL, used at BOTH sign sites (login + refresh).
+// reg #9: the ACCESS token is short-lived; the session-day lifetime must NOT leak into the
+// access-token expiry (that was the multi-day-token bug). Single source of truth for the
+// access-token TTL — signAccessToken() is the ONE signer used by login, signup/accept-invite
+// (router delegates) AND refresh, so every access token is minted identically.
 const ACCESS_TTL = (process.env.ACCESS_TTL ?? '15m') as SignOptions['expiresIn'];
+// Session-row / refresh lifetime — matches the live login & signup/accept-invite behavior (7d).
+// Distinct from ACCESS_TTL: this is how long the Session row (and thus the refresh token) lives.
+const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Fixed 32-byte buffer for constant-time dummy comparisons on the no-session / malformed-token
+// path, so timing does not reveal which failure mode occurred.
+const DUMMY_DIGEST = crypto.createHash('sha256').update('refresh-timing-dummy').digest();
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 if (!JWT_SECRET) {
@@ -48,91 +42,37 @@ export class AuthService {
   }
 
   /**
-   * Login — authenticates a user and creates a CREATED session.
-   * Session transitions to ACTIVE on the first authenticated request (via middleware).
+   * Consolidated session creation — the ONLY place a Session row + refresh token is minted.
+   * Used by login AND signup/accept-invite. Generates an opaque refresh token
+   * "<sessionId>.<secret>" and persists ONLY sha256hex(secret) as refreshTokenHash
+   * (never the secret itself, never bcrypt). The caller writes its own audit event.
    */
-  async login(
-    email: string,
-    password: string,
-    meta: { ip?: string; userAgent?: string; deviceName?: string }
-  ): Promise<LoginResult> {
-    // 1. Lookup User by email
-    const user = await this.prisma.user.findFirst({
-      where: {
-        email,
-        deletedAt: { equals: null },
+  async createSession(
+    userId: string,
+    tenantId: string
+  ): Promise<{ sessionId: string; refreshToken: string }> {
+    const secret = crypto.randomBytes(64).toString('hex');
+    const refreshTokenHash = crypto.createHash('sha256').update(secret).digest('hex');
+
+    const session = await this.prisma.session.create({
+      data: {
+        tenantId,
+        userId,
+        status: SessionStatus.ACTIVE,
+        refreshTokenHash,
+        expiresAt: new Date(Date.now() + SESSION_LIFETIME_MS),
       },
     });
 
-    if (!user) throw new AuthenticationFailedError();
+    return { sessionId: session.id, refreshToken: `${session.id}.${secret}` };
+  }
 
-    if (!user.emailVerified) {
-      throw new AppException(
-        'EMAIL_NOT_VERIFIED',
-        'Please verify your email before logging in.',
-        RetryTag.USER_ACTION_REQUIRED,
-        403
-      );
-    }
-
-    if (user.status !== 'ACTIVE') {
-      throw new AppException(
-        'ACCOUNT_SUSPENDED',
-        'Your account is not active.',
-        RetryTag.USER_ACTION_REQUIRED,
-        403
-      );
-    }
-
-    // 2. Validate password against User
-    if (!user.password) {
-      console.error('[LOGIN] User has no password hash:', email);
-      throw new AuthenticationFailedError();
-    }
-    const passwordValid = await bcrypt.compare(password, user.password);
-    if (!passwordValid) throw new AuthenticationFailedError();
-
-    const actualTenantId = user.tenantId;
-
-    // Generate secure refresh token, store only hash
-    const refreshToken = crypto.randomBytes(64).toString('hex');
-    const refreshTokenHash = await bcrypt.hash(refreshToken, BCRYPT_COST);
-
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + SESSION_LIFETIME_DAYS);
-
-    // Create session in CREATED state
-    const session = await this.prisma.session.create({
-      data: {
-        tenantId: actualTenantId,
-        userId: user.id,
-        status: SessionStatus.CREATED,
-        refreshTokenHash,
-        expiresAt
-        // Note: ipAddress, userAgent, deviceName require a schema migration to add.
-        // Add these fields to Session model and run: npx prisma migrate dev --name add-session-meta
-      }
-    });
-
-    const accessToken = jwt.sign(
-      { sessionId: session.id, userId: user.id, tenantId: actualTenantId },
-      JWT_SECRET,
-      { expiresIn: ACCESS_TTL }
-    );
-
-    await this.auditService.log({
-      tenantId: actualTenantId,
-      eventType: 'USER_LOGIN',
-      entityType: 'Session',
-      entityId: session.id,
-      actorUserId: user.id,
-      actorIp: meta.ip,
-      actorUserAgent: meta.userAgent,
-      operation: 'CREATE',
-      payload: { sessionId: session.id, email }
-    });
-
-    return { accessToken, sessionId: session.id, expiresAt, userId: user.id, tenantId: actualTenantId };
+  /**
+   * Single-source access-token signer — same claims + TTL for login, signup, and refresh.
+   * JWT payload is stateless: userId, tenantId, sessionId only.
+   */
+  signAccessToken(claims: { userId: string; tenantId: string; sessionId: string }): string {
+    return jwt.sign(claims, JWT_SECRET, { expiresIn: ACCESS_TTL });
   }
 
   /**
@@ -208,48 +148,96 @@ export class AuthService {
   }
 
   /**
-   * Refresh — validates the raw refresh token against the stored bcrypt hash.
-   * Issues a new accessToken without creating a new session.
+   * Refresh — exchanges an opaque refresh token "<sessionId>.<secret>" for a NEW access token.
    *
-   * Security notes:
-   * - Session must be ACTIVE and not expired
-   * - refreshToken is validated via constant-time bcrypt compare
-   * - Replay attacks detected: if token hash doesn't match, throw AuthenticationFailedError
+   * Contract:
+   * - Read-only on the session row (NO rotation) → 5 concurrent refreshes are safe.
+   * - Uniform AuthenticationFailedError (401 AUTHENTICATION_FAILED) for EVERY failure mode
+   *   (malformed / unknown-session / wrong-secret / expired / revoked / invalidated /
+   *   deleted-or-suspended user) so nothing distinguishes them.
+   * - Constant-time secret comparison over fixed 32-byte sha256 digest buffers; a dummy
+   *   compare runs even when no session/valid hash is available (timing-oracle guard) and the
+   *   length is guarded BEFORE timingSafeEqual so it can never throw.
+   * - Rate limited per session-id AND per IP, fail-closed (throws before any DB work).
+   * - Pre-existing sessions (bcrypt hash of discarded bytes, bare-sessionId token) fail here
+   *   exactly as they do today — their stored hash is not a 32-byte hex digest.
    */
-  async refresh(
-    sessionId: string,
-    refreshToken: string,
-    tenantId: string
-  ): Promise<RefreshResult> {
-    if (!refreshToken) throw new ValidationError('refreshToken is required.');
+  async refresh(rawToken: string, ip?: string): Promise<RefreshResult> {
+    const dot = rawToken.indexOf('.');
+    const sessionId = dot > 0 ? rawToken.slice(0, dot) : '';
+    const secret = dot > 0 ? rawToken.slice(dot + 1) : '';
 
-    const session = await this.prisma.session.findFirst({
-      where: {
-        id: sessionId,
-        tenantId,
-        status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
-        expiresAt: { gt: new Date() },
-        deletedAt: { equals: null }
-      },
-      include: { user: { select: { id: true, status: true } } }
+    // Rate limit (fail-closed) BEFORE touching the DB — per session-id AND per IP.
+    await checkRefreshAttempts(sessionId || 'unknown', ip ?? 'unknown');
+
+    const session =
+      sessionId && UUID_RE.test(sessionId)
+        ? await this.prisma.session.findUnique({
+            where: { id: sessionId },
+            include: { user: { select: { status: true, deletedAt: true } } },
+          })
+        : null;
+
+    // Constant-time secret check. presented is always a 32-byte digest; the stored hex is
+    // decoded to a buffer and only used when it is exactly 32 bytes, otherwise we compare
+    // against a fixed dummy so the timing profile is identical and then fail.
+    const presented = crypto.createHash('sha256').update(secret).digest();
+    let storedBuf = DUMMY_DIGEST;
+    let storedLenOk = false;
+    if (session) {
+      const decoded = Buffer.from(session.refreshTokenHash, 'hex');
+      if (decoded.length === 32) {
+        storedBuf = decoded;
+        storedLenOk = true;
+      }
+    }
+    const secretMatches = crypto.timingSafeEqual(presented, storedBuf) && storedLenOk;
+
+    const now = new Date();
+    const sessionUsable =
+      !!session &&
+      !session.deletedAt &&
+      (session.status === SessionStatus.CREATED || session.status === SessionStatus.ACTIVE) &&
+      session.expiresAt > now;
+    const userUsable =
+      !!session?.user && !session.user.deletedAt && session.user.status === 'ACTIVE';
+
+    if (!session || !secretMatches || !sessionUsable || !userUsable) {
+      if (session) {
+        // Best-effort failure audit (tenant known). Never include the secret or the hash.
+        try {
+          await this.auditService.log({
+            tenantId: session.tenantId,
+            eventType: 'TOKEN_REFRESH_FAILED',
+            entityType: 'Session',
+            entityId: session.id,
+            actorUserId: session.userId,
+            actorIp: ip,
+            operation: 'REFRESH',
+            payload: { sessionId: session.id, reason: 'refresh_rejected' },
+          });
+        } catch (e) {
+          console.error('[REFRESH][AUDIT_DELIVERY_FAILURE]', e);
+        }
+      }
+      throw new AuthenticationFailedError();
+    }
+
+    const accessToken = this.signAccessToken({
+      userId: session.userId,
+      tenantId: session.tenantId,
+      sessionId: session.id,
     });
 
-    if (!session) throw new SessionExpiredError();
-
-    // Constant-time comparison to prevent timing attacks
-    const tokenValid = await bcrypt.compare(refreshToken, session.refreshTokenHash);
-    if (!tokenValid) throw new AuthenticationFailedError();
-
-    const accessToken = jwt.sign(
-      { sessionId: session.id, userId: session.userId, tenantId },
-      JWT_SECRET,
-      { expiresIn: ACCESS_TTL }
-    );
-
-    // Touch lastActivityAt
-    await this.prisma.session.update({
-      where: { id: sessionId },
-      data: { lastActivityAt: new Date() }
+    await this.auditService.log({
+      tenantId: session.tenantId,
+      eventType: 'TOKEN_REFRESHED',
+      entityType: 'Session',
+      entityId: session.id,
+      actorUserId: session.userId,
+      actorIp: ip,
+      operation: 'REFRESH',
+      payload: { sessionId: session.id },
     });
 
     return { accessToken };

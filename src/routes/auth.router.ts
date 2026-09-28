@@ -5,7 +5,6 @@ import { AuthService } from '../services/auth.service';
 import { AppException, ValidationError, InvitationAlreadyAcceptedError, RetryTag } from '../types/exceptions';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
 import { emailService } from '../services/email.service';
 import { PermissionService } from '../services/permission.service';
 import { TokenService } from '../services/auth/TokenService';
@@ -196,44 +195,32 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       // EMAIL VERIFIED — Create session
       console.log('[LOGIN] All checks passed, creating session...');
 
-      const session = await prisma.session.create({
-        data: {
-          tenantId: user.tenantId,
-          userId: user.id,
-          status: 'ACTIVE',
-          refreshTokenHash: await bcrypt.hash(crypto.randomBytes(64).toString('hex'), 12),
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-        }
-      });
-      
-      const jwtToken = jwt.sign(
-        { userId: user.id, tenantId: user.tenantId, sessionId: session.id },
-        process.env.JWT_SECRET!,
-        { expiresIn: '7d' }
-      );
-      
+      // Consolidated session creation → opaque "<sessionId>.<secret>" refresh token.
+      const { sessionId, refreshToken } = await authService.createSession(user.id, user.tenantId);
+      const jwtToken = authService.signAccessToken({ userId: user.id, tenantId: user.tenantId, sessionId });
+
       // Audit
       await auditService.log({
         tenantId: user.tenantId,
         eventType: 'USER_LOGIN',
         entityType: 'Session',
-        entityId: session.id,
+        entityId: sessionId,
         actorUserId: user.id,
         operation: 'CREATE',
-        payload: { sessionId: session.id },
+        payload: { sessionId },
       });
-      
+
       console.log('[LOGIN] Success');
 
       return res.status(200).json({
         success: true,
         data: {
           accessToken: jwtToken,
-          refreshToken: session.id, // sessionId as refresh identifier
+          refreshToken, // opaque "<sessionId>.<secret>" — validated by POST /auth/refresh
           user: { id: user.id, email: user.email, tenantId: user.tenantId },
           organization: { id: user.tenant.id, name: user.tenant.name },
           permissions,
-          sessionId: session.id
+          sessionId
         }
       });
       
@@ -646,19 +633,22 @@ export function createAuthRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/auth/refresh ───────────────────────────────────────
   /**
-   * Protected — issues a new short-lived accessToken (15m) from a valid refresh token.
+   * Public — issues a NEW accessToken from a valid opaque refresh token.
+   * NOT behind authMiddleware by design: the caller's access token is typically expired or
+   * absent, which is exactly when a refresh is needed. The opaque refresh token in the body
+   * ("<sessionId>.<secret>") is the sole credential.
    * Body: { refreshToken: string }
+   * Success: flat { accessToken }. Any invalid token → uniform 401 AUTHENTICATION_FAILED.
    */
-  router.post('/refresh', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { sessionId, tenantId } = (req as AuthenticatedRequest).user;
-      const { refreshToken } = req.body as { refreshToken: string };
-
-      if (!refreshToken) {
+      const { refreshToken } = req.body as { refreshToken?: unknown };
+      if (!refreshToken || typeof refreshToken !== 'string') {
         throw new ValidationError('refreshToken is required.');
       }
 
-      const result = await authService.refresh(sessionId, refreshToken, tenantId);
+      const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      const result = await authService.refresh(refreshToken, ip);
       res.json(result);
     } catch (err) {
       next(err);
@@ -762,41 +752,29 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         permissionService.getPermissionManifest(userId, tenantId).catch(() => ({}))
       ]);
 
-      const session = await prisma.session.create({
-        data: {
-          tenantId,
-          userId,
-          status: 'ACTIVE',
-          refreshTokenHash: await bcrypt.hash(crypto.randomBytes(64).toString('hex'), 12),
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-        }
-      });
-
-      const jwtToken = jwt.sign(
-        { userId, tenantId, sessionId: session.id },
-        process.env.JWT_SECRET!,
-        { expiresIn: '7d' }
-      );
+      // Consolidated session creation → opaque "<sessionId>.<secret>" refresh token.
+      const { sessionId, refreshToken } = await authService.createSession(userId, tenantId);
+      const jwtToken = authService.signAccessToken({ userId, tenantId, sessionId });
 
       await auditService.log({
         tenantId,
         eventType: 'INVITATION_SESSION_CREATED',
         entityType: 'Session',
-        entityId: session.id,
+        entityId: sessionId,
         actorUserId: userId,
         operation: 'CREATE',
-        payload: { invitationId, sessionId: session.id },
+        payload: { invitationId, sessionId },
       });
 
       return res.status(200).json({
         success: true,
         data: {
           accessToken: jwtToken,
-          refreshToken: session.id,
+          refreshToken, // opaque "<sessionId>.<secret>" — validated by POST /auth/refresh
           user: { id: user.id, email: user.email, tenantId: user.tenantId },
           organization: { id: user.tenant!.id, name: user.tenant!.name },
           permissions,
-          sessionId: session.id
+          sessionId
         }
       });
     } catch (err) {

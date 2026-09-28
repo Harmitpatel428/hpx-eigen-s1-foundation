@@ -27,7 +27,11 @@ describe('access-token TTL (reg #9)', () => {
 
   it('signs every access token from the single ACCESS_TTL constant', () => {
     const signExpiries = [...src.matchAll(/expiresIn:\s*([^\n}]+)/g)].map((m) => m[1].trim());
-    expect(signExpiries.length).toBeGreaterThanOrEqual(2); // login + refresh
+    // WS-G1: access-token signing is now consolidated into ONE single-source signer
+    // (signAccessToken), reused by login, signup/accept-invite (router delegates) AND refresh.
+    // The previously-unreachable service.login() sign site was deleted per the G1 contract, so a
+    // single ACCESS_TTL sign site is the correct end state (was >= 2 when the dead dup existed).
+    expect(signExpiries.length).toBeGreaterThanOrEqual(1);
     for (const e of signExpiries) expect(e).toBe('ACCESS_TTL');
   });
 

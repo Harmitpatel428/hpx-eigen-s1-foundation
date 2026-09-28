@@ -67,6 +67,23 @@ export async function checkLoginAttempts(email: string): Promise<number> {
   return attempts;
 }
 
+// 30/hr per session-id AND 30/hr per IP — both must pass. fail-CLOSED: refresh is a
+// security-sensitive credential exchange, so a Redis outage denies it (force re-login)
+// rather than letting the limiter be bypassed by disrupting Redis.
+export async function checkRefreshAttempts(sessionId: string, ip: string): Promise<void> {
+  const hour = Math.floor(Date.now() / 3600000);
+  const keys = [
+    { key: `refresh:session:${sessionId}:${hour}`, limit: 30 },
+    { key: `refresh:ip:${ip}:${hour}`, limit: 30 },
+  ];
+  for (const { key, limit } of keys) {
+    const count = await redisIncr(key);
+    if (count === null) throw new TemporaryServiceError(); // fail-CLOSED
+    if (count === 1) await redisExpire(key, 3600);
+    if (count > limit) throw new RateLimitExceededError();
+  }
+}
+
 // 10 imports/hr per tenant, 20/hr per IP â€” fail-OPEN: a Redis outage should not
 // block all imports; the advisory lock is the correctness guard for concurrent imports.
 export async function checkImportRateLimit(tenantId: string, ip: string): Promise<void> {
