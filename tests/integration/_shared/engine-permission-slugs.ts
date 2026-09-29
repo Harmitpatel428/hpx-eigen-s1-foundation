@@ -43,6 +43,8 @@ export const ENGINE_PERMISSION_SLUGS: string[] = [
   'case-stage:skip',
   'case-stage:reopen',
   'case-stage:override',
+  'case-stage:pause',
+  'case-stage:resume',
   'case-exception:approve',
   'case-calendar:manage',
   'sla:unlock',

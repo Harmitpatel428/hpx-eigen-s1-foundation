@@ -126,6 +126,8 @@ const PERMISSIONS = [
   { slug: 'case-stage:skip',         module: 'Case Engine', description: 'Skip a case stage' },
   { slug: 'case-stage:reopen',       module: 'Case Engine', description: 'Reopen a completed or skipped case stage' },
   { slug: 'case-stage:override',     module: 'Case Engine', description: 'Override case stage requirements (manager)' },
+  { slug: 'case-stage:pause',        module: 'Case Engine', description: 'Pause a case stage (mark waiting on an external party)' },
+  { slug: 'case-stage:resume',       module: 'Case Engine', description: 'Resume a paused case stage' },
   { slug: 'case-exception:approve',  module: 'Case Engine', description: 'Approve an exception raised against a case' },
   { slug: 'case-calendar:manage',    module: 'Case Engine', description: 'Manage case calendar scheduling and deadlines' },
   { slug: 'sla:unlock',              module: 'Case Engine', description: 'Unlock an SLA-locked case action' },

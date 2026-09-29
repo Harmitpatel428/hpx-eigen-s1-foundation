@@ -1276,6 +1276,7 @@ model DocCase {
   // Phase 4: optional binding to a tenant CaseType. Null = tenant-global field catalog.
   caseTypeId String?   @db.Uuid
   caseType   CaseType? @relation(fields: [caseTypeId], references: [id], onDelete: SetNull)
+  timeline   CaseTimeline? // Phase 6: at most one per case
 
   @@unique([tenantId, leadId])
   @@index([tenantId])
@@ -1943,8 +1944,9 @@ model CaseType {
   updatedAt    DateTime       @updatedAt
   deletedAt    DateTime?
 
-  placements CaseTypeFieldPlacement[]
-  cases      DocCase[]
+  placements     CaseTypeFieldPlacement[]
+  cases          DocCase[]
+  stageTemplates CaseStageTemplate[]
 
   @@unique([tenantId, key])
   @@index([tenantId])
@@ -1968,4 +1970,125 @@ model CaseTypeFieldPlacement {
   @@unique([tenantId, caseTypeId, fieldId])
   @@index([tenantId, caseTypeId])
   @@index([tenantId, fieldId])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CASE TIMELINE (Case Operations Engine — Phase 6)
+// Per-CaseType stage templates; per-DocCase timeline instances with a
+// stage state machine and append-only stage events. Instances snapshot
+// template fields at creation — later template edits never mutate live
+// timelines. No dates/reverse-planning (Phase 7). No DocCase-row writes.
+// ═══════════════════════════════════════════════════════════════════
+
+enum CaseStageStatus {
+  PENDING
+  READY
+  IN_PROGRESS
+  WAITING_EXTERNAL
+  BLOCKED
+  COMPLETED
+  SKIPPED
+}
+
+enum CaseStageDurationType {
+  DAYS
+  WEEKS
+  MONTHS
+}
+
+enum CaseTimelineStatus {
+  ACTIVE
+  COMPLETED
+}
+
+// ─── CaseStageTemplate — ordered stage template under a CaseType ────
+model CaseStageTemplate {
+  id                        String                 @id @default(uuid()) @db.Uuid
+  tenantId                  String                 @db.Uuid
+  caseTypeId                String                 @db.Uuid
+  key                       String
+  label                     String
+  sequence                  Int                    @default(0)
+  durationValue             Int?
+  durationType              CaseStageDurationType?
+  externalWaiting           Boolean                @default(false)
+  bufferDays                Int?
+  dependsOnPrevious         Boolean                @default(true)
+  enforceRequiredOnComplete Boolean                @default(false)
+  createdAt                 DateTime               @default(now())
+  updatedAt                 DateTime               @updatedAt
+  deletedAt                 DateTime?
+
+  caseType CaseType    @relation(fields: [caseTypeId], references: [id], onDelete: Cascade)
+  stages   CaseStage[]
+
+  @@unique([tenantId, caseTypeId, key])
+  @@index([tenantId, caseTypeId])
+  @@index([deletedAt])
+}
+
+// ─── CaseTimeline — one per DocCase ─────────────────────────────────
+model CaseTimeline {
+  id         String             @id @default(uuid()) @db.Uuid
+  tenantId   String             @db.Uuid
+  caseId     String             @unique @db.Uuid
+  caseTypeId String             @db.Uuid // snapshot of the type it was built from
+  status     CaseTimelineStatus @default(ACTIVE)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  case   DocCase     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  stages CaseStage[]
+
+  @@index([tenantId])
+}
+
+// ─── CaseStage — per-case stage instance (snapshotted from template) ─
+model CaseStage {
+  id                        String                @id @default(uuid()) @db.Uuid
+  tenantId                  String                @db.Uuid
+  timelineId                String                @db.Uuid
+  templateId                String?               @db.Uuid
+  key                       String
+  label                     String
+  sequence                  Int                   @default(0)
+  status                    CaseStageStatus       @default(PENDING)
+  durationValue             Int?
+  durationType              CaseStageDurationType?
+  externalWaiting           Boolean               @default(false)
+  bufferDays                Int?
+  dependsOnPrevious         Boolean               @default(true)
+  enforceRequiredOnComplete Boolean               @default(false)
+  startedAt                 DateTime?
+  completedAt               DateTime?
+  createdAt                 DateTime              @default(now())
+  updatedAt                 DateTime              @updatedAt
+
+  timeline CaseTimeline       @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  template CaseStageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  events   CaseStageEvent[]
+
+  @@unique([tenantId, timelineId, key])
+  @@index([tenantId, timelineId])
+  @@index([tenantId, status])
+}
+
+// ─── CaseStageEvent — append-only stage transition log ──────────────
+model CaseStageEvent {
+  id          String           @id @default(uuid()) @db.Uuid
+  tenantId    String           @db.Uuid
+  caseId      String           @db.Uuid
+  stageId     String           @db.Uuid
+  eventType   String           @db.VarChar(32)
+  fromStatus  CaseStageStatus?
+  toStatus    CaseStageStatus?
+  actorUserId String?          @db.Uuid
+  note        String?
+  createdAt   DateTime         @default(now())
+
+  stage CaseStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, stageId])
+  @@index([tenantId, caseId])
+  @@index([createdAt])
 }
