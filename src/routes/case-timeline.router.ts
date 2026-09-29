@@ -2,7 +2,7 @@ import { Router, Request } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { requireCaseEngineEnabled } from '../middleware/case-engine.middleware';
-import { AuthorizationError } from '../types/exceptions';
+import { AuthorizationError, ValidationError } from '../types/exceptions';
 import { CaseTimelineService, UserContext } from '../services/case-timeline.service';
 
 const T_VIEW = 'case-timeline:view';
@@ -55,6 +55,18 @@ export function createCaseTimelineRouter(prisma: PrismaClient): Router {
   router.post('/', permissionMiddleware(T_MANAGE), async (req, res, next) => {
     try { res.status(201).json({ success: true, data: await svc.createTimeline(ctxOf(req), (req.params as any).caseId) }); } catch (e) { next(e); }
   });
+  router.put('/target', permissionMiddleware(T_MANAGE), async (req, res, next) => {
+    try {
+      if (!req.body || !('targetDate' in req.body)) throw new ValidationError('targetDate is required (a YYYY-MM-DD string to set, or null to clear).');
+      res.json({ success: true, data: await svc.setTarget(ctxOf(req), (req.params as any).caseId, req.body.targetDate) });
+    } catch (e) { next(e); }
+  });
+  router.post('/recalc', permissionMiddleware(T_MANAGE), async (req, res, next) => {
+    try { res.json({ success: true, data: await svc.recalc(ctxOf(req), (req.params as any).caseId) }); } catch (e) { next(e); }
+  });
+  router.post('/approve-exception', permissionMiddleware('case-exception:approve'), async (req, res, next) => {
+    try { res.json({ success: true, data: await svc.approveException(ctxOf(req), (req.params as any).caseId, req.body?.reason) }); } catch (e) { next(e); }
+  });
   return router;
 }
 
@@ -90,6 +102,9 @@ export function createCaseStageActionsRouter(prisma: PrismaClient): Router {
   });
   router.post('/:stageId/resume', permissionMiddleware('case-stage:resume'), async (req, res, next) => {
     try { res.json({ success: true, data: await svc.resumeStage(ctxOf(req), caseId(req), req.params.stageId) }); } catch (e) { next(e); }
+  });
+  router.post('/:stageId/override-duration', permissionMiddleware('case-stage:override'), async (req, res, next) => {
+    try { res.json({ success: true, data: await svc.overrideDuration(ctxOf(req), caseId(req), req.params.stageId, { remainingDuration: req.body?.remainingDuration, reason: req.body?.reason }) }); } catch (e) { next(e); }
   });
   return router;
 }

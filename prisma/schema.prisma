@@ -2034,6 +2034,14 @@ model CaseTimeline {
   caseId     String             @unique @db.Uuid
   caseTypeId String             @db.Uuid // snapshot of the type it was built from
   status     CaseTimelineStatus @default(ACTIVE)
+  targetDate          DateTime? @db.Date
+  lastPlannedAt       DateTime?
+  feasible            Boolean?
+  deficitDays         Int?
+  exceptionApproved   Boolean   @default(false)
+  exceptionReason     String?
+  exceptionApprovedBy String?   @db.Uuid
+  exceptionApprovedAt DateTime?
   createdAt  DateTime           @default(now())
   updatedAt  DateTime           @updatedAt
 
@@ -2041,6 +2049,34 @@ model CaseTimeline {
   stages CaseStage[]
 
   @@index([tenantId])
+}
+
+// --- WorkingCalendar: one per tenant (Phase 7) ---
+model WorkingCalendar {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @db.Uuid
+  workingWeekdays Int[]    @default([1, 2, 3, 4, 5]) // 0=Sun ... 6=Sat
+  timezone        String? // stored, unused in Phase 7 math
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  holidays CalendarHoliday[]
+
+  @@unique([tenantId])
+}
+
+model CalendarHoliday {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  calendarId String   @db.Uuid
+  date       DateTime @db.Date
+  label      String
+  createdAt  DateTime @default(now())
+
+  calendar WorkingCalendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, calendarId, date])
+  @@index([tenantId, calendarId])
 }
 
 // ─── CaseStage — per-case stage instance (snapshotted from template) ─
@@ -2061,6 +2097,13 @@ model CaseStage {
   enforceRequiredOnComplete Boolean               @default(false)
   startedAt                 DateTime?
   completedAt               DateTime?
+  plannedStart              DateTime?             @db.Date
+  plannedFinish             DateTime?             @db.Date
+  baselineStart             DateTime?             @db.Date
+  baselineFinish            DateTime?             @db.Date
+  latestStart               DateTime?             @db.Date
+  latestFinish              DateTime?             @db.Date
+  remainingDurationOverride Int?
   createdAt                 DateTime              @default(now())
   updatedAt                 DateTime              @updatedAt
 

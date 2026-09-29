@@ -10,6 +10,9 @@ import {
 } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { CaseFieldValueService } from './case-field-value.service';
+import { recalcInTx, RecalcResponse } from './case-planning.service';
+import { parseDateOnly } from './case-calendar.service';
+import { toKey } from './case-planning.dates';
 import {
   ValidationError,
   ResourceNotFoundError,
@@ -234,6 +237,9 @@ export class CaseTimelineService {
     });
     await this.recomputeReadiness(tx, stage.timelineId);
     await this.syncTimelineStatus(tx, stage.timelineId);
+    // Phase 7 hook: recalc planned/latest dates on the SAME tx. Deliberately emits NO audit —
+    // the per-transition audit row below stays the single coarse audit for this action.
+    await recalcInTx(tx, ctx.tenantId, stage.timeline.caseId, new Date());
     await this.audit.appendInTx(tx, this.auditRow(ctx, `CASE_STAGE_${stageEvent}`, 'CaseStage', stage.id, { caseId: stage.timeline.caseId, toStatus: to }, { status: from }));
   }
 
@@ -312,6 +318,69 @@ export class CaseTimelineService {
       const updated = await tx.caseStage.update({ where: { id: stage.id }, data: { status: CaseStageStatus.IN_PROGRESS } });
       await this.writeTransition(tx, ctx, stage, stage.status, CaseStageStatus.IN_PROGRESS, 'RESUMED', null);
       return updated;
+    }, TX_OPTS);
+  }
+
+  // ═══════════════════════ PLANNING (Phase 7) ══════════════════════
+  /** Set / change / clear the timeline target date, then recalc. */
+  async setTarget(ctx: UserContext, caseId: string, targetDate: string | null): Promise<RecalcResponse> {
+    if (targetDate !== null && typeof targetDate !== 'string') throw new ValidationError('targetDate must be a YYYY-MM-DD string or null.');
+    const parsed = targetDate === null ? null : parseDateOnly(targetDate);
+    await this.loadCase(this.prisma, ctx.tenantId, caseId);
+    return this.prisma.$transaction(async (tx) => {
+      const timeline = await tx.caseTimeline.findFirst({ where: { caseId, tenantId: ctx.tenantId } });
+      if (!timeline) throw new ResourceNotFoundError();
+      await tx.caseTimeline.update({ where: { id: timeline.id }, data: { targetDate: parsed } });
+      const result = await recalcInTx(tx, ctx.tenantId, caseId, new Date());
+      await this.audit.appendInTx(tx, this.auditRow(ctx, parsed ? 'CASE_TIMELINE_TARGET_SET' : 'CASE_TIMELINE_TARGET_CLEARED', 'CaseTimeline', timeline.id, { caseId, targetDate: parsed ? toKey(parsed) : null }));
+      return result;
+    }, TX_OPTS);
+  }
+
+  /** Explicit recalc. */
+  async recalc(ctx: UserContext, caseId: string): Promise<RecalcResponse> {
+    await this.loadCase(this.prisma, ctx.tenantId, caseId);
+    return this.prisma.$transaction(async (tx) => {
+      const timeline = await tx.caseTimeline.findFirst({ where: { caseId, tenantId: ctx.tenantId }, select: { id: true } });
+      if (!timeline) throw new ResourceNotFoundError();
+      const result = await recalcInTx(tx, ctx.tenantId, caseId, new Date());
+      await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_TIMELINE_RECALCULATED', 'CaseTimeline', timeline.id, { caseId }));
+      return result;
+    }, TX_OPTS);
+  }
+
+  /** Approve a timeline exception (does NOT change feasibility flags). */
+  async approveException(ctx: UserContext, caseId: string, reason?: string) {
+    if (!reason || !reason.trim()) throw new BusinessRuleViolationError('A reason is required to approve an exception.');
+    await this.loadCase(this.prisma, ctx.tenantId, caseId);
+    return this.prisma.$transaction(async (tx) => {
+      const timeline = await tx.caseTimeline.findFirst({ where: { caseId, tenantId: ctx.tenantId } });
+      if (!timeline) throw new ResourceNotFoundError();
+      const updated = await tx.caseTimeline.update({
+        where: { id: timeline.id },
+        data: { exceptionApproved: true, exceptionReason: reason.trim(), exceptionApprovedBy: ctx.userId, exceptionApprovedAt: new Date() },
+      });
+      await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_TIMELINE_EXCEPTION_APPROVED', 'CaseTimeline', timeline.id, { caseId, reason: reason.trim() }));
+      return updated;
+    }, TX_OPTS);
+  }
+
+  /** Override a stage's remaining duration, log a stage event, then recalc. */
+  async overrideDuration(ctx: UserContext, caseId: string, stageId: string, input: { remainingDuration?: unknown; reason?: string }): Promise<RecalcResponse> {
+    const rd = input?.remainingDuration;
+    if (!Number.isInteger(rd) || (rd as number) < 0) throw new ValidationError('remainingDuration must be a non-negative integer.');
+    if (!input?.reason || !input.reason.trim()) throw new BusinessRuleViolationError('A reason is required to override a stage duration.');
+    const remainingDuration = rd as number;
+    const reason = input.reason.trim();
+    return this.prisma.$transaction(async (tx) => {
+      const stage = await this.loadStage(tx, ctx.tenantId, caseId, stageId);
+      await tx.caseStage.update({ where: { id: stage.id }, data: { remainingDurationOverride: remainingDuration } });
+      await tx.caseStageEvent.create({
+        data: { tenantId: ctx.tenantId, caseId: stage.timeline.caseId, stageId: stage.id, eventType: 'DURATION_OVERRIDDEN', fromStatus: stage.status, toStatus: stage.status, actorUserId: ctx.userId, note: `OVERRIDE ${remainingDuration}: ${reason}` },
+      });
+      const result = await recalcInTx(tx, ctx.tenantId, caseId, new Date());
+      await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_STAGE_DURATION_OVERRIDDEN', 'CaseStage', stage.id, { caseId, stageId, remainingDuration, reason }));
+      return result;
     }, TX_OPTS);
   }
 

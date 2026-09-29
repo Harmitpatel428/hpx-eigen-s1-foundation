@@ -53,6 +53,7 @@ import { createCaseFieldRulesRouter } from './routes/case-field-rules.router';
 import { createCaseFieldValuesRouter } from './routes/case-field-values.router';
 import { createCaseTypesRouter, createCaseTypeAssignmentRouter } from './routes/case-types.router';
 import { createCaseStageTemplatesRouter, createCaseTimelineRouter, createCaseStageActionsRouter } from './routes/case-timeline.router';
+import { createCaseCalendarRouter } from './routes/case-calendar.router';
 import { createLeadNotesRouter } from './routes/lead-notes.router';
 import { createLeadActivitiesRouter } from './routes/lead-activities.router';
 import { createGlobalLeadActivitiesRouter } from './routes/global-lead-activities.router';
@@ -177,6 +178,7 @@ app.use('/api/v1/cases/:caseId/case-type', createCaseTypeAssignmentRouter(prisma
 app.use('/api/v1/case-types/:caseTypeId/stages', createCaseStageTemplatesRouter(prisma));
 app.use('/api/v1/cases/:caseId/timeline', createCaseTimelineRouter(prisma));
 app.use('/api/v1/cases/:caseId/stages', createCaseStageActionsRouter(prisma));
+app.use('/api/v1/case-calendar', createCaseCalendarRouter(prisma));
 app.use('/api/v1/leads/:leadId/contacts', createLeadContactsRouter(prisma));
 app.use('/api/v1/leads/:leadId/notes', createLeadNotesRouter(prisma));
 app.use('/api/v1/leads/:leadId/activities', createLeadActivitiesRouter(prisma));
