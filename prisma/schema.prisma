@@ -183,8 +183,9 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  users  User[]
+  tenant                Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users                 User[]
+  caseFieldDefinitions  CaseFieldDefinition[]
 
   @@index([tenantId])
 }
@@ -1693,4 +1694,138 @@ model Document {
   @@index([requirementId])
   @@index([tenantId, category])
   @@index([caseId, isActive])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CASE FIELD CATALOG (Case Operations Engine — Phase 2)
+// Tenant-scoped custom case fields, their options, and requirement rules.
+// Gated behind TenantSettings.caseOperationsEngineEnabled + case-field:* perms.
+// ═══════════════════════════════════════════════════════════════════
+
+enum CaseFieldStatus {
+  DRAFT
+  ACTIVE
+  READ_ONLY
+  ARCHIVED
+}
+
+enum CaseFieldType {
+  TEXT
+  TEXTAREA
+  NUMBER
+  DECIMAL
+  CURRENCY
+  PERCENTAGE
+  DATE
+  DATETIME
+  TIME
+  BOOLEAN
+  SELECT
+  MULTI_SELECT
+  EMAIL
+  PHONE
+  URL
+  USER_REFERENCE
+  DEPARTMENT_REFERENCE
+  CASE_REFERENCE
+  DOCUMENT_REFERENCE
+}
+
+enum CaseFieldConditionOperator {
+  EQUALS
+  NOT_EQUALS
+  IS_EMPTY
+  IS_NOT_EMPTY
+  GREATER_THAN
+  LESS_THAN
+  IN
+  NOT_IN
+}
+
+enum CaseFieldRuleEffectType {
+  REQUIRE_FIELD
+}
+
+// ─── CaseFieldDefinition — tenant-scoped custom case field ──────────
+model CaseFieldDefinition {
+  id                 String          @id @default(uuid()) @db.Uuid
+  tenantId           String          @db.Uuid
+  key                String
+  name               String
+  description        String?
+  type               CaseFieldType
+  status             CaseFieldStatus @default(DRAFT)
+  owningDepartmentId String          @db.Uuid
+  validationRules    Json            @default("{}")
+  visibility         Json            @default("{}")
+  reportable         Boolean         @default(false)
+  filterable         Boolean         @default(false)
+  sortable           Boolean         @default(false)
+  isActive           Boolean         @default(true)
+  displayOrder       Int             @default(0)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  deletedAt          DateTime?
+
+  owningDepartment Department        @relation(fields: [owningDepartmentId], references: [id], onDelete: Restrict)
+  options          CaseFieldOption[]
+  conditionRules   CaseFieldRule[]   @relation("RuleConditionField")
+  targetRules      CaseFieldRule[]   @relation("RuleTargetField")
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([deletedAt])
+}
+
+// ─── CaseFieldOption — option for SELECT / MULTI_SELECT fields ───────
+model CaseFieldOption {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @db.Uuid
+  fieldId        String    @db.Uuid
+  key            String
+  label          String
+  displayOrder   Int       @default(0)
+  isActive       Boolean   @default(true)
+  parentOptionId String?   @db.Uuid
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  field          CaseFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  parentOption   CaseFieldOption?    @relation("OptionParent", fields: [parentOptionId], references: [id], onDelete: SetNull)
+  children       CaseFieldOption[]   @relation("OptionParent")
+  conditionRules CaseFieldRule[]     @relation("RuleConditionOption")
+
+  @@unique([tenantId, fieldId, key])
+  @@index([tenantId, fieldId])
+  @@index([deletedAt])
+}
+
+// ─── CaseFieldRule — conditional field-requirement rule ─────────────
+model CaseFieldRule {
+  id                String                     @id @default(uuid()) @db.Uuid
+  tenantId          String                     @db.Uuid
+  name              String
+  description       String?
+  isActive          Boolean                    @default(true)
+  priority          Int                        @default(0)
+  conditionFieldId  String                     @db.Uuid
+  conditionOperator CaseFieldConditionOperator
+  conditionValue    Json                       @default("null")
+  conditionOptionId String?                    @db.Uuid
+  effectType        CaseFieldRuleEffectType    @default(REQUIRE_FIELD)
+  targetFieldId     String                     @db.Uuid
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  deletedAt         DateTime?
+
+  conditionField  CaseFieldDefinition @relation("RuleConditionField", fields: [conditionFieldId], references: [id], onDelete: Restrict)
+  targetField     CaseFieldDefinition @relation("RuleTargetField", fields: [targetFieldId], references: [id], onDelete: Restrict)
+  conditionOption CaseFieldOption?    @relation("RuleConditionOption", fields: [conditionOptionId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, conditionFieldId])
+  @@index([tenantId, targetFieldId])
+  @@index([deletedAt])
 }

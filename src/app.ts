@@ -48,6 +48,8 @@ import { createPortalRouter, createPublishingRouter } from './routes/portal.rout
 import { createLeadTagsRouter } from './routes/lead-tags.router';
 import { createLeadContactsRouter } from './routes/lead-contacts.router';
 import { createLeadFieldsRouter } from './routes/lead-fields.router';
+import { createCaseFieldsRouter } from './routes/case-fields.router';
+import { createCaseFieldRulesRouter } from './routes/case-field-rules.router';
 import { createLeadNotesRouter } from './routes/lead-notes.router';
 import { createLeadActivitiesRouter } from './routes/lead-activities.router';
 import { createGlobalLeadActivitiesRouter } from './routes/global-lead-activities.router';
@@ -164,6 +166,8 @@ app.use('/api/v1/publishing', createPublishingRouter(prisma));
 // ─── Lead Tags + Lead Contacts + Lead Notes ────────────────────────────────────
 app.use('/api/v1/lead-tags', createLeadTagsRouter(prisma));
 app.use('/api/v1/lead-fields', createLeadFieldsRouter(prisma));
+app.use('/api/v1/case-fields', createCaseFieldsRouter(prisma));
+app.use('/api/v1/case-field-rules', createCaseFieldRulesRouter(prisma));
 app.use('/api/v1/leads/:leadId/contacts', createLeadContactsRouter(prisma));
 app.use('/api/v1/leads/:leadId/notes', createLeadNotesRouter(prisma));
 app.use('/api/v1/leads/:leadId/activities', createLeadActivitiesRouter(prisma));

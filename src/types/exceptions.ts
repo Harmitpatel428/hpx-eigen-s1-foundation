@@ -179,3 +179,9 @@ export class AuditChainBranchError extends AppException {
     super('AUDIT_CHAIN_BRANCH', 'Audit chain has multiple leaves — integrity compromised.', RetryTag.NON_RETRYABLE, 500);
   }
 }
+
+export class CaseOperationsEngineDisabledError extends AppException {
+  constructor() {
+    super('CASE_OPERATIONS_ENGINE_DISABLED', 'The Case Operations Engine is disabled for this organization.', RetryTag.NON_RETRYABLE, 403);
+  }
+}
