@@ -75,18 +75,37 @@ export class CaseFieldValueService {
   }
 
   // ─── GET /cases/:caseId/field-values ────────────────────────────
+  // Type-aware (Phase 4): a typed case returns ONLY its placed fields;
+  // an untyped case returns the tenant-global ACTIVE/READ_ONLY catalog.
   async getValues(ctx: UserContext, caseId: string) {
-    await this.loadCase(this.prisma, ctx.tenantId, caseId);
-    const [fields, values] = await Promise.all([
-      this.prisma.caseFieldDefinition.findMany({
-        where: { tenantId: ctx.tenantId, deletedAt: null, status: { in: [CaseFieldStatus.ACTIVE, CaseFieldStatus.READ_ONLY] } },
+    const docCase = await this.prisma.docCase.findFirst({
+      where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null },
+      select: { id: true, caseTypeId: true },
+    });
+    if (!docCase) throw new ResourceNotFoundError();
+
+    const values = await this.prisma.caseFieldValue.findMany({
+      where: { tenantId: ctx.tenantId, caseId, deletedAt: null },
+      include: { selections: { select: { optionId: true } } },
+    });
+
+    if (docCase.caseTypeId) {
+      const placements = await this.prisma.caseTypeFieldPlacement.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          caseTypeId: docCase.caseTypeId,
+          field: { deletedAt: null, status: { in: [CaseFieldStatus.ACTIVE, CaseFieldStatus.READ_ONLY] } },
+        },
+        include: { field: true },
         orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
-      }),
-      this.prisma.caseFieldValue.findMany({
-        where: { tenantId: ctx.tenantId, caseId, deletedAt: null },
-        include: { selections: { select: { optionId: true } } },
-      }),
-    ]);
+      });
+      return { fields: placements.map((p) => p.field), values };
+    }
+
+    const fields = await this.prisma.caseFieldDefinition.findMany({
+      where: { tenantId: ctx.tenantId, deletedAt: null, status: { in: [CaseFieldStatus.ACTIVE, CaseFieldStatus.READ_ONLY] } },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+    });
     return { fields, values };
   }
 
@@ -215,8 +234,15 @@ export class CaseFieldValueService {
   }
 
   // ─── POST /cases/:caseId/field-values/validate ──────────────────
+  // Type-aware (Phase 4): a typed case evaluates REQUIRE_FIELD rules only within
+  // its placed field set — rules whose condition OR target field is not placed
+  // are ignored. An untyped case evaluates all tenant rules.
   async validateValues(ctx: UserContext, caseId: string) {
-    await this.loadCase(this.prisma, ctx.tenantId, caseId);
+    const docCase = await this.prisma.docCase.findFirst({
+      where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null },
+      select: { id: true, caseTypeId: true },
+    });
+    if (!docCase) throw new ResourceNotFoundError();
 
     const [rawValues, rules] = await Promise.all([
       this.prisma.caseFieldValue.findMany({
@@ -228,11 +254,24 @@ export class CaseFieldValueService {
       }),
     ]);
 
+    let placedFieldIds: Set<string> | null = null;
+    if (docCase.caseTypeId) {
+      const placements = await this.prisma.caseTypeFieldPlacement.findMany({
+        where: { tenantId: ctx.tenantId, caseTypeId: docCase.caseTypeId },
+        select: { fieldId: true },
+      });
+      placedFieldIds = new Set(placements.map((p) => p.fieldId));
+    }
+
     const stored = new Map<string, StoredValue>();
     for (const v of rawValues) stored.set(v.fieldId, this.toStored(v));
 
     const missing: Array<{ ruleId: string; targetFieldId: string }> = [];
     for (const rule of rules) {
+      // In a typed case, skip rules that reach outside the placed field set.
+      if (placedFieldIds && (!placedFieldIds.has(rule.conditionFieldId) || !placedFieldIds.has(rule.targetFieldId))) {
+        continue;
+      }
       const fires = conditionMet(
         rule.conditionOperator,
         rule.conditionValue,

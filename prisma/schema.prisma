@@ -1273,6 +1273,10 @@ model DocCase {
   uploadedDocuments     Document[]
   fieldValues           CaseFieldValue[]
 
+  // Phase 4: optional binding to a tenant CaseType. Null = tenant-global field catalog.
+  caseTypeId String?   @db.Uuid
+  caseType   CaseType? @relation(fields: [caseTypeId], references: [id], onDelete: SetNull)
+
   @@unique([tenantId, leadId])
   @@index([tenantId])
   @@index([tenantId, status])
@@ -1773,6 +1777,7 @@ model CaseFieldDefinition {
   conditionRules   CaseFieldRule[]   @relation("RuleConditionField")
   targetRules      CaseFieldRule[]   @relation("RuleTargetField")
   values           CaseFieldValue[]
+  placements       CaseTypeFieldPlacement[]
 
   @@unique([tenantId, key])
   @@index([tenantId])
@@ -1904,4 +1909,58 @@ model CaseFieldValueHistory {
   @@index([tenantId, caseId])
   @@index([tenantId, fieldId])
   @@index([changedAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CASE TYPES (Case Operations Engine — Phase 4)
+// Tenant case categories that bind a subset of CaseFieldDefinitions
+// (via placements) to a DocCase. Binding is advisory in Phase 4:
+// it scopes read/validate only; PATCH value writes still accept any
+// ACTIVE/READ_ONLY tenant field.
+// ═══════════════════════════════════════════════════════════════════
+
+enum CaseTypeStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+// ─── CaseType — tenant case category ────────────────────────────────
+model CaseType {
+  id           String         @id @default(uuid()) @db.Uuid
+  tenantId     String         @db.Uuid
+  key          String
+  name         String
+  description  String?
+  status       CaseTypeStatus @default(DRAFT)
+  displayOrder Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  deletedAt    DateTime?
+
+  placements CaseTypeFieldPlacement[]
+  cases      DocCase[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([deletedAt])
+}
+
+// ─── CaseTypeFieldPlacement — which fields a case type shows ─────────
+model CaseTypeFieldPlacement {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @db.Uuid
+  caseTypeId   String   @db.Uuid
+  fieldId      String   @db.Uuid
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  caseType CaseType            @relation(fields: [caseTypeId], references: [id], onDelete: Cascade)
+  field    CaseFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, caseTypeId, fieldId])
+  @@index([tenantId, caseTypeId])
+  @@index([tenantId, fieldId])
 }
