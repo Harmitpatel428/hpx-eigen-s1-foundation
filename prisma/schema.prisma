@@ -1271,6 +1271,7 @@ model DocCase {
   portalAuthAttempts    PortalAuthAttempt[]
   mandateRequests       MandateRequest[]
   uploadedDocuments     Document[]
+  fieldValues           CaseFieldValue[]
 
   @@unique([tenantId, leadId])
   @@index([tenantId])
@@ -1771,6 +1772,7 @@ model CaseFieldDefinition {
   options          CaseFieldOption[]
   conditionRules   CaseFieldRule[]   @relation("RuleConditionField")
   targetRules      CaseFieldRule[]   @relation("RuleTargetField")
+  values           CaseFieldValue[]
 
   @@unique([tenantId, key])
   @@index([tenantId])
@@ -1792,10 +1794,12 @@ model CaseFieldOption {
   updatedAt      DateTime  @updatedAt
   deletedAt      DateTime?
 
-  field          CaseFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Cascade)
-  parentOption   CaseFieldOption?    @relation("OptionParent", fields: [parentOptionId], references: [id], onDelete: SetNull)
-  children       CaseFieldOption[]   @relation("OptionParent")
-  conditionRules CaseFieldRule[]     @relation("RuleConditionOption")
+  field           CaseFieldDefinition   @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  parentOption    CaseFieldOption?      @relation("OptionParent", fields: [parentOptionId], references: [id], onDelete: SetNull)
+  children        CaseFieldOption[]     @relation("OptionParent")
+  conditionRules  CaseFieldRule[]       @relation("RuleConditionOption")
+  singleValues    CaseFieldValue[]      @relation("ValueSingleOption")
+  valueSelections CaseFieldValueOption[]
 
   @@unique([tenantId, fieldId, key])
   @@index([tenantId, fieldId])
@@ -1828,4 +1832,76 @@ model CaseFieldRule {
   @@index([tenantId, conditionFieldId])
   @@index([tenantId, targetFieldId])
   @@index([deletedAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CASE FIELD VALUES (Case Operations Engine — Phase 3)
+// Per-DocCase values for tenant CaseFieldDefinitions. Stored in their own
+// tables (never on the DocCase row) so value writes never touch or trigger
+// the doc-progress recalculation. Typed columns + child option table.
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── CaseFieldValue — one value per (case, field) ───────────────────
+model CaseFieldValue {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  caseId       String    @db.Uuid
+  fieldId      String    @db.Uuid
+  // Typed storage — exactly one column populated per the field's type
+  // (MULTI_SELECT uses the CaseFieldValueOption child rows instead).
+  valueText    String?
+  valueNumber  Decimal?  @db.Decimal(20, 6)
+  valueBoolean Boolean?
+  valueDate    DateTime?
+  optionId     String?   @db.Uuid // SELECT single choice
+  version      Int       @default(1) // optimistic lock
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  case      DocCase             @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  field     CaseFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Restrict)
+  option    CaseFieldOption?    @relation("ValueSingleOption", fields: [optionId], references: [id], onDelete: Restrict)
+  selections CaseFieldValueOption[]
+
+  @@unique([tenantId, caseId, fieldId])
+  @@index([tenantId, caseId])
+  @@index([tenantId, fieldId])
+  @@index([deletedAt])
+}
+
+// ─── CaseFieldValueOption — MULTI_SELECT selected options ───────────
+model CaseFieldValueOption {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  valueId   String   @db.Uuid
+  optionId  String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  value  CaseFieldValue  @relation(fields: [valueId], references: [id], onDelete: Cascade)
+  option CaseFieldOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
+
+  @@unique([valueId, optionId])
+  @@index([tenantId])
+  @@index([valueId])
+}
+
+// ─── CaseFieldValueHistory — append-only per-field change log ───────
+// NOT hash-chained (the coarse per-batch AuditLog row carries the tamper-
+// evident record). This holds detailed before/after per changed field.
+model CaseFieldValueHistory {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  caseId      String   @db.Uuid
+  fieldId     String   @db.Uuid
+  valueId     String?  @db.Uuid // nullable — the value row may later be removed
+  operation   String   @db.VarChar(16) // SET | UPDATE | CLEAR
+  beforeValue Json?
+  afterValue  Json?
+  actorUserId String?  @db.Uuid
+  changedAt   DateTime @default(now())
+
+  @@index([tenantId, caseId])
+  @@index([tenantId, fieldId])
+  @@index([changedAt])
 }
