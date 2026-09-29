@@ -14,6 +14,12 @@
 --   npx prisma migrate diff --from-migrations ./prisma/migrations \
 --     --to-schema-datamodel ./prisma/schema.prisma \
 --     --shadow-database-url <scratch-db-url> --script
+--
+-- Also migration-only (20260929050000_add_stage_performance_summary):
+-- "StagePerformanceSummary_tenant_stageKey_null_ctype_key", a partial UNIQUE
+-- index (WHERE "caseTypeId" IS NULL) for the tenant-wide row. Verified against
+-- a scratch DB: migrate diff emits NOTHING for it (Prisma ignores partial
+-- indexes it cannot model), so no statement is added below.
 
 -- CreateIndex
 CREATE INDEX "LeadPhone_phoneNormalized_tenantId_idx" ON "LeadPhone"("phoneNormalized", "tenantId");

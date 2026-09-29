@@ -4,6 +4,7 @@ import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../m
 import { requireCaseEngineEnabled } from '../middleware/case-engine.middleware';
 import { AuthorizationError, ValidationError } from '../types/exceptions';
 import { CaseTimelineService, UserContext } from '../services/case-timeline.service';
+import { forecastCase } from '../services/case-forecast.service';
 
 const T_VIEW = 'case-timeline:view';
 const T_MANAGE = 'case-timeline:manage';
@@ -66,6 +67,9 @@ export function createCaseTimelineRouter(prisma: PrismaClient): Router {
   });
   router.post('/approve-exception', permissionMiddleware('case-exception:approve'), async (req, res, next) => {
     try { res.json({ success: true, data: await svc.approveException(ctxOf(req), (req.params as any).caseId, req.body?.reason) }); } catch (e) { next(e); }
+  });
+  router.get('/forecast', permissionMiddleware(T_VIEW), async (req, res, next) => {
+    try { res.json({ success: true, data: await forecastCase(prisma, ctxOf(req).tenantId, (req.params as any).caseId) }); } catch (e) { next(e); }
   });
   return router;
 }

@@ -2135,3 +2135,21 @@ model CaseStageEvent {
   @@index([tenantId, caseId])
   @@index([createdAt])
 }
+
+// ─── StagePerformanceSummary — per-stage duration stats (Phase 8) ────
+// caseTypeId null = tenant-wide row. The @@unique below does not cover that
+// row in Postgres (NULLs are distinct); a migration-only partial unique index
+// does — see scripts/expected-drift.sql.
+model StagePerformanceSummary {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @db.Uuid
+  caseTypeId       String?  @db.Uuid
+  stageKey         String
+  sampleCount      Int
+  medianDays       Float
+  recentMedianDays Float
+  updatedAt        DateTime @updatedAt
+
+  @@unique([tenantId, caseTypeId, stageKey])
+  @@index([tenantId, stageKey])
+}

@@ -13,6 +13,7 @@ import { CaseFieldValueService } from './case-field-value.service';
 import { recalcInTx, RecalcResponse } from './case-planning.service';
 import { parseDateOnly } from './case-calendar.service';
 import { toKey } from './case-planning.dates';
+import { refreshSummaryInTx } from './case-performance.service';
 import {
   ValidationError,
   ResourceNotFoundError,
@@ -271,6 +272,9 @@ export class CaseTimelineService {
       }
       const updated = await tx.caseStage.update({ where: { id: stage.id }, data: { status: CaseStageStatus.COMPLETED, completedAt: new Date() } });
       await this.writeTransition(tx, ctx, stage, stage.status, CaseStageStatus.COMPLETED, 'COMPLETED', note);
+      // Phase 8 hook: refresh performance summaries on COMPLETED only. Audit-silent (no new audit row).
+      const tl = await tx.caseTimeline.findFirst({ where: { id: stage.timelineId, tenantId: ctx.tenantId }, select: { caseTypeId: true } });
+      await refreshSummaryInTx(tx, ctx.tenantId, tl?.caseTypeId ?? null, stage.key);
       return updated;
     }, TX_OPTS);
   }
