@@ -17,8 +17,10 @@ import {
   isPresent,
   isMultiSelect,
   isSingleSelect,
+  computeFieldRuntime,
   StoredValue,
   TypedValue,
+  RuntimeRule,
 } from './case-field-value.validation';
 
 export interface UserContext {
@@ -89,24 +91,112 @@ export class CaseFieldValueService {
       include: { selections: { select: { optionId: true } } },
     });
 
-    if (docCase.caseTypeId) {
+    const fields = await this.applicableFields(ctx.tenantId, docCase.caseTypeId);
+
+    // Phase 5: compute per-field runtime state (hidden / required / default).
+    const runtime = await this.computeRuntime(ctx.tenantId, fields, values);
+    const fieldsWithRuntime = fields.map((f) => {
+      const rt = runtime.get(f.id) ?? { isHidden: false, isRequired: false, defaultValue: null };
+      return { ...f, isHidden: rt.isHidden, isApplicable: !rt.isHidden, isRequired: rt.isRequired, defaultValue: rt.defaultValue };
+    });
+    return { fields: fieldsWithRuntime, values };
+  }
+
+  /** The applicable field set for a case: placed fields (typed) or the tenant-global ACTIVE/READ_ONLY catalog. */
+  private async applicableFields(tenantId: string, caseTypeId: string | null): Promise<CaseFieldDefinition[]> {
+    if (caseTypeId) {
       const placements = await this.prisma.caseTypeFieldPlacement.findMany({
         where: {
-          tenantId: ctx.tenantId,
-          caseTypeId: docCase.caseTypeId,
+          tenantId, caseTypeId,
           field: { deletedAt: null, status: { in: [CaseFieldStatus.ACTIVE, CaseFieldStatus.READ_ONLY] } },
         },
         include: { field: true },
         orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
       });
-      return { fields: placements.map((p) => p.field), values };
+      return placements.map((p) => p.field);
     }
-
-    const fields = await this.prisma.caseFieldDefinition.findMany({
-      where: { tenantId: ctx.tenantId, deletedAt: null, status: { in: [CaseFieldStatus.ACTIVE, CaseFieldStatus.READ_ONLY] } },
+    return this.prisma.caseFieldDefinition.findMany({
+      where: { tenantId, deletedAt: null, status: { in: [CaseFieldStatus.ACTIVE, CaseFieldStatus.READ_ONLY] } },
       orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
     });
-    return { fields, values };
+  }
+
+  /**
+   * Phase 5 runtime evaluation. Considers active tenant rules whose condition AND
+   * target fields are both within the applicable field set, plus static
+   * visibility.hidden. Resolves SET_DEFAULT option selectability against the DB
+   * (omitting defaults that point at archived/inactive options).
+   */
+  private async computeRuntime(
+    tenantId: string,
+    fields: CaseFieldDefinition[],
+    values: Array<{ fieldId: string; valueText: string | null; valueNumber: Prisma.Decimal | null; valueBoolean: boolean | null; valueDate: Date | null; optionId: string | null; selections: { optionId: string }[] }>,
+  ): Promise<Map<string, { isHidden: boolean; isRequired: boolean; defaultValue: unknown | null }>> {
+    const fieldIds = new Set(fields.map((f) => f.id));
+    const typeById = new Map(fields.map((f) => [f.id, f.type]));
+    const staticHidden = new Set(
+      fields.filter((f) => (f.visibility as { hidden?: boolean } | null)?.hidden === true).map((f) => f.id),
+    );
+
+    const stored = new Map<string, StoredValue>();
+    for (const v of values) {
+      const type = typeById.get(v.fieldId);
+      if (!type) continue; // value for a field not in the applicable set — ignore for evaluation
+      stored.set(v.fieldId, {
+        fieldType: type,
+        valueText: v.valueText,
+        valueNumber: v.valueNumber != null ? Number(v.valueNumber) : null,
+        valueBoolean: v.valueBoolean,
+        valueDate: v.valueDate,
+        optionId: v.optionId,
+        optionIds: v.selections.map((s) => s.optionId),
+      });
+    }
+
+    const ruleRows = await this.prisma.caseFieldRule.findMany({
+      where: { tenantId, deletedAt: null, isActive: true, conditionFieldId: { in: [...fieldIds] }, targetFieldId: { in: [...fieldIds] } },
+    });
+    const rules: RuntimeRule[] = ruleRows.map((r) => ({
+      priority: r.priority, createdAt: r.createdAt, effectType: r.effectType,
+      conditionFieldId: r.conditionFieldId, conditionOperator: r.conditionOperator,
+      conditionValue: r.conditionValue, conditionOptionId: r.conditionOptionId,
+      targetFieldId: r.targetFieldId, defaultPayload: r.defaultPayload,
+    }));
+
+    const rt = computeFieldRuntime(fieldIds, staticHidden, stored, rules);
+
+    // Resolve default selectability (drop defaults pointing at archived/inactive options).
+    const out = new Map<string, { isHidden: boolean; isRequired: boolean; defaultValue: unknown | null }>();
+    for (const [fieldId, r] of rt) {
+      let defaultValue: unknown | null = null;
+      if (r.defaultPayload) {
+        defaultValue = await this.selectableDefault(tenantId, fieldId, typeById.get(fieldId)!, r.defaultPayload);
+      }
+      out.set(fieldId, { isHidden: r.isHidden, isRequired: r.isRequired, defaultValue });
+    }
+    return out;
+  }
+
+  /** Returns the default payload only if its option refs are currently selectable; else null. */
+  private async selectableDefault(tenantId: string, fieldId: string, type: CaseFieldDefinition['type'], payload: unknown): Promise<unknown | null> {
+    const p = payload as Record<string, unknown>;
+    if (isSingleSelect(type)) {
+      const ok = await this.optionSelectable(tenantId, fieldId, p.optionId as string);
+      return ok ? payload : null;
+    }
+    if (isMultiSelect(type)) {
+      const ids = (p.optionIds as string[]) ?? [];
+      for (const oid of ids) if (!(await this.optionSelectable(tenantId, fieldId, oid))) return null;
+      return payload;
+    }
+    return payload; // non-option default carries no option to invalidate
+  }
+
+  private async optionSelectable(tenantId: string, fieldId: string, optionId: string): Promise<boolean> {
+    const opt = await this.prisma.caseFieldOption.findFirst({
+      where: { id: optionId, tenantId, fieldId, deletedAt: null, isActive: true }, select: { id: true },
+    });
+    return !!opt;
   }
 
   // ─── PATCH /cases/:caseId/field-values ──────────────────────────
@@ -234,9 +324,8 @@ export class CaseFieldValueService {
   }
 
   // ─── POST /cases/:caseId/field-values/validate ──────────────────
-  // Type-aware (Phase 4): a typed case evaluates REQUIRE_FIELD rules only within
-  // its placed field set — rules whose condition OR target field is not placed
-  // are ignored. An untyped case evaluates all tenant rules.
+  // Type-aware (Phase 4): evaluated only within the applicable field set.
+  // Phase 5: REQUIRE_FIELD is suspended for hidden target fields (HIDE_FIELD wins).
   async validateValues(ctx: UserContext, caseId: string) {
     const docCase = await this.prisma.docCase.findFirst({
       where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null },
@@ -244,7 +333,8 @@ export class CaseFieldValueService {
     });
     if (!docCase) throw new ResourceNotFoundError();
 
-    const [rawValues, rules] = await Promise.all([
+    const [fields, rawValues, ruleRows] = await Promise.all([
+      this.applicableFields(ctx.tenantId, docCase.caseTypeId),
       this.prisma.caseFieldValue.findMany({
         where: { tenantId: ctx.tenantId, caseId, deletedAt: null },
         include: { selections: { select: { optionId: true } }, field: { select: { type: true } } },
@@ -254,30 +344,28 @@ export class CaseFieldValueService {
       }),
     ]);
 
-    let placedFieldIds: Set<string> | null = null;
-    if (docCase.caseTypeId) {
-      const placements = await this.prisma.caseTypeFieldPlacement.findMany({
-        where: { tenantId: ctx.tenantId, caseTypeId: docCase.caseTypeId },
-        select: { fieldId: true },
-      });
-      placedFieldIds = new Set(placements.map((p) => p.fieldId));
-    }
-
+    const fieldIds = new Set(fields.map((f) => f.id));
+    const staticHidden = new Set(fields.filter((f) => (f.visibility as { hidden?: boolean } | null)?.hidden === true).map((f) => f.id));
     const stored = new Map<string, StoredValue>();
-    for (const v of rawValues) stored.set(v.fieldId, this.toStored(v));
+    for (const v of rawValues) if (fieldIds.has(v.fieldId)) stored.set(v.fieldId, this.toStored(v));
+
+    // Only rules fully within the applicable field set participate.
+    const inScope = ruleRows.filter((r) => fieldIds.has(r.conditionFieldId) && fieldIds.has(r.targetFieldId));
+    const runtime = computeFieldRuntime(
+      fieldIds, staticHidden, stored,
+      inScope.map((r) => ({
+        priority: r.priority, createdAt: r.createdAt, effectType: r.effectType,
+        conditionFieldId: r.conditionFieldId, conditionOperator: r.conditionOperator,
+        conditionValue: r.conditionValue, conditionOptionId: r.conditionOptionId,
+        targetFieldId: r.targetFieldId, defaultPayload: r.defaultPayload,
+      })),
+    );
 
     const missing: Array<{ ruleId: string; targetFieldId: string }> = [];
-    for (const rule of rules) {
-      // In a typed case, skip rules that reach outside the placed field set.
-      if (placedFieldIds && (!placedFieldIds.has(rule.conditionFieldId) || !placedFieldIds.has(rule.targetFieldId))) {
-        continue;
-      }
-      const fires = conditionMet(
-        rule.conditionOperator,
-        rule.conditionValue,
-        rule.conditionOptionId,
-        stored.get(rule.conditionFieldId),
-      );
+    for (const rule of inScope) {
+      if (rule.effectType !== 'REQUIRE_FIELD') continue;
+      if (runtime.get(rule.targetFieldId)?.isHidden) continue; // HIDE_FIELD suspends requiredness
+      const fires = conditionMet(rule.conditionOperator, rule.conditionValue, rule.conditionOptionId, stored.get(rule.conditionFieldId));
       if (fires && !isPresent(stored.get(rule.targetFieldId))) {
         missing.push({ ruleId: rule.id, targetFieldId: rule.targetFieldId });
       }

@@ -1749,6 +1749,8 @@ enum CaseFieldConditionOperator {
 
 enum CaseFieldRuleEffectType {
   REQUIRE_FIELD
+  HIDE_FIELD
+  SET_DEFAULT
 }
 
 // ─── CaseFieldDefinition — tenant-scoped custom case field ──────────
@@ -1825,6 +1827,9 @@ model CaseFieldRule {
   conditionOptionId String?                    @db.Uuid
   effectType        CaseFieldRuleEffectType    @default(REQUIRE_FIELD)
   targetFieldId     String                     @db.Uuid
+  // Phase 5: advisory default for SET_DEFAULT effects — { value } | { optionId } | { optionIds }.
+  // Read-time hint only; never persisted as a stored value.
+  defaultPayload    Json?
   createdAt         DateTime                   @default(now())
   updatedAt         DateTime                   @updatedAt
   deletedAt         DateTime?

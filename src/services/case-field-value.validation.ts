@@ -169,3 +169,60 @@ export function conditionMet(
     default: return false;
   }
 }
+
+// ─── Phase 5: runtime field state (hidden / required / default) ─────
+import { CaseFieldRuleEffectType } from '@prisma/client';
+
+export interface RuntimeRule {
+  priority: number;
+  createdAt: Date;
+  effectType: CaseFieldRuleEffectType;
+  conditionFieldId: string;
+  conditionOperator: CaseFieldConditionOperator;
+  conditionValue: unknown;
+  conditionOptionId: string | null;
+  targetFieldId: string;
+  defaultPayload: unknown;
+}
+export interface FieldRuntime { isHidden: boolean; isRequired: boolean; defaultPayload: unknown | null; }
+
+/**
+ * Compute per-field runtime state from active rules, deterministically.
+ * Precedence: HIDE_FIELD wins — a hidden field's REQUIRE_FIELD and SET_DEFAULT
+ * effects are suspended. Rules sorted by priority ASC, createdAt ASC; for
+ * defaults the last applicable rule in that order wins.
+ * `staticHidden` = fields whose visibility.hidden === true.
+ * Option selectability for a default is checked later (DB) by the caller.
+ */
+export function computeFieldRuntime(
+  fieldIds: Set<string>,
+  staticHidden: Set<string>,
+  stored: Map<string, StoredValue>,
+  rules: RuntimeRule[],
+): Map<string, FieldRuntime> {
+  const sorted = [...rules].sort((a, b) => a.priority - b.priority || a.createdAt.getTime() - b.createdAt.getTime());
+  const fires = (r: RuntimeRule) => conditionMet(r.conditionOperator, r.conditionValue, r.conditionOptionId, stored.get(r.conditionFieldId));
+
+  // 1. Hidden first (static + HIDE_FIELD rules whose condition field is itself not hidden).
+  const hidden = new Set<string>(staticHidden);
+  for (const r of sorted) {
+    if (r.effectType !== CaseFieldRuleEffectType.HIDE_FIELD) continue;
+    if (hidden.has(r.conditionFieldId)) continue;
+    if (fires(r)) hidden.add(r.targetFieldId);
+  }
+
+  const out = new Map<string, FieldRuntime>();
+  for (const id of fieldIds) out.set(id, { isHidden: hidden.has(id), isRequired: false, defaultPayload: null });
+
+  // 2. Require + default for non-hidden targets.
+  for (const r of sorted) {
+    const rt = out.get(r.targetFieldId);
+    if (!rt || rt.isHidden) continue;
+    if (r.effectType === CaseFieldRuleEffectType.REQUIRE_FIELD) {
+      if (fires(r)) rt.isRequired = true;
+    } else if (r.effectType === CaseFieldRuleEffectType.SET_DEFAULT) {
+      if (!isPresent(stored.get(r.targetFieldId)) && fires(r)) rt.defaultPayload = r.defaultPayload; // last wins
+    }
+  }
+  return out;
+}

@@ -23,6 +23,8 @@ import {
   operatorAllowedForType,
   validateScalarConditionValue,
   assertNoOptionCycle,
+  validateDefaultPayload,
+  assertNoRuleCycle,
 } from './case-field.validation';
 
 export interface UserContext {
@@ -532,6 +534,7 @@ export class CaseFieldService {
       conditionOptionId?: string | null;
       effectType?: string;
       targetFieldId?: string;
+      defaultPayload?: unknown;
     },
   ): Promise<CaseFieldRule> {
     const name = (input.name ?? '').trim();
@@ -549,8 +552,9 @@ export class CaseFieldService {
           conditionOperator: resolved.conditionOperator,
           conditionValue: resolved.conditionValue as Prisma.InputJsonValue,
           conditionOptionId: resolved.conditionOptionId,
-          effectType: CaseFieldRuleEffectType.REQUIRE_FIELD,
+          effectType: resolved.effectType,
           targetFieldId: resolved.targetFieldId,
+          defaultPayload: resolved.defaultPayload ?? Prisma.JsonNull,
         },
       });
       await this.audit.appendInTx(tx, {
@@ -582,6 +586,7 @@ export class CaseFieldService {
       conditionOptionId?: string | null;
       effectType?: string;
       targetFieldId?: string;
+      defaultPayload?: unknown;
     },
   ): Promise<CaseFieldRule> {
     return this.prisma.$transaction(async (tx) => {
@@ -598,8 +603,9 @@ export class CaseFieldService {
         conditionOptionId: input.conditionOptionId !== undefined ? input.conditionOptionId : rule.conditionOptionId,
         effectType: input.effectType ?? rule.effectType,
         targetFieldId: input.targetFieldId ?? rule.targetFieldId,
+        defaultPayload: input.defaultPayload !== undefined ? input.defaultPayload : rule.defaultPayload,
       };
-      const resolved = await this.validateRuleInput(tx, ctx.tenantId, merged);
+      const resolved = await this.validateRuleInput(tx, ctx.tenantId, merged, id);
       const updated = await tx.caseFieldRule.update({
         where: { id },
         data: {
@@ -611,8 +617,9 @@ export class CaseFieldService {
           conditionOperator: resolved.conditionOperator,
           conditionValue: resolved.conditionValue as Prisma.InputJsonValue,
           conditionOptionId: resolved.conditionOptionId,
-          effectType: CaseFieldRuleEffectType.REQUIRE_FIELD,
+          effectType: resolved.effectType,
           targetFieldId: resolved.targetFieldId,
+          defaultPayload: resolved.defaultPayload ?? Prisma.JsonNull,
         },
       });
       await this.audit.appendInTx(tx, {
@@ -670,16 +677,21 @@ export class CaseFieldService {
       conditionOptionId?: string | null;
       effectType?: string | CaseFieldRuleEffectType;
       targetFieldId?: string;
+      defaultPayload?: unknown;
     },
+    excludeRuleId?: string,
   ): Promise<{
     conditionFieldId: string;
     conditionOperator: CaseFieldConditionOperator;
     conditionValue: unknown;
     conditionOptionId: string | null;
     targetFieldId: string;
+    effectType: CaseFieldRuleEffectType;
+    defaultPayload: Prisma.InputJsonValue | null;
   }> {
-    if (input.effectType !== undefined && input.effectType !== CaseFieldRuleEffectType.REQUIRE_FIELD) {
-      throw new ValidationError('effectType must be REQUIRE_FIELD.');
+    const effectType = (input.effectType ?? CaseFieldRuleEffectType.REQUIRE_FIELD) as CaseFieldRuleEffectType;
+    if (!Object.values(CaseFieldRuleEffectType).includes(effectType)) {
+      throw new ValidationError('effectType is not a valid rule effect.');
     }
     if (!input.conditionFieldId || !input.targetFieldId) {
       throw new ValidationError('conditionFieldId and targetFieldId are required.');
@@ -741,12 +753,36 @@ export class CaseFieldService {
       conditionOptionId = null;
     }
 
+    // Effect payload: SET_DEFAULT needs a valid, member-checked default; other effects carry none.
+    let defaultPayload: Prisma.InputJsonValue | null = null;
+    if (effectType === CaseFieldRuleEffectType.SET_DEFAULT) {
+      validateDefaultPayload(targetField.type, input.defaultPayload);
+      const dp = input.defaultPayload as Record<string, unknown>;
+      if (targetField.type === CaseFieldType.SELECT) {
+        await this.assertOptionBelongs(tx, tenantId, targetField.id, dp.optionId as string);
+      } else if (targetField.type === CaseFieldType.MULTI_SELECT) {
+        for (const oid of dp.optionIds as string[]) await this.assertOptionBelongs(tx, tenantId, targetField.id, oid);
+      }
+      defaultPayload = input.defaultPayload as Prisma.InputJsonValue;
+    } else if (input.defaultPayload != null) {
+      throw new ValidationError('defaultPayload is only allowed for a SET_DEFAULT rule.');
+    }
+
+    // Config-time cycle guard across active tenant rules (edge condition -> target).
+    const others = await tx.caseFieldRule.findMany({
+      where: { tenantId, deletedAt: null, isActive: true, ...(excludeRuleId ? { id: { not: excludeRuleId } } : {}) },
+      select: { conditionFieldId: true, targetFieldId: true },
+    });
+    assertNoRuleCycle(others.map((r) => ({ from: r.conditionFieldId, to: r.targetFieldId })), { from: conditionField.id, to: targetField.id });
+
     return {
       conditionFieldId: conditionField.id,
       conditionOperator: operator,
       conditionValue,
       conditionOptionId,
       targetFieldId: targetField.id,
+      effectType,
+      defaultPayload,
     };
   }
 
