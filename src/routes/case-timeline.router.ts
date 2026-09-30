@@ -107,6 +107,9 @@ export function createCaseStageActionsRouter(prisma: PrismaClient): Router {
   router.post('/:stageId/resume', permissionMiddleware('case-stage:resume'), async (req, res, next) => {
     try { res.json({ success: true, data: await svc.resumeStage(ctxOf(req), caseId(req), req.params.stageId) }); } catch (e) { next(e); }
   });
+  router.post('/:stageId/unlock', permissionMiddleware('sla:unlock'), async (req, res, next) => {
+    try { res.json({ success: true, data: await svc.unlockStage(ctxOf(req), caseId(req), req.params.stageId, req.body?.reason) }); } catch (e) { next(e); }
+  });
   router.post('/:stageId/override-duration', permissionMiddleware('case-stage:override'), async (req, res, next) => {
     try { res.json({ success: true, data: await svc.overrideDuration(ctxOf(req), caseId(req), req.params.stageId, { remainingDuration: req.body?.remainingDuration, reason: req.body?.reason }) }); } catch (e) { next(e); }
   });

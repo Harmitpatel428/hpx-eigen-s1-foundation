@@ -141,6 +141,8 @@ enum NotificationType {
   EXPORT_COMPLETED
   SYSTEM_ANNOUNCEMENT
   MANDATE_UPLOAD_RECEIVED
+  CASE_STAGE_AT_RISK
+  CASE_STAGE_OVERDUE
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2002,6 +2004,16 @@ enum CaseTimelineStatus {
 }
 
 // ─── CaseStageTemplate — ordered stage template under a CaseType ────
+enum CaseStageSlaState {
+  ON_TRACK
+  AT_RISK
+  OVERDUE
+  WAITING_EXTERNAL
+  COMPLETED_ON_TIME
+  COMPLETED_LATE
+  EXCEPTION_APPROVED
+}
+
 model CaseStageTemplate {
   id                        String                 @id @default(uuid()) @db.Uuid
   tenantId                  String                 @db.Uuid
@@ -2015,6 +2027,9 @@ model CaseStageTemplate {
   bufferDays                Int?
   dependsOnPrevious         Boolean                @default(true)
   enforceRequiredOnComplete Boolean                @default(false)
+  atRiskPercent             Int?
+  warnDaysRemaining         Int?
+  hardBlock                 Boolean                @default(false)
   createdAt                 DateTime               @default(now())
   updatedAt                 DateTime               @updatedAt
   deletedAt                 DateTime?
@@ -2104,6 +2119,14 @@ model CaseStage {
   latestStart               DateTime?             @db.Date
   latestFinish              DateTime?             @db.Date
   remainingDurationOverride Int?
+  atRiskPercent             Int?
+  warnDaysRemaining         Int?
+  hardBlock                 Boolean               @default(false)
+  slaState                  CaseStageSlaState?
+  slaNotifiedForState       CaseStageSlaState?
+  hardBlockUnlockedAt       DateTime?
+  hardBlockUnlockedBy       String?               @db.Uuid
+  hardBlockUnlockedReason   String?
   createdAt                 DateTime              @default(now())
   updatedAt                 DateTime              @updatedAt
 

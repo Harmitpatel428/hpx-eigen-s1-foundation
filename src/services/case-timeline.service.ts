@@ -10,7 +10,7 @@ import {
 } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { CaseFieldValueService } from './case-field-value.service';
-import { recalcInTx, RecalcResponse } from './case-planning.service';
+import { recalcInTx, dateOnly, RecalcResponse } from './case-planning.service';
 import { parseDateOnly } from './case-calendar.service';
 import { toKey } from './case-planning.dates';
 import { refreshSummaryInTx } from './case-performance.service';
@@ -30,6 +30,13 @@ export interface UserContext {
 
 const KEY_RE = /^[a-z][a-z0-9_]*$/;
 const TX_OPTS = { maxWait: 5000, timeout: 15000 };
+function checkSla(input: any): void {
+  const { atRiskPercent: a, warnDaysRemaining: w, hardBlock: h } = input;
+  if (a != null && (!Number.isInteger(a) || a < 0 || a > 100)) throw new ValidationError('atRiskPercent must be an integer 0-100 or null.');
+  if (w != null && (!Number.isInteger(w) || w < 0)) throw new ValidationError('warnDaysRemaining must be an integer >= 0 or null.');
+  if (h !== undefined && typeof h !== 'boolean') throw new ValidationError('hardBlock must be a boolean.');
+}
+
 const TERMINAL: CaseStageStatus[] = [CaseStageStatus.COMPLETED, CaseStageStatus.SKIPPED];
 
 function mapP2002(err: unknown, message: string): never {
@@ -73,6 +80,7 @@ export class CaseTimelineService {
     const label = (input.label ?? '').trim();
     if (!KEY_RE.test(key) || key.length > 64) throw new ValidationError('key must be lowercase snake_case (start with a letter), 64 chars max.');
     if (!label || label.length > 200) throw new ValidationError('label is required and must be 200 characters or fewer.');
+    checkSla(input);
     try {
       return await this.prisma.$transaction(async (tx) => {
         await this.loadType(tx, ctx.tenantId, caseTypeId);
@@ -86,6 +94,9 @@ export class CaseTimelineService {
             bufferDays: input.bufferDays ?? null,
             dependsOnPrevious: input.dependsOnPrevious ?? true,
             enforceRequiredOnComplete: input.enforceRequiredOnComplete ?? false,
+            atRiskPercent: input.atRiskPercent ?? null,
+            warnDaysRemaining: input.warnDaysRemaining ?? null,
+            hardBlock: input.hardBlock ?? false,
           },
         });
         await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_STAGE_TEMPLATE_CREATED', 'CaseStageTemplate', t.id, { caseTypeId, key }));
@@ -95,6 +106,7 @@ export class CaseTimelineService {
   }
 
   async updateTemplate(ctx: UserContext, caseTypeId: string, templateId: string, input: any): Promise<CaseStageTemplate> {
+    checkSla(input);
     return this.prisma.$transaction(async (tx) => {
       const t = await tx.caseStageTemplate.findFirst({ where: { id: templateId, tenantId: ctx.tenantId, caseTypeId } });
       if (!t) throw new ResourceNotFoundError();
@@ -109,6 +121,9 @@ export class CaseTimelineService {
         ...(input.bufferDays !== undefined ? { bufferDays: input.bufferDays } : {}),
         ...(input.dependsOnPrevious !== undefined ? { dependsOnPrevious: input.dependsOnPrevious } : {}),
         ...(input.enforceRequiredOnComplete !== undefined ? { enforceRequiredOnComplete: input.enforceRequiredOnComplete } : {}),
+        ...(input.atRiskPercent !== undefined ? { atRiskPercent: input.atRiskPercent } : {}),
+        ...(input.warnDaysRemaining !== undefined ? { warnDaysRemaining: input.warnDaysRemaining } : {}),
+        ...(input.hardBlock !== undefined ? { hardBlock: input.hardBlock } : {}),
       };
       const updated = await tx.caseStageTemplate.update({ where: { id: templateId }, data });
       await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_STAGE_TEMPLATE_UPDATED', 'CaseStageTemplate', templateId, { caseTypeId }));
@@ -189,6 +204,7 @@ export class CaseTimelineService {
           durationValue: tpl.durationValue, durationType: tpl.durationType,
           externalWaiting: tpl.externalWaiting, bufferDays: tpl.bufferDays,
           dependsOnPrevious: tpl.dependsOnPrevious, enforceRequiredOnComplete: tpl.enforceRequiredOnComplete,
+          atRiskPercent: tpl.atRiskPercent, warnDaysRemaining: tpl.warnDaysRemaining, hardBlock: tpl.hardBlock,
         })),
       });
       await this.recomputeReadiness(tx, timeline.id);
@@ -270,12 +286,36 @@ export class CaseTimelineService {
           note = `OVERRIDE: ${opts.reason.trim()}`;
         }
       }
-      const updated = await tx.caseStage.update({ where: { id: stage.id }, data: { status: CaseStageStatus.COMPLETED, completedAt: new Date() } });
+      const completedAt = new Date();
+      // Phase 9: final SLA state rides the existing CASE_STAGE_COMPLETED audit (no new row).
+      const slaState = stage.plannedFinish == null ? null : (dateOnly(completedAt) <= stage.plannedFinish ? 'COMPLETED_ON_TIME' : 'COMPLETED_LATE');
+      const updated = await tx.caseStage.update({ where: { id: stage.id }, data: { status: CaseStageStatus.COMPLETED, completedAt, slaState } });
       await this.writeTransition(tx, ctx, stage, stage.status, CaseStageStatus.COMPLETED, 'COMPLETED', note);
       // Phase 8 hook: refresh performance summaries on COMPLETED only. Audit-silent (no new audit row).
       const tl = await tx.caseTimeline.findFirst({ where: { id: stage.timelineId, tenantId: ctx.tenantId }, select: { caseTypeId: true } });
       await refreshSummaryInTx(tx, ctx.tenantId, tl?.caseTypeId ?? null, stage.key);
       return updated;
+    }, TX_OPTS);
+  }
+
+  /** Phase 9: manual unlock of a hard-blocked stage. No recalc, no DocCase writes. */
+  async unlockStage(ctx: UserContext, caseId: string, stageId: string, reason?: string): Promise<CaseStage> {
+    if (typeof reason !== 'string' || !reason.trim()) throw new BusinessRuleViolationError('A reason is required to unlock a stage.');
+    return this.prisma.$transaction(async (tx) => {
+      const stage = await this.loadStage(tx, ctx.tenantId, caseId, stageId);
+      if (stage.status !== CaseStageStatus.BLOCKED) throw new BusinessRuleViolationError('Stage is not blocked.');
+      const to = stage.startedAt ? CaseStageStatus.IN_PROGRESS : CaseStageStatus.READY;
+      const note = reason.trim();
+      await tx.caseStage.update({ where: { id: stage.id }, data: { status: to, hardBlockUnlockedAt: new Date(), hardBlockUnlockedBy: ctx.userId, hardBlockUnlockedReason: note } });
+      await this.recomputeReadiness(tx, stage.timelineId);
+      await this.syncTimelineStatus(tx, stage.timelineId);
+      // recompute may flip READY -> PENDING; record the stage's actual final status.
+      const final = await tx.caseStage.findUniqueOrThrow({ where: { id: stage.id } });
+      await tx.caseStageEvent.create({
+        data: { tenantId: ctx.tenantId, caseId: stage.timeline.caseId, stageId: stage.id, eventType: 'UNBLOCKED', fromStatus: CaseStageStatus.BLOCKED, toStatus: final.status, actorUserId: ctx.userId, note },
+      });
+      await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_STAGE_UNBLOCKED', 'CaseStage', stage.id, { caseId, toStatus: final.status, reason: note }, { status: CaseStageStatus.BLOCKED }));
+      return final;
     }, TX_OPTS);
   }
 
@@ -334,7 +374,12 @@ export class CaseTimelineService {
     return this.prisma.$transaction(async (tx) => {
       const timeline = await tx.caseTimeline.findFirst({ where: { caseId, tenantId: ctx.tenantId } });
       if (!timeline) throw new ResourceNotFoundError();
-      await tx.caseTimeline.update({ where: { id: timeline.id }, data: { targetDate: parsed } });
+      // A changed target is a new plan: any prior exception no longer applies.
+      const changed = (timeline.targetDate?.getTime() ?? null) !== (parsed?.getTime() ?? null);
+      await tx.caseTimeline.update({
+        where: { id: timeline.id },
+        data: { targetDate: parsed, ...(changed ? { exceptionApproved: false, exceptionReason: null, exceptionApprovedBy: null, exceptionApprovedAt: null } : {}) },
+      });
       const result = await recalcInTx(tx, ctx.tenantId, caseId, new Date());
       await this.audit.appendInTx(tx, this.auditRow(ctx, parsed ? 'CASE_TIMELINE_TARGET_SET' : 'CASE_TIMELINE_TARGET_CLEARED', 'CaseTimeline', timeline.id, { caseId, targetDate: parsed ? toKey(parsed) : null }));
       return result;
@@ -360,6 +405,7 @@ export class CaseTimelineService {
     return this.prisma.$transaction(async (tx) => {
       const timeline = await tx.caseTimeline.findFirst({ where: { caseId, tenantId: ctx.tenantId } });
       if (!timeline) throw new ResourceNotFoundError();
+      if (timeline.feasible !== false) throw new BusinessRuleViolationError('No exception needed: the timeline is not infeasible.');
       const updated = await tx.caseTimeline.update({
         where: { id: timeline.id },
         data: { exceptionApproved: true, exceptionReason: reason.trim(), exceptionApprovedBy: ctx.userId, exceptionApprovedAt: new Date() },

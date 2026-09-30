@@ -267,6 +267,9 @@ describe('duration override', () => {
 describe('exception approval', () => {
   it('wrong perm → 403; missing reason → 422; approve sets fields + audit', async () => {
     const { caseId } = await withTimeline([{}]);
+    // Infeasible plan (target in the past) is the precondition for an exception.
+    const inf = await req('PUT', `${TL(caseId)}/target`, { token: admin.token, body: { targetDate: '2020-01-06' } });
+    expect(inf.body.data.feasible).toBe(false);
     expect((await req('POST', `${TL(caseId)}/approve-exception`, { token: noException.token, body: { reason: 'x' } })).status).toBe(403);
     expect((await req('POST', `${TL(caseId)}/approve-exception`, { token: admin.token, body: {} })).status).toBe(422);
     const ok = await req('POST', `${TL(caseId)}/approve-exception`, { token: admin.token, body: { reason: 'client accepted delay' } });
@@ -277,6 +280,30 @@ describe('exception approval', () => {
     expect(tl?.exceptionApprovedBy).toBe(admin.id);
     expect(tl?.exceptionApprovedAt).not.toBeNull();
     expect(await prisma.auditLog.count({ where: { tenantId, eventType: 'CASE_TIMELINE_EXCEPTION_APPROVED' } })).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('exception lifecycle', () => {
+  const excRow = (caseId: string) => prisma.caseTimeline.findFirstOrThrow({ where: { caseId }, select: { exceptionApproved: true, exceptionReason: true, exceptionApprovedBy: true, exceptionApprovedAt: true } });
+
+  it('approve on a feasible / no-target timeline → 422', async () => {
+    const { caseId } = await withTimeline([{}]);
+    expect((await req('POST', `${TL(caseId)}/approve-exception`, { token: admin.token, body: { reason: 'x' } })).status).toBe(422); // feasible null
+    await req('PUT', `${TL(caseId)}/target`, { token: admin.token, body: { targetDate: '2030-01-15' } });
+    const r = await req('POST', `${TL(caseId)}/approve-exception`, { token: admin.token, body: { reason: 'x' } });
+    expect(r.status).toBe(422);
+    expect(r.body.message).toContain('No exception needed');
+    expect((await excRow(caseId)).exceptionApproved).toBe(false);
+  });
+
+  it('retarget after approval clears the exception; same target does not', async () => {
+    const { caseId } = await withTimeline([{}]);
+    await req('PUT', `${TL(caseId)}/target`, { token: admin.token, body: { targetDate: '2020-01-06' } });
+    expect((await req('POST', `${TL(caseId)}/approve-exception`, { token: admin.token, body: { reason: 'ok' } })).status).toBe(200);
+    await req('PUT', `${TL(caseId)}/target`, { token: admin.token, body: { targetDate: '2020-01-06' } }); // unchanged
+    expect((await excRow(caseId)).exceptionApproved).toBe(true);
+    await req('PUT', `${TL(caseId)}/target`, { token: admin.token, body: { targetDate: '2030-01-15' } }); // changed
+    expect(await excRow(caseId)).toEqual({ exceptionApproved: false, exceptionReason: null, exceptionApprovedBy: null, exceptionApprovedAt: null });
   });
 });
 

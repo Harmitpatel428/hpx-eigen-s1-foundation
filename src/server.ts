@@ -7,6 +7,7 @@ import { prisma } from './db';
 import { redisClose } from './redis';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
 import { expirePendingMandates, sweepStaleStagingObjects } from './workers/mandate-expiry.worker';
+import { runSlaSweep } from './workers/sla.worker';
 import { isStorageConfigured } from './services/storage.service';
 import { virusScanService } from './services/virus-scan.service';
 import { assertClientUrlsNotLocalhost } from './config/production-url-guard';
@@ -62,6 +63,10 @@ mandateExpiryTimer.unref();
 // ─── Stale upload-staging sweep (every 6h) — backstop for abandoned uploads ──
 const stagingSweepTimer = setInterval(() => void sweepStaleStagingObjects(), 6 * 60 * 60 * 1000);
 stagingSweepTimer.unref();
+
+// ─── SLA sweep (every 10m) — reclassify stages, hard-block, edge-notify ──────
+const slaTimer = setInterval(() => void runSlaSweep(prisma), 10 * 60 * 1000);
+slaTimer.unref();
 
 interface ServerError extends NodeJS.ErrnoException {
   address?: string;
