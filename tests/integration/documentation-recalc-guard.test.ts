@@ -103,6 +103,23 @@ afterAll(async () => {
   await prisma.$disconnect();
 }, 30_000);
 
+describe('POST /documentation/cases (tx visibility regression)', () => {
+  it('creates a case and returns it (no 404 rollback)', async () => {
+    const lead = await prisma.lead.create({ data: { tenantId: TENANT_ID, firstName: 'Cr', lastName: 'Ok', email: `cr-${crypto.randomUUID()}@example.com` } });
+    const createToken = await (async () => {
+      const role = await prisma.role.create({ data: { tenantId: TENANT_ID, name: 'RG Creator' } });
+      await grant(role.id, 'doc:create');
+      await prisma.userRole.create({ data: { userId: USER_ID, roleId: role.id, scopeType: ScopeType.ORGANIZATION } });
+      return makeSession(USER_ID, TENANT_ID);
+    })();
+    const res = await fetch(`${baseUrl}/api/v1/documentation/cases`, { method: 'POST', headers: authHeaders(createToken), body: JSON.stringify({ leadId: lead.id }) });
+    expect(res.status).toBe(201);
+    const body: any = await res.json();
+    expect(body.data.leadId).toBe(lead.id);
+    expect(await prisma.docCase.count({ where: { tenantId: TENANT_ID, leadId: lead.id } })).toBe(1);
+  });
+});
+
 describe('Case recalc guard — RECALC_MUTABLE statuses', () => {
   it('1a. ACTIVE stays ACTIVE when not yet ready, progress updated', async () => {
     const c = await createCase(TENANT_ID, 'ACTIVE');

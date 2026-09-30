@@ -402,7 +402,7 @@ export class DocumentationService {
   ) {
     if (!input.leadId) throw new ValidationError('leadId is required.');
 
-    return this.prisma.$transaction(async (tx) => {
+    const createdId = await this.prisma.$transaction(async (tx) => {
       // Verify lead exists in this tenant
       const lead = await tx.lead.findFirst({
         where: { id: input.leadId, tenantId: ctx.tenantId, deletedAt: null },
@@ -509,8 +509,11 @@ export class DocumentationService {
         operation: 'CREATE', payload: { leadId: input.leadId, presetId: input.presetId ?? null, documentCount: documents.length },
       });
 
-      return this.getCaseById(ctx, docCase.id);
+      return docCase.id;
     });
+
+    // Read AFTER commit: getCaseById uses a separate connection that can't see uncommitted rows.
+    return this.getCaseById(ctx, createdId);
   }
 
   async listCases(
