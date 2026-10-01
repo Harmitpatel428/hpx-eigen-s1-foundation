@@ -7,7 +7,10 @@ import {
   DocStorageType,
   DocPresetCategory,
   Prisma,
+  CaseFieldType,
+  CaseFieldConditionOperator,
 } from '@prisma/client';
+import { operatorAllowedForType, validateScalarConditionValue } from './case-field.validation';
 import { AuditService } from './audit.service';
 import { logger } from '../utils/logger';
 import {
@@ -525,8 +528,26 @@ export class DocumentationService {
       search?:      string;
       page?:        number;
       pageSize?:    number;
+      fieldFilters?: { fieldId: string; operator: string; value?: unknown }[];
+      sortBy?:      string;
+      sortDir?:     string;
     } = {}
   ) {
+    const SORTABLE = ['createdAt', 'priority', 'completionPercent', 'targetDate'];
+    if (filters.sortBy !== undefined && !SORTABLE.includes(filters.sortBy)) {
+      throw new ValidationError(`sortBy must be one of: ${SORTABLE.join(', ')}.`);
+    }
+    if (filters.sortDir !== undefined && filters.sortDir !== 'asc' && filters.sortDir !== 'desc') {
+      throw new ValidationError('sortDir must be asc or desc.');
+    }
+    const dir = (filters.sortDir ?? 'desc') as 'asc' | 'desc';
+    const orderBy: Prisma.DocCaseOrderByWithRelationInput[] = !filters.sortBy
+      ? [{ priority: 'desc' }, { createdAt: 'desc' }]
+      : filters.sortBy === 'targetDate'
+        ? [{ timeline: { targetDate: dir } }]
+        : [{ [filters.sortBy]: dir }];
+    const fieldClauses = await this.buildFieldFilterClauses(ctx.tenantId, filters.fieldFilters);
+
     const page     = Math.max(1, filters.page ?? 1);
     const pageSize = Math.min(100, filters.pageSize ?? 25);
     const skip     = (page - 1) * pageSize;
@@ -534,6 +555,7 @@ export class DocumentationService {
     const where: Prisma.DocCaseWhereInput = {
       tenantId:  ctx.tenantId,
       deletedAt: null,
+      ...(fieldClauses.length ? { AND: fieldClauses } : {}),
       ...(filters.status     ? { status: filters.status }     : {}),
       ...(filters.assignedTo ? { assignedTo: filters.assignedTo } : {}),
       ...(filters.isReady !== undefined ? { isReady: filters.isReady } : {}),
@@ -557,7 +579,7 @@ export class DocumentationService {
           _count: { select: { documents: true, caseNotes: true, reminders: true } },
           mandateRequests: { orderBy: { createdAt: 'desc' }, take: 1, select: { status: true } },
         },
-        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+        orderBy,
         skip,
         take: pageSize,
       }),
@@ -571,6 +593,67 @@ export class DocumentationService {
     }));
 
     return { data, total, page, pageSize };
+  }
+
+  /** Validates fieldFilters (400 on any problem) and returns one tenant-scoped DocCase clause per filter. */
+  private async buildFieldFilterClauses(
+    tenantId: string,
+    fieldFilters?: { fieldId: string; operator: string; value?: unknown }[],
+  ): Promise<Prisma.DocCaseWhereInput[]> {
+    if (!fieldFilters?.length) return [];
+    if (fieldFilters.length > 5) throw new ValidationError('At most 5 field filters are allowed.');
+    const O = CaseFieldConditionOperator;
+    const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+    const clauses: Prisma.DocCaseWhereInput[] = [];
+    for (const f of fieldFilters) {
+      if (!f || typeof f.fieldId !== 'string' || typeof f.operator !== 'string') {
+        throw new ValidationError('Each field filter needs fieldId and operator.');
+      }
+      const field = isUuid(f.fieldId)
+        ? await this.prisma.caseFieldDefinition.findFirst({
+            where: { id: f.fieldId, tenantId, deletedAt: null },
+            select: { id: true, type: true, filterable: true },
+          })
+        : null;
+      if (!field) throw new ValidationError('Unknown field in filter.');
+      if (field.filterable !== true) throw new ValidationError('Field is not filterable.');
+      if (!(Object.values(O) as string[]).includes(f.operator)) throw new ValidationError('Unknown filter operator.');
+      const op = f.operator as CaseFieldConditionOperator;
+      if (!operatorAllowedForType(field.type, op)) {
+        throw new ValidationError(`Operator ${op} is not allowed for a ${field.type} field.`);
+      }
+      const base = { fieldId: field.id, tenantId, deletedAt: null };
+      if (op === O.IS_EMPTY)     { clauses.push({ fieldValues: { none: base } }); continue; }
+      if (op === O.IS_NOT_EMPTY) { clauses.push({ fieldValues: { some: base } }); continue; }
+
+      if (field.type === CaseFieldType.MULTI_SELECT) {
+        const ids = f.value;
+        if (!Array.isArray(ids) || !ids.length || !ids.every((x) => typeof x === 'string')) {
+          throw new ValidationError('value must be a non-empty array of option ids.');
+        }
+        if (!ids.every((x) => isUuid(x as string))) throw new ValidationError('option id must be a valid UUID.');
+        const hit = { ...base, selections: { some: { optionId: { in: ids as string[] } } } };
+        clauses.push({ fieldValues: op === O.IN ? { some: hit } : { none: hit } });
+        continue;
+      }
+      if (field.type === CaseFieldType.SELECT) {
+        if (typeof f.value !== 'string') throw new ValidationError('value must be an option id.');
+        if (!isUuid(f.value)) throw new ValidationError('option id must be a valid UUID.');
+        clauses.push({ fieldValues: { some: { ...base, optionId: op === O.EQUALS ? f.value : { not: f.value } } } });
+        continue;
+      }
+      validateScalarConditionValue(field.type, f.value);
+      const col = field.type === CaseFieldType.BOOLEAN ? 'valueBoolean'
+        : field.type === CaseFieldType.DATE || field.type === CaseFieldType.DATETIME ? 'valueDate'
+        : typeof f.value === 'number' ? 'valueNumber' : 'valueText';
+      const v = col === 'valueDate' ? new Date(f.value as string) : (f.value as string | number | boolean);
+      if (v instanceof Date && isNaN(v.getTime())) throw new ValidationError('value is not a valid date.');
+      const cond = op === O.EQUALS ? v
+        : op === O.NOT_EQUALS ? { not: v }
+        : op === O.GREATER_THAN ? { gt: v } : { lt: v };
+      clauses.push({ fieldValues: { some: { ...base, [col]: cond } } });
+    }
+    return clauses;
   }
 
   async getCaseById(ctx: TenantContext, caseId: string) {

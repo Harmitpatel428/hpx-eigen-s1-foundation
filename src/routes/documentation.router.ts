@@ -5,6 +5,8 @@ import { DocumentationService, getSuggestions } from '../services/documentation.
 import { DocumentService } from '../services/document.service';
 import { checkFirmUploadUrlAttempts } from '../services/auth/RateLimitService';
 import { ValidationError } from '../types/exceptions';
+import { requireCaseEngineEnabled } from '../middleware/case-engine.middleware';
+import { CaseReportsService } from '../services/case-reports.service';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FIRM_SOURCE_CHANNELS = ['WHATSAPP', 'EMAIL', 'PHYSICAL', 'FIRM_UPLOAD', 'OTHER'] as const;
@@ -114,19 +116,51 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
-        const { status, assignedTo, isReady, search, page, pageSize } = req.query as {
+        const { status, assignedTo, isReady, search, page, pageSize, fieldFilters, sortBy, sortDir } = req.query as {
           status?: string; assignedTo?: string; isReady?: string; search?: string;
-          page?: string; pageSize?: string;
+          page?: string; pageSize?: string; fieldFilters?: string; sortBy?: string; sortDir?: string;
         };
+        // ponytail: fieldFilters is a JSON-encoded query param — keeps GET /cases as the one list endpoint rather than adding POST /cases/search
+        let parsedFilters: { fieldId: string; operator: string; value?: unknown }[] | undefined;
+        if (fieldFilters !== undefined) {
+          try { parsedFilters = JSON.parse(fieldFilters); } catch { throw new ValidationError('fieldFilters must be valid JSON.'); }
+          if (!Array.isArray(parsedFilters)) throw new ValidationError('fieldFilters must be a JSON array.');
+        }
         const result = await svc.listCases({ tenantId, userId }, {
           status:     status as DocCaseStatus | undefined,
           assignedTo,
           isReady:    isReady !== undefined ? isReady === 'true' : undefined,
           search,
+          fieldFilters: parsedFilters, sortBy, sortDir,
           page:       page     ? parseInt(page)     : undefined,
           pageSize:   pageSize ? parseInt(pageSize) : undefined,
         });
         res.json({ success: true, ...result });
+      } catch (err) { next(err); }
+    }
+  );
+
+  // ── Operational reports (engine-gated; literal paths, no collision with /cases/:id) ──
+  const reports = new CaseReportsService(prisma);
+  const reportGates = [authMiddleware, requireCaseEngineEnabled(prisma), permissionMiddleware('doc:view')];
+  const ctxOf = (req: Request) => { const { tenantId, userId } = (req as AuthenticatedRequest).user; return { tenantId, userId }; };
+
+  router.get('/reports/overdue-by-stage', ...reportGates, permissionMiddleware('case-timeline:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try { res.json({ success: true, data: await reports.overdueByStage(ctxOf(req)) }); } catch (err) { next(err); }
+    }
+  );
+  router.get('/reports/on-time-vs-late', ...reportGates, permissionMiddleware('case-timeline:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try { res.json({ success: true, data: await reports.onTimeVsLate(ctxOf(req)) }); } catch (err) { next(err); }
+    }
+  );
+  router.get('/reports/cases-by-option', ...reportGates,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const fieldId = req.query.fieldId;
+        if (typeof fieldId !== 'string' || !UUID_RE.test(fieldId)) throw new ValidationError('fieldId (uuid) is required.');
+        res.json({ success: true, data: await reports.casesByOption(ctxOf(req), fieldId) });
       } catch (err) { next(err); }
     }
   );

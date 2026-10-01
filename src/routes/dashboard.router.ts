@@ -245,7 +245,15 @@ async function getDocumentationMetrics(prisma: PrismaClient, tenantId: string) {
   // NOTE: When Document table is added to schema, replace with real queries.
   // For now, return zero-state with correct shape so UI renders.
 
+  const stageWhere = { tenantId, timeline: { case: { deletedAt: null } } };
+  const [overdueStages, atRiskStages] = await Promise.all([
+    prisma.caseStage.count({ where: { ...stageWhere, slaState: 'OVERDUE' } }),
+    prisma.caseStage.count({ where: { ...stageWhere, slaState: 'AT_RISK' } }),
+  ]);
+
   return {
+    overdueStages,
+    atRiskStages,
     activeDrafts: 0,
     reviewTurnaround: 0,
     complianceRate: 0,
