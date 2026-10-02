@@ -424,6 +424,9 @@ export class CaseTimelineService {
     const reason = input.reason.trim();
     return this.prisma.$transaction(async (tx) => {
       const stage = await this.loadStage(tx, ctx.tenantId, caseId, stageId);
+      if (![CaseStageStatus.READY, CaseStageStatus.IN_PROGRESS, CaseStageStatus.WAITING_EXTERNAL].includes(stage.status as any)) {
+        throw new BusinessRuleViolationError('Only a READY, IN_PROGRESS, or WAITING_EXTERNAL stage can have its duration overridden.');
+      }
       await tx.caseStage.update({ where: { id: stage.id }, data: { remainingDurationOverride: remainingDuration } });
       await tx.caseStageEvent.create({
         data: { tenantId: ctx.tenantId, caseId: stage.timeline.caseId, stageId: stage.id, eventType: 'DURATION_OVERRIDDEN', fromStatus: stage.status, toStatus: stage.status, actorUserId: ctx.userId, note: `OVERRIDE ${remainingDuration}: ${reason}` },

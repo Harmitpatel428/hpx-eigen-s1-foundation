@@ -262,6 +262,25 @@ describe('duration override', () => {
     expect(ev?.note).toContain('scope grew');
     expect(await prisma.auditLog.count({ where: { tenantId, eventType: 'CASE_STAGE_DURATION_OVERRIDDEN', entityId: stages[0].id } })).toBe(1);
   });
+
+  it('D-1: allowed on IN_PROGRESS, 422 on COMPLETED and SKIPPED (override unchanged)', async () => {
+    const { caseId, stages } = await withTimeline([{}, {}]);
+    const body = { remainingDuration: 7, reason: 'status guard' };
+    const url = (i: number) => `${SG(caseId)}/${stages[i].id}/override-duration`;
+    const ovr = async (i: number) => (await prisma.caseStage.findUnique({ where: { id: stages[i].id }, select: { remainingDurationOverride: true } }))?.remainingDurationOverride ?? null;
+    // IN_PROGRESS passes
+    expect((await req('POST', `${SG(caseId)}/${stages[0].id}/start`, { token: admin.token })).status).toBe(200);
+    expect((await req('POST', url(0), { token: admin.token, body })).status).toBe(200);
+    expect(await ovr(0)).toBe(7);
+    // COMPLETED rejected; value left as before
+    expect((await req('POST', `${SG(caseId)}/${stages[0].id}/complete`, { token: admin.token })).status).toBe(200);
+    expect((await req('POST', url(0), { token: admin.token, body: { remainingDuration: 9, reason: 'late' } })).status).toBe(422);
+    expect(await ovr(0)).toBe(7);
+    // SKIPPED rejected
+    expect((await req('POST', `${SG(caseId)}/${stages[1].id}/skip`, { token: admin.token, body: { reason: 'n/a' } })).status).toBe(200);
+    expect((await req('POST', url(1), { token: admin.token, body })).status).toBe(422);
+    expect(await ovr(1)).toBeNull();
+  });
 });
 
 describe('exception approval', () => {
