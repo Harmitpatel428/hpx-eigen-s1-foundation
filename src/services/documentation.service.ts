@@ -11,6 +11,7 @@ import {
   CaseFieldConditionOperator,
 } from '@prisma/client';
 import { operatorAllowedForType, validateScalarConditionValue } from './case-field.validation';
+import { normalizeDedupeKey } from './case-type.service';
 import { AuditService } from './audit.service';
 import { logger } from '../utils/logger';
 import {
@@ -134,6 +135,38 @@ export function getSuggestions(presetName: string): string[] {
     }
   }
   return Array.from(matched);
+}
+
+// ─── Multi-policy assignment helpers ─────────────────────────────────────────
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ASSIGN_ALLOWED_STATUSES: DocCaseStatus[] = ['INCOMING', 'RETURNED', 'ACTIVE', 'DOCUMENTATION_READY'];
+const DESELECT_SAFE_STATUSES: DocDocumentStatus[] = ['REQUESTED', 'PENDING_COLLECTION'];
+
+export interface PolicyInput {
+  caseTypeId: string;
+  componentIds?: string[];
+  proposalDate?: string | null;
+  actualDate?: string | null;
+}
+export interface AssignPoliciesInput {
+  policies: PolicyInput[];
+  primaryCaseTypeId?: string | null;
+}
+
+/** Parses an omitted/null/empty/YYYY-MM-DD date input to a UTC Date or null; throws 400 on malformed. */
+function parseDateInput(v: unknown): Date | null {
+  if (v === undefined || v === null || v === '') return null;
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new ValidationError('Dates must be a YYYY-MM-DD string, null, or empty.');
+  const d = new Date(`${v}T00:00:00.000Z`);
+  if (isNaN(d.getTime())) throw new ValidationError('Invalid date.');
+  return d;
+}
+
+function sameSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = new Set(a);
+  return b.every(x => sa.has(x));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -665,7 +698,18 @@ export class DocumentationService {
         documents: {
           where:   { deletedAt: null },
           orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
-          include: { storageRefs: { orderBy: { createdAt: 'desc' } } },
+          include: {
+            storageRefs: { orderBy: { createdAt: 'desc' } },
+            // Active provenance only: which components require this requirement.
+            componentSources: {
+              where:   { deletedAt: null },
+              orderBy: [{ displayOrderAtLink: 'asc' }, { createdAt: 'asc' }],
+              include: {
+                component:         { select: { id: true, name: true } },
+                componentDocument: { select: { id: true, name: true, isActive: true, deletedAt: true } },
+              },
+            },
+          },
         },
         // Firm/client uploaded files (unified Document store). R5 payload contract —
         // active only, storageKey excluded (view-url is the only path to bytes).
@@ -695,11 +739,552 @@ export class DocumentationService {
         overrides: {
           orderBy: { allowedAt: 'desc' },
         },
+        policyAssignments: {
+          where:   { deletedAt: null },
+          orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+          include: {
+            caseType:   { select: { id: true, name: true, key: true, status: true, deletedAt: true } },
+            components: {
+              where:   { deletedAt: null },
+              orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+              include: { component: { select: { id: true, name: true, description: true, isMandatory: true, displayOrder: true, isActive: true, deletedAt: true } } },
+            },
+          },
+        },
         _count: { select: { documents: true } },
       },
     });
     if (!docCase) throw new ResourceNotFoundError();
-    return docCase;
+
+    // Shape policy assignments for the client: flag the effective primary (first by
+    // displayOrder) and reshape component selections. If no active assignment rows
+    // exist but a legacy caseTypeId is set, emit a read-only-only derived entry so the
+    // edit dialog can prefill — this sentinel (id `legacy:…`) is never persisted and the
+    // FE must send the plain caseTypeId on first real save.
+    const { policyAssignments, documents, ...rest } = docCase;
+
+    // Flatten each document's component provenance for the client. Every other
+    // document field (including requirementDedupeKey / isComponentMerged) rides
+    // along untouched.
+    const shapedDocuments = documents.map(d => {
+      const { componentSources, ...doc } = d;
+      return {
+        ...doc,
+        componentSources: componentSources.map(s => ({
+          id:                   s.id,
+          componentId:          s.componentId,
+          componentName:        s.component.name,
+          componentDocumentId:  s.componentDocumentId,
+          componentDocumentName: s.componentDocument?.name ?? null,
+          policyAssignmentId:   s.policyAssignmentId,
+          policyComponentId:    s.policyComponentId,
+          isMandatoryAtLink:    s.isMandatoryAtLink,
+          displayOrderAtLink:   s.displayOrderAtLink,
+          componentDocument:    s.componentDocument ? { isActive: s.componentDocument.isActive, deletedAt: s.componentDocument.deletedAt } : null,
+        })),
+      };
+    });
+    let shapedAssignments = policyAssignments.map((pa, i) => ({
+      id:           pa.id,
+      caseTypeId:   pa.caseTypeId,
+      proposalDate: pa.proposalDate,
+      actualDate:   pa.actualDate,
+      displayOrder: pa.displayOrder,
+      isPrimary:    i === 0,
+      derived:      false,
+      caseType:     pa.caseType,
+      components:   pa.components.map(c => ({ selectionId: c.id, componentId: c.componentId, displayOrder: c.displayOrder, component: c.component })),
+    }));
+
+    if (shapedAssignments.length === 0 && docCase.caseTypeId) {
+      const ct = await this.prisma.caseType.findFirst({
+        where:  { id: docCase.caseTypeId, tenantId: ctx.tenantId },
+        select: { id: true, name: true, key: true, status: true, deletedAt: true },
+      });
+      if (ct) {
+        shapedAssignments = [{
+          id: `legacy:${ct.id}`, caseTypeId: ct.id, proposalDate: null, actualDate: null,
+          displayOrder: 0, isPrimary: true, derived: true, caseType: ct, components: [],
+        }];
+      }
+    }
+
+    return { ...rest, documents: shapedDocuments, policyAssignments: shapedAssignments };
+  }
+
+  // ─── Multi-policy assignment ─────────────────────────────────────────────────
+  /**
+   * Assign one or more policies (CaseTypes) to a case, configure components per
+   * policy, generate/retire the requirement documents, and sync DocCase.caseTypeId
+   * to the primary policy. One transaction, row-locked, recalc at the end.
+   */
+  async assignPolicies(ctx: TenantContext, caseId: string, input: AssignPoliciesInput) {
+    // ── Structural validation (400) ──
+    if (!UUID_RE.test(caseId)) throw new ValidationError('caseId must be a UUID.');
+    const policies = input?.policies;
+    if (!Array.isArray(policies)) throw new ValidationError('policies must be an array.');
+    if (policies.length === 0) throw new ValidationError('policies must be a non-empty array.');
+    if (policies.length > 25) throw new ValidationError('A case may have at most 25 policies.');
+
+    const seenType = new Set<string>();
+    for (const p of policies) {
+      if (!p || typeof p !== 'object') throw new ValidationError('Each policy must be an object.');
+      if (typeof p.caseTypeId !== 'string' || !UUID_RE.test(p.caseTypeId)) throw new ValidationError('Each policy.caseTypeId must be a UUID.');
+      if (seenType.has(p.caseTypeId)) throw new ValidationError('Duplicate caseTypeId in policies.');
+      seenType.add(p.caseTypeId);
+      if (p.componentIds !== undefined) {
+        if (!Array.isArray(p.componentIds)) throw new ValidationError('componentIds must be an array.');
+        if (p.componentIds.length > 100) throw new ValidationError('A policy may have at most 100 components.');
+        const seenComp = new Set<string>();
+        for (const cid of p.componentIds) {
+          if (typeof cid !== 'string' || !UUID_RE.test(cid)) throw new ValidationError('Each componentId must be a UUID.');
+          if (seenComp.has(cid)) throw new ValidationError('Duplicate componentId in a policy.');
+          seenComp.add(cid);
+        }
+      }
+      parseDateInput(p.proposalDate);
+      parseDateInput(p.actualDate);
+    }
+    if (input.primaryCaseTypeId != null) {
+      if (!UUID_RE.test(input.primaryCaseTypeId)) throw new ValidationError('primaryCaseTypeId must be a UUID.');
+      if (!seenType.has(input.primaryCaseTypeId)) throw new ValidationError('primaryCaseTypeId must be one of the submitted policies.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Lock the case row (serializes concurrent assigns + doc generation).
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "DocCase" WHERE id = ${caseId}::uuid AND "tenantId" = ${ctx.tenantId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
+      if (locked.length === 0) throw new ResourceNotFoundError();
+      const docCase = await tx.docCase.findFirst({ where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null }, select: { id: true, caseTypeId: true, status: true } });
+      if (!docCase) throw new ResourceNotFoundError();
+      if (!ASSIGN_ALLOWED_STATUSES.includes(docCase.status)) {
+        throw new BusinessRuleViolationError(`Policies cannot be assigned to a case with status ${docCase.status}.`);
+      }
+
+      // 2. Current active assignments + referenced case types.
+      const current = await tx.docCasePolicyAssignment.findMany({
+        where:   { tenantId: ctx.tenantId, caseId, deletedAt: null },
+        include: { components: { where: { deletedAt: null }, select: { componentId: true } } },
+      });
+      const currentByType = new Map(current.map(a => [a.caseTypeId, a]));
+
+      const types = await tx.caseType.findMany({ where: { tenantId: ctx.tenantId, id: { in: policies.map(p => p.caseTypeId) } } });
+      const typeById = new Map(types.map(t => [t.id, t]));
+      for (const p of policies) if (!typeById.has(p.caseTypeId)) throw new ResourceNotFoundError(); // 404 missing/cross-tenant
+
+      // A legacy caseTypeId with no active row is treated as retained (drift tolerant).
+      const isRetained = (caseTypeId: string) => currentByType.has(caseTypeId) || caseTypeId === docCase.caseTypeId;
+      const isActiveType = (caseTypeId: string) => typeById.get(caseTypeId)!.status === 'ACTIVE';
+
+      // Newly-added policies must be ACTIVE; retained archived ones may stay.
+      for (const p of policies) {
+        if (!isRetained(p.caseTypeId) && !isActiveType(p.caseTypeId)) throw new BusinessRuleViolationError('Policy must be ACTIVE.');
+      }
+
+      // 3. Effective primary + persisted order (primary at displayOrder 0).
+      let primaryId = input.primaryCaseTypeId ?? null;
+      if (primaryId) {
+        if (policies.some(p => isActiveType(p.caseTypeId)) && !isActiveType(primaryId)) throw new BusinessRuleViolationError('The primary policy must be ACTIVE.');
+      } else {
+        primaryId = (policies.find(p => isActiveType(p.caseTypeId)) ?? policies[0]).caseTypeId;
+      }
+      const orderedTypeIds = [primaryId, ...policies.map(p => p.caseTypeId).filter(id => id !== primaryId)];
+      const orderIndex = new Map(orderedTypeIds.map((id, i) => [id, i]));
+
+      // 4/5. Per-policy: validate selection, upsert assignment, diff component rows.
+      for (const p of policies) {
+        const type = typeById.get(p.caseTypeId)!;
+        const existing = currentByType.get(p.caseTypeId);
+        const retained = isRetained(p.caseTypeId);
+        const currentSel = existing ? existing.components.map(c => c.componentId) : [];
+        const incoming = p.componentIds !== undefined ? p.componentIds : (retained ? currentSel : []);
+        const unchanged = sameSet(incoming, currentSel);
+        const typeArchived = type.status === 'ARCHIVED' || type.deletedAt != null;
+
+        if (retained && typeArchived && !unchanged) {
+          throw new BusinessRuleViolationError('Component selection for an archived retained policy cannot be changed.');
+        }
+
+        const activeComps = await tx.caseTypeComponent.findMany({ where: { tenantId: ctx.tenantId, caseTypeId: p.caseTypeId, isActive: true, deletedAt: null }, select: { id: true, displayOrder: true } });
+        const activeIds = new Set(activeComps.map(c => c.id));
+        const hasActiveComps = activeComps.length > 0;
+
+        // The active-component requirement applies to newly-added policies, and to
+        // retained policies whose selection changed. Unchanged retained selections
+        // (date-only edits) are exempt.
+        if (!retained || !unchanged) {
+          // Validate every incoming component belongs to this policy (400) and that
+          // newly-selected ones are active (422). Already-selected inactive ones stay.
+          if (incoming.length > 0) {
+            const comps = await tx.caseTypeComponent.findMany({ where: { tenantId: ctx.tenantId, id: { in: incoming } }, select: { id: true, caseTypeId: true, isActive: true, deletedAt: true } });
+            const compById = new Map(comps.map(c => [c.id, c]));
+            for (const cid of incoming) {
+              const c = compById.get(cid);
+              if (!c || c.caseTypeId !== p.caseTypeId) throw new ValidationError('A selected component does not belong to its policy.');
+              if (!currentSel.includes(cid) && (!c.isActive || c.deletedAt)) throw new BusinessRuleViolationError('A newly selected component is inactive.');
+            }
+          }
+          if (hasActiveComps && !incoming.some(cid => activeIds.has(cid))) {
+            throw new BusinessRuleViolationError('Select at least one active component for this policy.');
+          }
+        }
+
+        const propProvided = p.proposalDate !== undefined;
+        const actProvided = p.actualDate !== undefined;
+        const displayOrder = orderIndex.get(p.caseTypeId)!;
+        const assignment = await tx.docCasePolicyAssignment.upsert({
+          where:  { tenantId_caseId_caseTypeId: { tenantId: ctx.tenantId, caseId, caseTypeId: p.caseTypeId } },
+          create: {
+            tenantId: ctx.tenantId, caseId, caseTypeId: p.caseTypeId, displayOrder, createdBy: ctx.userId,
+            proposalDate: propProvided ? parseDateInput(p.proposalDate) : null,
+            actualDate:   actProvided ? parseDateInput(p.actualDate) : null,
+          },
+          update: {
+            deletedAt: null, displayOrder,
+            ...(propProvided ? { proposalDate: parseDateInput(p.proposalDate) } : {}),
+            ...(actProvided ? { actualDate: parseDateInput(p.actualDate) } : {}),
+          },
+        });
+
+        // Component selection diff (skip when retained + unchanged — pure date edit).
+        if (!retained || !unchanged) {
+          const compOrder = new Map(activeComps.map(c => [c.id, c.displayOrder]));
+          const allSel = await tx.docCasePolicyComponent.findMany({ where: { tenantId: ctx.tenantId, policyAssignmentId: assignment.id } });
+          const selByComp = new Map(allSel.map(s => [s.componentId, s]));
+          for (const cid of incoming) {
+            const row = selByComp.get(cid);
+            if (row) {
+              // Reviving a selection also clears documentsMaterializedAt so the
+              // component's CURRENT active presets materialize again.
+              if (row.deletedAt) await tx.docCasePolicyComponent.update({ where: { id: row.id }, data: { deletedAt: null, documentsMaterializedAt: null } });
+            } else {
+              await tx.docCasePolicyComponent.create({ data: { tenantId: ctx.tenantId, caseId, policyAssignmentId: assignment.id, componentId: cid, displayOrder: compOrder.get(cid) ?? 0, createdBy: ctx.userId } });
+            }
+          }
+          for (const s of allSel) {
+            if (!s.deletedAt && !incoming.includes(s.componentId)) {
+              await tx.docCasePolicyComponent.update({ where: { id: s.id }, data: { deletedAt: new Date() } });
+            }
+          }
+        }
+      }
+
+      // 6. Soft-delete assignments (and their active component rows) no longer present.
+      const keepTypeIds = new Set(policies.map(p => p.caseTypeId));
+      for (const a of current) {
+        if (!keepTypeIds.has(a.caseTypeId)) {
+          await tx.docCasePolicyComponent.updateMany({ where: { tenantId: ctx.tenantId, policyAssignmentId: a.id, deletedAt: null }, data: { deletedAt: new Date() } });
+          await tx.docCasePolicyAssignment.update({ where: { id: a.id }, data: { deletedAt: new Date() } });
+        }
+      }
+
+      // 7. Generate / retire requirement documents from the resulting selections.
+      await this._syncPolicyDocuments(tx, ctx.tenantId, caseId);
+
+      // 8. Sync DocCase.caseTypeId to the effective primary.
+      await tx.docCase.update({ where: { id: caseId }, data: { caseTypeId: primaryId } });
+
+      // 9. Recalc progress/status via the single chokepoint.
+      await this._recalcAndUpdateCase(tx, caseId, ctx.tenantId);
+
+      // 10. One audit row (ids only).
+      await this.audit.appendInTx(tx, {
+        tenantId: ctx.tenantId,
+        eventType: 'DOC_CASE_POLICY_ASSIGNMENT_UPDATED',
+        entityType: 'DocCase',
+        entityId: caseId,
+        actorUserId: ctx.userId,
+        operation: 'UPDATE',
+        payload: { primaryCaseTypeId: primaryId, caseTypeIds: policies.map(p => p.caseTypeId) },
+        beforeState: { caseTypeId: docCase.caseTypeId },
+      });
+
+      return this.getCaseById(ctx, caseId);
+    }, { maxWait: 5000, timeout: 20000 });
+  }
+
+  /**
+   * Reconcile DocCaseDocument rows against the case's component-document presets.
+   *
+   * A selected component does NOT itself create a requirement — only its active
+   * CaseTypeComponentDocument preset lines do, and lines that normalize to the
+   * same dedupeKey across components collapse into ONE shared requirement whose
+   * provenance lives in DocCaseDocumentComponentSource. One upload against the
+   * shared row therefore satisfies every component that required it.
+   *
+   * Three ordered phases; removal runs first so a deselect+reselect in the same
+   * save lands correctly. The caller already holds a FOR UPDATE lock on the
+   * DocCase row, which serializes displayOrder allocation and all source writes.
+   */
+  private async _syncPolicyDocuments(tx: Prisma.TransactionClient, tenantId: string, caseId: string) {
+    const touched = new Set<string>();
+
+    // ── Phase A: removal ──
+    // Every document whose links were dropped goes into the reconciliation set,
+    // whether it is merged, adopted-manual or legacy.
+    const deletedSel = await tx.docCasePolicyComponent.findMany({ where: { tenantId, caseId, deletedAt: { not: null } }, select: { id: true } });
+    for (const s of deletedSel) {
+      const links = await tx.docCaseDocumentComponentSource.findMany({ where: { tenantId, policyComponentId: s.id, deletedAt: null }, select: { id: true, documentId: true } });
+      for (const l of links) {
+        await tx.docCaseDocumentComponentSource.update({ where: { id: l.id }, data: { deletedAt: new Date() } });
+        touched.add(l.documentId);
+      }
+      // Legacy fallback: documents generated by the pre-dedupe rule point at the
+      // selection directly and may have no link rows at all.
+      const legacy = await tx.docCaseDocument.findMany({ where: { tenantId, caseId, policyComponentId: s.id, deletedAt: null }, select: { id: true } });
+      for (const d of legacy) touched.add(d.id);
+    }
+
+    // ── Phase B: materialization ──
+    // NOT gated on documentsMaterializedAt: a preset added to a component AFTER a
+    // case already selected it must still surface, so every run reconciles the
+    // full current preset set for every active selection. Idempotent via the
+    // mergeKey lookup + (policyComponentId, componentDocumentId) source upsert
+    // inside _materializePresetForSelection. documentsMaterializedAt is still
+    // stamped as a first-materialization record but no longer decides what runs.
+    const active = await tx.docCasePolicyComponent.findMany({
+      where:   { tenantId, caseId, deletedAt: null },
+      include: { policyAssignment: { select: { id: true, displayOrder: true } } },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+    const ordered = [...active].sort((a, b) =>
+      (a.policyAssignment.displayOrder - b.policyAssignment.displayOrder) || (a.displayOrder - b.displayOrder),
+    );
+
+    for (const sel of ordered) {
+      const presets = await tx.caseTypeComponentDocument.findMany({
+        where:   { tenantId, componentId: sel.componentId, isActive: true, deletedAt: null },
+        orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+      });
+      for (const preset of presets) {
+        touched.add(await this._materializePresetForSelection(tx, tenantId, caseId, sel, preset));
+      }
+      // Record first materialization; it no longer gates (see Phase B note).
+      if (!sel.documentsMaterializedAt) {
+        await tx.docCasePolicyComponent.update({ where: { id: sel.id }, data: { documentsMaterializedAt: new Date() } });
+      }
+    }
+
+    // ── Phase C: reconcile every touched document ──
+    for (const docId of touched) await this._reconcilePolicyDocument(tx, tenantId, docId);
+  }
+
+  /**
+   * Materialize ONE component-document preset for ONE active selection:
+   * find → revive → adopt → create the shared requirement, then upsert the
+   * (policyComponentId, componentDocumentId) source link with current values.
+   * Returns the affected document id for Phase C reconciliation. Idempotent:
+   * repeated calls neither duplicate the shared doc (mergeKey lookup) nor the
+   * link (unique triple). Shared by _syncPolicyDocuments and
+   * propagateActiveComponentDocument.
+   */
+  private async _materializePresetForSelection(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    caseId: string,
+    selection: { id: string; componentId: string; policyAssignmentId: string },
+    preset: { id: string; name: string; description: string | null; isMandatory: boolean; displayOrder: number; dedupeKey: string },
+  ): Promise<string> {
+    const mergeKey = `compdoc:${preset.dedupeKey}`;
+
+    // 1. A document already carrying this key wins; prefer an active row, else
+    //    revive the newest soft-deleted one (soft-deleted implies safe).
+    let doc = await tx.docCaseDocument.findFirst({
+      where:   { tenantId, caseId, requirementDedupeKey: mergeKey, deletedAt: null },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    });
+    if (!doc) {
+      const revivable = await tx.docCaseDocument.findFirst({
+        where:   { tenantId, caseId, requirementDedupeKey: mergeKey, deletedAt: { not: null } },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      });
+      if (revivable) doc = await tx.docCaseDocument.update({ where: { id: revivable.id }, data: { deletedAt: null } });
+    }
+
+    // 2. Otherwise adopt a matching manual document rather than duplicating it.
+    //    Adoption sets ONLY the key and never flips isComponentMerged, so the
+    //    safe-delete origin gate keeps protecting a user-created row.
+    if (!doc) {
+      const candidates = await tx.docCaseDocument.findMany({
+        where: {
+          tenantId, caseId, deletedAt: null,
+          requirementDedupeKey: null, policyComponentId: null, policyAssignmentId: null, isComponentMerged: false,
+        },
+        orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      });
+      const manual = candidates.find(c => normalizeDedupeKey(c.name) === preset.dedupeKey);
+      if (manual) doc = await tx.docCaseDocument.update({ where: { id: manual.id }, data: { requirementDedupeKey: mergeKey } });
+    }
+
+    // 3. Otherwise create the shared requirement, appended after the current max
+    //    (reads see prior creates in this same transaction). Policy pointers stay
+    //    null: a merged row has N sources, so a 1:1 pointer would lie.
+    if (!doc) {
+      const max = await tx.docCaseDocument.aggregate({ where: { caseId, deletedAt: null }, _max: { displayOrder: true } });
+      doc = await tx.docCaseDocument.create({
+        data: {
+          tenantId, caseId,
+          name:                 preset.name,
+          description:          preset.description,
+          isMandatory:          preset.isMandatory,
+          displayOrder:         (max._max.displayOrder ?? 0) + 1,
+          verificationRequired: true,
+          status:               'REQUESTED',
+          metadataValues:       {},
+          requirementDedupeKey: mergeKey,
+          isComponentMerged:    true,
+        },
+      });
+    }
+
+    // 4. Upsert the link, always writing current values — a revived link must
+    //    never keep pointing at a document that has since been replaced.
+    const existingLink = await tx.docCaseDocumentComponentSource.findFirst({
+      where: { tenantId, policyComponentId: selection.id, componentDocumentId: preset.id },
+    });
+    const linkData = {
+      documentId:         doc.id,
+      policyAssignmentId: selection.policyAssignmentId,
+      componentId:        selection.componentId,
+      isMandatoryAtLink:  preset.isMandatory,
+      displayOrderAtLink: preset.displayOrder,
+    };
+    if (existingLink) {
+      await tx.docCaseDocumentComponentSource.update({ where: { id: existingLink.id }, data: { ...linkData, deletedAt: null } });
+    } else {
+      await tx.docCaseDocumentComponentSource.create({
+        data: { tenantId, caseId, policyComponentId: selection.id, componentDocumentId: preset.id, ...linkData },
+      });
+    }
+    return doc.id;
+  }
+
+  /**
+   * Recompute a touched document's mandatory flag from its active sources, and
+   * retire it when no component still requires it and it is safe to remove.
+   * Shared by _syncPolicyDocuments (Phase C) and propagateActiveComponentDocument.
+   */
+  private async _reconcilePolicyDocument(tx: Prisma.TransactionClient, tenantId: string, docId: string): Promise<void> {
+    const doc = await tx.docCaseDocument.findFirst({
+      where:   { id: docId, tenantId },
+      include: { _count: { select: { storageRefs: true, events: true } } },
+    });
+    if (!doc) return;
+    const sources = await tx.docCaseDocumentComponentSource.findMany({
+      where:  { tenantId, documentId: doc.id, deletedAt: null },
+      select: { isMandatoryAtLink: true },
+    });
+
+    if (sources.length > 0) {
+      const isMandatory = sources.some(s => s.isMandatoryAtLink);
+      await tx.docCaseDocument.update({
+        where: { id: doc.id },
+        // Never leave a document soft-deleted while active sources point at it.
+        data:  { isMandatory, ...(doc.deletedAt ? { deletedAt: null } : {}) },
+      });
+      return;
+    }
+
+    // No sources left. Drop the mandatory flag, then retire the row only if it
+    // originated from the component system and is still untouched.
+    await tx.docCaseDocument.update({ where: { id: doc.id }, data: { isMandatory: false } });
+    const componentOwned = doc.isComponentMerged || doc.policyComponentId != null;
+    if (!componentOwned || !doc.requirementDedupeKey || doc.deletedAt) return;
+    // Prisma cannot filter a relation _count, so active files need their own count.
+    const activeFiles = await tx.document.count({ where: { tenantId, requirementId: doc.id, deletedAt: null, isActive: true } });
+    const untouched =
+      activeFiles === 0 && doc._count.storageRefs === 0 && doc._count.events === 0 &&
+      (doc.notes == null || doc.notes === '') &&
+      !doc.clientVisible && doc.clientVisibleAt == null &&
+      doc.receivedAt == null && doc.verifiedAt == null && !doc.isWaived &&
+      DESELECT_SAFE_STATUSES.includes(doc.status);
+    if (untouched) await tx.docCaseDocument.update({ where: { id: doc.id }, data: { deletedAt: new Date() } });
+  }
+
+  /**
+   * Push one newly-active component-document preset into every case that already
+   * has an active selection of the component. One locked transaction per case;
+   * terminal and transferred-to-process cases are skipped. Best-effort from the
+   * CRUD router — any case missed here self-heals on its next assignPolicies save
+   * (Phase B no longer gates on documentsMaterializedAt).
+   */
+  async propagateActiveComponentDocument(ctx: TenantContext, componentId: string, componentDocumentId: string): Promise<void> {
+    const preset = await this.prisma.caseTypeComponentDocument.findFirst({
+      where: { id: componentDocumentId, tenantId: ctx.tenantId, componentId, isActive: true, deletedAt: null },
+    });
+    if (!preset) return; // archived/missing → nothing to propagate
+
+    const selections = await this.prisma.docCasePolicyComponent.findMany({
+      where:  { tenantId: ctx.tenantId, componentId, deletedAt: null },
+      select: { id: true, caseId: true, componentId: true, policyAssignmentId: true },
+    });
+    const byCase = new Map<string, typeof selections>();
+    for (const s of selections) {
+      const arr = byCase.get(s.caseId) ?? [];
+      arr.push(s);
+      byCase.set(s.caseId, arr);
+    }
+
+    for (const [caseId, sels] of byCase) {
+      await this.prisma.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "DocCase" WHERE id = ${caseId}::uuid AND "tenantId" = ${ctx.tenantId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
+        if (locked.length === 0) return;
+        const dc = await tx.docCase.findFirst({ where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null }, select: { status: true } });
+        // Skip terminal + TRANSFERRED_TO_PROCESS: the allow-list is exactly the
+        // complement of those statuses.
+        if (!dc || !ASSIGN_ALLOWED_STATUSES.includes(dc.status)) return;
+        for (const sel of sels) {
+          const docId = await this._materializePresetForSelection(tx, ctx.tenantId, caseId, sel, preset);
+          await this._reconcilePolicyDocument(tx, ctx.tenantId, docId);
+        }
+        await this._recalcAndUpdateCase(tx, caseId, ctx.tenantId);
+        await this.audit.appendInTx(tx, {
+          tenantId: ctx.tenantId,
+          eventType: 'COMPONENT_DOCUMENT_MATERIALIZED',
+          entityType: 'DocCase',
+          entityId: caseId,
+          actorUserId: ctx.userId,
+          operation: 'UPDATE',
+          payload: { componentId, componentDocumentId },
+        });
+      }, { maxWait: 5000, timeout: 20000 });
+    }
+  }
+
+  /**
+   * One-time / manual reconcile: materialize the current component-document
+   * presets for a single case's active selections. Same engine as the document
+   * sync inside assignPolicies (Phase A/B/C via _syncPolicyDocuments), minus the
+   * policy-selection diff — so it reuses _materializePresetForSelection for every
+   * active selection without copying logic. Idempotent (mergeKey dedupe +
+   * source-triple upsert). Skips terminal / transferred cases. Used only by
+   * scripts/reconcile-component-documents.ts; not wired to any route or boot.
+   */
+  async reconcileCaseComponentDocuments(ctx: TenantContext, caseId: string): Promise<{ status: string; before: number; after: number; skipped: boolean }> {
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "DocCase" WHERE id = ${caseId}::uuid AND "tenantId" = ${ctx.tenantId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
+      if (locked.length === 0) throw new ResourceNotFoundError();
+      const dc = await tx.docCase.findFirst({ where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null }, select: { status: true } });
+      if (!dc) throw new ResourceNotFoundError();
+      if (!ASSIGN_ALLOWED_STATUSES.includes(dc.status)) {
+        return { status: dc.status, before: 0, after: 0, skipped: true };
+      }
+      const before = await tx.docCaseDocument.count({ where: { caseId, tenantId: ctx.tenantId, deletedAt: null } });
+      await this._syncPolicyDocuments(tx, ctx.tenantId, caseId);
+      await this._recalcAndUpdateCase(tx, caseId, ctx.tenantId);
+      const after = await tx.docCaseDocument.count({ where: { caseId, tenantId: ctx.tenantId, deletedAt: null } });
+      if (after !== before) {
+        await this.audit.appendInTx(tx, {
+          tenantId: ctx.tenantId,
+          eventType: 'COMPONENT_DOCUMENT_MATERIALIZED',
+          entityType: 'DocCase',
+          entityId: caseId,
+          actorUserId: ctx.userId,
+          operation: 'UPDATE',
+          payload: { reconcile: true, before, after },
+        });
+      }
+      return { status: dc.status, before, after, skipped: false };
+    }, { maxWait: 5000, timeout: 20000 });
   }
 
   async getDashboardKPIs(ctx: TenantContext) {

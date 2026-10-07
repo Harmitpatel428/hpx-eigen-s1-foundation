@@ -1280,6 +1280,8 @@ model DocCase {
   caseType   CaseType? @relation(fields: [caseTypeId], references: [id], onDelete: SetNull)
   timeline   CaseTimeline? // Phase 6: at most one per case
 
+  policyAssignments DocCasePolicyAssignment[]
+
   @@unique([tenantId, leadId])
   @@index([tenantId])
   @@index([tenantId, status])
@@ -1383,19 +1385,168 @@ model DocCaseDocument {
   // of a status change. First publish on a case activates its portal.
   clientVisible         Boolean           @default(false)
   clientVisibleAt       DateTime?
+  // Multi-policy traceability (optional). Set when this requirement row was generated
+  // from a selected policy component; null for manually added requirements.
+  policyAssignmentId    String?           @db.Uuid
+  policyComponentId     String?           @db.Uuid
+  // Component-document dedupe. Shared (merged) requirements carry
+  // requirementDedupeKey = compdoc:<dedupeKey> and isComponentMerged = true; the
+  // DocCaseDocumentComponentSource rows are authoritative for which components need it.
+  requirementDedupeKey  String?
+  isComponentMerged     Boolean           @default(false)
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
   deletedAt             DateTime?
 
-  case          DocCase         @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  storageRefs   DocStorageRef[]
-  events        DocCaseEvent[]
-  uploadedFiles Document[]
+  case             DocCase                  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  storageRefs      DocStorageRef[]
+  events           DocCaseEvent[]
+  uploadedFiles    Document[]
+  policyAssignment DocCasePolicyAssignment? @relation(fields: [policyAssignmentId], references: [id], onDelete: SetNull)
+  policyComponent  DocCasePolicyComponent?  @relation(fields: [policyComponentId], references: [id], onDelete: SetNull)
+  componentSources DocCaseDocumentComponentSource[]
 
   @@index([caseId])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([deletedAt])
+  @@index([tenantId, caseId, policyComponentId])
+  @@index([tenantId, policyAssignmentId])
+  @@index([tenantId, caseId, requirementDedupeKey])
+}
+
+// ─── CaseTypeComponent — reusable document-requirement template under a policy ──
+model CaseTypeComponent {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  caseTypeId   String    @db.Uuid
+  name         String
+  description  String?
+  isMandatory  Boolean   @default(false)
+  displayOrder Int       @default(0)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  caseType         CaseType                 @relation(fields: [caseTypeId], references: [id], onDelete: Cascade)
+  policyComponents DocCasePolicyComponent[]
+  documents        CaseTypeComponentDocument[]
+  documentSources  DocCaseDocumentComponentSource[]
+
+  @@index([tenantId, caseTypeId, isActive])
+  @@index([deletedAt])
+}
+
+// ─── CaseTypeComponentDocument — a document preset line under a component ───────
+// The source of truth for what a component requires. dedupeKey is the normalized
+// name (trim/lowercase/collapse-whitespace), immutable after create; lines from
+// different components sharing a dedupeKey merge into ONE case requirement.
+model CaseTypeComponentDocument {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  caseTypeId   String    @db.Uuid
+  componentId  String    @db.Uuid
+  name         String
+  dedupeKey    String
+  description  String?
+  isMandatory  Boolean   @default(false)
+  displayOrder Int       @default(0)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  caseType  CaseType                        @relation(fields: [caseTypeId], references: [id], onDelete: Cascade)
+  component CaseTypeComponent               @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  sources   DocCaseDocumentComponentSource[]
+
+  @@index([tenantId, componentId, isActive])
+  @@index([tenantId, caseTypeId])
+  @@index([deletedAt])
+}
+
+// ─── DocCaseDocumentComponentSource — which components require a shared doc ─────
+// Authoritative provenance for merged requirements: many rows -> one
+// DocCaseDocument, so one upload/status satisfies every linked component.
+// isMandatoryAtLink/displayOrderAtLink are snapshots taken at materialization.
+model DocCaseDocumentComponentSource {
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenantId            String    @db.Uuid
+  caseId              String    @db.Uuid
+  documentId          String    @db.Uuid
+  policyAssignmentId  String    @db.Uuid
+  policyComponentId   String    @db.Uuid
+  componentId         String    @db.Uuid
+  componentDocumentId String?   @db.Uuid
+  isMandatoryAtLink   Boolean   @default(false)
+  displayOrderAtLink  Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  document          DocCaseDocument            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  policyAssignment  DocCasePolicyAssignment    @relation(fields: [policyAssignmentId], references: [id], onDelete: Cascade)
+  policyComponent   DocCasePolicyComponent     @relation(fields: [policyComponentId], references: [id], onDelete: Cascade)
+  component         CaseTypeComponent          @relation(fields: [componentId], references: [id], onDelete: Restrict)
+  componentDocument CaseTypeComponentDocument? @relation(fields: [componentDocumentId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, caseId])
+  @@index([tenantId, documentId])
+  @@index([tenantId, policyComponentId])
+  @@index([tenantId, policyAssignmentId])
+  @@index([deletedAt])
+}
+
+// ─── DocCasePolicyAssignment — a policy (CaseType) assigned to a case ───────────
+model DocCasePolicyAssignment {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @db.Uuid
+  caseId       String    @db.Uuid
+  caseTypeId   String    @db.Uuid
+  proposalDate DateTime? @db.Date
+  actualDate   DateTime? @db.Date
+  displayOrder Int       @default(0)
+  createdBy    String?   @db.Uuid
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  case               DocCase                  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseType           CaseType                 @relation(fields: [caseTypeId], references: [id], onDelete: Restrict)
+  components         DocCasePolicyComponent[]
+  generatedDocuments DocCaseDocument[]
+  documentSources    DocCaseDocumentComponentSource[]
+
+  @@unique([tenantId, caseId, caseTypeId])
+  @@index([tenantId, caseId])
+  @@index([tenantId, caseTypeId])
+}
+
+// ─── DocCasePolicyComponent — a component selected for a case policy assignment ─
+model DocCasePolicyComponent {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenantId           String    @db.Uuid
+  caseId             String    @db.Uuid
+  policyAssignmentId String    @db.Uuid
+  componentId        String    @db.Uuid
+  displayOrder       Int       @default(0)
+  // Set once this selection's component-document presets have been materialized.
+  // Non-null means later preset edits are NOT applied retroactively; a revived
+  // selection resets it to null so current presets materialize again.
+  documentsMaterializedAt DateTime?
+  createdBy          String?   @db.Uuid
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  policyAssignment   DocCasePolicyAssignment @relation(fields: [policyAssignmentId], references: [id], onDelete: Cascade)
+  component          CaseTypeComponent       @relation(fields: [componentId], references: [id], onDelete: Restrict)
+  generatedDocuments DocCaseDocument[]
+  documentSources    DocCaseDocumentComponentSource[]
+
+  @@unique([tenantId, policyAssignmentId, componentId])
+  @@index([tenantId, caseId])
 }
 
 // ─── DocCaseEvent — append-only event timeline ────────────────────
@@ -1946,9 +2097,12 @@ model CaseType {
   updatedAt    DateTime       @updatedAt
   deletedAt    DateTime?
 
-  placements     CaseTypeFieldPlacement[]
-  cases          DocCase[]
-  stageTemplates CaseStageTemplate[]
+  placements        CaseTypeFieldPlacement[]
+  cases             DocCase[]
+  stageTemplates    CaseStageTemplate[]
+  components        CaseTypeComponent[]
+  policyAssignments DocCasePolicyAssignment[]
+  componentDocuments CaseTypeComponentDocument[]
 
   @@unique([tenantId, key])
   @@index([tenantId])
