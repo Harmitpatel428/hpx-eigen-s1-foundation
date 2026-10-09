@@ -9,17 +9,22 @@ import { PhoneService } from '../services/phone.service';
  * when another (non-deleted) lead in the tenant already owns it. Lead has
  * @@unique([tenantId, email]) but contacts may share an email, so copying a
  * shared email onto the Lead row would throw P2002 and abort setMain/delete.
- * Name/company always copy; a null email always copies (NULLs never collide).
- * On collision the lead keeps its current email — search still resolves the
- * lead via the contact semi-join (C4).
+ * Name always copies; a null email always copies (NULLs never collide). Company
+ * copies ONLY when the contact carries a non-empty trimmed value — a blank /
+ * undefined / null contact company is omitted so the Lead keeps its existing
+ * company instead of being wiped by a contact that simply has no company.
+ * On email collision the lead keeps its current email — search still resolves
+ * the lead via the contact semi-join (C4).
  */
 async function buildLeadCacheData(
   db: any, leadId: string, tenantId: string,
   contact: { firstName: string; lastName: string; email: string | null; company: string | null },
-): Promise<{ firstName: string; lastName: string; company: string | null; email?: string | null }> {
-  const data: { firstName: string; lastName: string; company: string | null; email?: string | null } = {
-    firstName: contact.firstName, lastName: contact.lastName, company: contact.company,
+): Promise<{ firstName: string; lastName: string; company?: string; email?: string | null }> {
+  const data: { firstName: string; lastName: string; company?: string; email?: string | null } = {
+    firstName: contact.firstName, lastName: contact.lastName,
   };
+  const company = contact.company?.trim();
+  if (company) data.company = company;
   if (contact.email == null) {
     data.email = null;
   } else {
@@ -65,9 +70,9 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
         const { leadId } = req.params;
-        const { firstName, lastName, email, phone, title, role, isMain } = req.body as {
+        const { firstName, lastName, email, phone, title, role, isMain, company } = req.body as {
           firstName: string; lastName: string; email?: string; phone?: string;
-          title?: string; role?: string; isMain?: boolean;
+          title?: string; role?: string; isMain?: boolean; company?: string;
         };
 
         if (!firstName || !lastName) throw new ValidationError('firstName and lastName are required.');
@@ -80,11 +85,18 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
             await tx.contact.updateMany({ where: { leadId, tenantId, deletedAt: null }, data: { isMain: false } });
           }
           const contact = await tx.contact.create({
-            data: { tenantId, leadId, firstName, lastName, email: email ?? null, phone: phone ?? null, title: title ?? null, role: role ?? null, isMain: isMain ?? false },
+            data: { tenantId, leadId, firstName, lastName, email: email ?? null, phone: phone ?? null, title: title ?? null, role: role ?? null, company: company ?? null, isMain: isMain ?? false },
           });
           if (phone) {
             await phoneService.attach(tx, leadId, tenantId, phone, { isPrimary: isMain ?? false, source: 'MANUAL' });
             if (isMain) await phoneService.syncLeadPhone(tx, leadId);
+          }
+          // Add-as-main must reverse-sync person fields (name/company/email) onto the
+          // Lead row — same shared helper as PUT setMain (B1). Without this, a contact
+          // created directly as main never updates Lead.company/name.
+          if (isMain) {
+            const data = await buildLeadCacheData(tx, leadId, tenantId, contact);
+            await tx.lead.update({ where: { id: leadId }, data });
           }
           return contact;
         });
@@ -164,7 +176,9 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
             const syncData: Record<string, string | null | undefined> = {};
             if (firstName !== undefined) syncData.firstName = firstName;
             if (lastName !== undefined) syncData.lastName = lastName;
-            if (company !== undefined) syncData.company = company;
+            // Company syncs only when non-empty (trimmed); a blank edit preserves the
+            // existing Lead.company rather than clearing it.
+            if (company !== undefined && company.trim() !== '') syncData.company = company.trim();
             // email is unique per lead — only sync if it won't collide with another lead
             if (email !== undefined && email !== null) {
               const clash = await tx.lead.findFirst({ where: { tenantId, email, deletedAt: null, id: { not: leadId } }, select: { id: true } });

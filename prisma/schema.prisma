@@ -571,6 +571,9 @@ model Lead {
   // Enables OWN-scope users to retain visibility of leads they delegated downward.
   managerId         String?               @db.Uuid
   notes             String?
+  // Manual, user-toggled flag: "work completed, waiting for higher authority".
+  // Shown read-only on the Leads list row only. Not derived from handoff state.
+  waitingHigherAuthority Boolean          @default(false)
   // Current scheduling state: required when stage ∈ {FOLLOW_UP, CALL_BACK_REQUESTED, CALL_NOT_RECEIVED}
   followUpDate      DateTime?
   customFieldValues Json                  @default("[]")

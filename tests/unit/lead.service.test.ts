@@ -17,6 +17,8 @@ function makePrismaMock() {
       count: jest.fn().mockResolvedValue(0),
     },
     contact: { create: jest.fn().mockResolvedValue({ id: 'person-contact-1' }), update: jest.fn().mockResolvedValue({}), findFirst: jest.fn().mockResolvedValue(null) },
+    // getLeadWithTags resolves the owner display name via a scalar user lookup.
+    user: { findFirst: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([]) },
     leadPhone: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({}), updateMany: jest.fn().mockResolvedValue({ count: 0 }), update: jest.fn().mockResolvedValue({}) },
     opportunity: { create: jest.fn() },
     pipeline: { create: jest.fn() },
@@ -486,6 +488,36 @@ describe('LeadService', () => {
     });
   });
 
+  // ─── setWaitingHigherAuthority ─────────────────────────────────────────────
+  describe('setWaitingHigherAuthority', () => {
+    it('sets the flag true and writes an audit log', async () => {
+      prisma.lead.findFirst.mockResolvedValue({ id: 'lead-1', tenantId: CTX.tenantId, ownerId: null, tags: [] });
+      prisma.lead.update.mockResolvedValue({ id: 'lead-1', waitingHigherAuthority: true });
+
+      const result = await service.setWaitingHigherAuthority(CTX, 'lead-1', true);
+
+      expect(prisma.lead.update).toHaveBeenCalledWith({
+        where: { id: 'lead-1' },
+        data: { waitingHigherAuthority: true },
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalled();
+      expect(result.waitingHigherAuthority).toBe(true);
+    });
+
+    it('clears the flag (idempotent false) and is tenant-scoped via getLeadById', async () => {
+      prisma.lead.findFirst.mockResolvedValue({ id: 'lead-1', tenantId: CTX.tenantId, ownerId: null, tags: [] });
+      prisma.lead.update.mockResolvedValue({ id: 'lead-1', waitingHigherAuthority: false });
+
+      await service.setWaitingHigherAuthority(CTX, 'lead-1', false);
+
+      expect(prisma.lead.findFirst).toHaveBeenCalled(); // existence/tenant check
+      expect(prisma.lead.update).toHaveBeenCalledWith({
+        where: { id: 'lead-1' },
+        data: { waitingHigherAuthority: false },
+      });
+    });
+  });
+
   // ─── deleteLead ──────────────────────────────────────────────────────────────
   describe('deleteLead', () => {
     it('soft-deletes a lead', async () => {
@@ -499,4 +531,5 @@ describe('LeadService', () => {
       );
     });
   });
+
 });

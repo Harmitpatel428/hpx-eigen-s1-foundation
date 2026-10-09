@@ -165,6 +165,50 @@ describe('lead-contacts router', () => {
     });
   });
 
+  // ─── Add-as-main reverse-syncs person fields to the Lead (POST hole) ───────
+  describe('POST — add-as-main lead cache sync', () => {
+    it('[S7] reverse-syncs a new main contact person fields to Lead (minus phone)', async () => {
+      const { mock, txMock } = makePrismaMock();
+      mock.lead.findFirst.mockResolvedValue({ id: LEAD_ID, tenantId: TENANT });
+      txMock.contact.create.mockResolvedValue({
+        id: 'c-new', leadId: LEAD_ID, tenantId: TENANT,
+        firstName: 'Manya', lastName: 'Printech', email: 'manya@test.com',
+        phone: '9000000000', company: 'Manya Printech', isMain: true,
+      });
+      mock.contact.findMany.mockResolvedValue([{ id: 'c-new', isMain: true }]);
+
+      const handler = getHandler(createLeadContactsRouter(mock), 'post', '/');
+      const req = makeReq({ body: { firstName: 'Manya', lastName: 'Printech', email: 'manya@test.com', phone: '9000000000', company: 'Manya Printech', isMain: true } });
+      const res = makeRes();
+      const next: NextFunction = jest.fn();
+
+      await handler(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      const syncCall = txMock.lead.update.mock.calls.find((c: any) => c[0]?.data?.firstName === 'Manya');
+      expect(syncCall).toBeDefined();
+      expect(syncCall[0].data).toEqual({ firstName: 'Manya', lastName: 'Printech', email: 'manya@test.com', company: 'Manya Printech' });
+      expect(syncCall[0].data).not.toHaveProperty('phone');
+    });
+
+    it('[S7b] does NOT touch Lead person fields for a non-main add', async () => {
+      const { mock, txMock } = makePrismaMock();
+      mock.lead.findFirst.mockResolvedValue({ id: LEAD_ID, tenantId: TENANT });
+      txMock.contact.create.mockResolvedValue({ id: 'c-side', firstName: 'Side', lastName: 'Contact', email: null, phone: null, company: null, isMain: false });
+      mock.contact.findMany.mockResolvedValue([{ id: 'c-main', isMain: true }, { id: 'c-side', isMain: false }]);
+
+      const handler = getHandler(createLeadContactsRouter(mock), 'post', '/');
+      const req = makeReq({ body: { firstName: 'Side', lastName: 'Contact' } });
+      const res = makeRes();
+      const next: NextFunction = jest.fn();
+
+      await handler(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(txMock.lead.update).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── S1: setMain copies PERSON_FIELDS (minus phone) to Lead ────────────────
   describe('PUT — setMain lead cache sync (B1)', () => {
     it('[S1] copies firstName/lastName/email/company to Lead (NOT phone)', async () => {
@@ -236,7 +280,7 @@ describe('lead-contacts router', () => {
       expect(b1Call[0].data).not.toHaveProperty('email');
     });
 
-    it('[S8] copies null email/company to lead when main has nulls', async () => {
+    it('[S8] copies null email but PRESERVES company (omits it) when main has nulls', async () => {
       const { mock, txMock } = makePrismaMock();
       mock.contact.findFirst.mockResolvedValue({
         id: 'c-null', leadId: LEAD_ID, tenantId: TENANT,
@@ -262,8 +306,29 @@ describe('lead-contacts router', () => {
       const b1Call = leadUpdateCalls.find((c: any) => c[0]?.data?.firstName === 'NoEmail');
       expect(b1Call).toBeDefined();
       expect(b1Call[0].data.email).toBeNull();
-      expect(b1Call[0].data.company).toBeNull();
+      // blank/null contact company is omitted → existing Lead.company preserved
+      expect(b1Call[0].data).not.toHaveProperty('company');
       expect(b1Call[0].data).not.toHaveProperty('phone');
+    });
+
+    it('[S8b] whitespace-only contact company is treated as blank (company omitted)', async () => {
+      const { mock, txMock } = makePrismaMock();
+      mock.contact.findFirst.mockResolvedValue({
+        id: 'c-ws', leadId: LEAD_ID, tenantId: TENANT,
+        firstName: 'White', lastName: 'Space', email: null,
+        phone: null, company: '   ', isMain: false,
+      });
+      txMock.contact.findFirst.mockResolvedValue({
+        firstName: 'White', lastName: 'Space', email: null, company: '   ',
+      });
+      mock.contact.findMany.mockResolvedValue([]);
+
+      const handler = getHandler(createLeadContactsRouter(mock), 'put', '/:contactId');
+      await handler(makeReq({ params: { leadId: LEAD_ID, contactId: 'c-ws' }, body: { isMain: true } }), makeRes(), jest.fn());
+
+      const b1Call = txMock.lead.update.mock.calls.find((c: any) => c[0]?.data?.firstName === 'White');
+      expect(b1Call).toBeDefined();
+      expect(b1Call[0].data).not.toHaveProperty('company');
     });
   });
 
@@ -290,6 +355,38 @@ describe('lead-contacts router', () => {
       expect(txMock.lead.update).toHaveBeenCalledWith({
         where: { id: LEAD_ID },
         data: expect.objectContaining({ firstName: 'Updated', email: 'new@b.com' }),
+      });
+    });
+
+    it('[S3b] blank company on a main-contact edit PRESERVES Lead.company (not synced)', async () => {
+      const { mock, txMock } = makePrismaMock();
+      mock.contact.findFirst.mockResolvedValue({
+        id: 'c-main', leadId: LEAD_ID, tenantId: TENANT,
+        phone: '111', email: 'a@b.com', isMain: true,
+      });
+      mock.contact.findMany.mockResolvedValue([{ id: 'c-main', isMain: true }]);
+
+      const handler = getHandler(createLeadContactsRouter(mock), 'put', '/:contactId');
+      // only a blank company in the body → nothing to sync → no lead.update
+      await handler(makeReq({ params: { leadId: LEAD_ID, contactId: 'c-main' }, body: { company: '   ' } }), makeRes(), jest.fn());
+
+      expect(txMock.lead.update).not.toHaveBeenCalled();
+    });
+
+    it('[S3c] non-empty company on a main-contact edit syncs (trimmed) to Lead', async () => {
+      const { mock, txMock } = makePrismaMock();
+      mock.contact.findFirst.mockResolvedValue({
+        id: 'c-main', leadId: LEAD_ID, tenantId: TENANT,
+        phone: '111', email: 'a@b.com', isMain: true,
+      });
+      mock.contact.findMany.mockResolvedValue([{ id: 'c-main', isMain: true }]);
+
+      const handler = getHandler(createLeadContactsRouter(mock), 'put', '/:contactId');
+      await handler(makeReq({ params: { leadId: LEAD_ID, contactId: 'c-main' }, body: { company: '  NewCo  ' } }), makeRes(), jest.fn());
+
+      expect(txMock.lead.update).toHaveBeenCalledWith({
+        where: { id: LEAD_ID },
+        data: expect.objectContaining({ company: 'NewCo' }),
       });
     });
 

@@ -375,8 +375,18 @@ export class LeadService {
       },
     });
     if (!lead) throw new ResourceNotFoundError();
+    // Lead has no `owner` relation — only an `ownerId` scalar — so the assigned
+    // owner's display name is resolved with a scalar lookup, mirroring the list
+    // GET's ownerMap. (An `owner` relation include throws PrismaClientValidationError.)
+    const owner = lead.ownerId
+      ? await (this.prisma as any).user.findFirst({
+          where: { id: lead.ownerId, tenantId: ctx.tenantId },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : null;
     return {
       ...lead,
+      owner,
       tags: (lead.tags ?? []).map((a: any) => a.tag),
     };
   }
@@ -789,6 +799,28 @@ export class LeadService {
     });
 
     return result;
+  }
+
+  /**
+   * Toggle the manual "waiting for higher authority" flag (idempotent).
+   * Tenant-scoped existence check first; audited like other lead mutations.
+   */
+  async setWaitingHigherAuthority(ctx: TenantContext, leadId: string, value: boolean) {
+    await this.getLeadById(ctx, leadId); // 404s if the lead isn't in the caller's tenant
+    const lead = await this.prisma.lead.update({
+      where: { id: leadId },
+      data: { waitingHigherAuthority: value },
+    });
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'LEAD_WAITING_HIGHER_AUTHORITY_SET',
+      entityType: 'Lead',
+      entityId: leadId,
+      actorUserId: ctx.userId,
+      operation: 'UPDATE',
+      payload: { waitingHigherAuthority: value },
+    });
+    return lead;
   }
 
   /** Soft-delete a lead */

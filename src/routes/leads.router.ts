@@ -48,6 +48,32 @@ export async function createImportNote(
   }
 }
 
+/**
+ * Every number associated with a lead EXCEPT the primary (`lead.phone`, which keeps
+ * its own export column). Deduped by normalized form across contact phones and the
+ * LeadPhone history; the original human-readable string is what we return. Pure —
+ * exported for unit testing the dedupe / primary-exclusion contract.
+ */
+export function buildAdditionalPhones(
+  l: { phone: string | null; contacts?: Array<{ phone: string | null }>; phones?: Array<{ phoneOriginal: string | null }> },
+): string[] {
+  const seen = new Set<string>();
+  const primaryKey = l.phone ? (normalizePhone(l.phone) || l.phone.trim()) : null;
+  if (primaryKey) seen.add(primaryKey);
+  const out: string[] = [];
+  const consider = (raw: string | null | undefined) => {
+    const trimmed = raw?.trim();
+    if (!trimmed) return;
+    const key = normalizePhone(trimmed) || trimmed;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(trimmed);
+  };
+  for (const c of l.contacts ?? []) consider(c.phone);
+  for (const p of l.phones ?? []) consider(p.phoneOriginal);
+  return out;
+}
+
 export function createLeadsRouter(prisma: PrismaClient): Router {
   const router = Router();
   const leadService = new LeadService(prisma);
@@ -1171,7 +1197,17 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           where,
           orderBy: { createdAt: 'desc' },
           take: EXPORT_CAP,
-          include: { tags: { include: { tag: true } } },
+          include: {
+            tags: { include: { tag: true } },
+            // All associated numbers for the "Additional Numbers" export column.
+            // Scoped by the SAME `where` (tenant/permission/ownership/soft-delete) as
+            // the lead query — these are nested relations, never a separate query.
+            // Narrow selects only, to stay memory-safe up to EXPORT_CAP rows.
+            contacts: { where: { deletedAt: null }, select: { phone: true } },
+            // LeadPhone has no deletedAt and no DELETED status (enum is ACTIVE|INACTIVE),
+            // so every row is an associated, non-deleted number — include all statuses.
+            phones: { select: { phoneOriginal: true } },
+          },
         });
 
         // Owner names + role names. User/UserRole/Role bypass db.ts scoping —
@@ -1226,6 +1262,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             : null,
           notesCount: notesByLead.get(l.id)?.length ?? 0,
           notesText: (notesByLead.get(l.id) ?? []).join('\n'),
+          allPhones: buildAdditionalPhones(l),
         }));
 
         res.json({ data, total: data.length, truncated: leads.length >= EXPORT_CAP });
@@ -1421,6 +1458,26 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         );
 
         res.status(201).json(result);
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // ─── POST /api/v1/leads/:id/waiting-higher-authority ──────────────
+  // Manual toggle for the read-only "work completed, waiting for higher authority"
+  // flag shown on the Leads list row. Idempotent; gated by lead:edit.
+  router.post(
+    '/:id/waiting-higher-authority',
+    authMiddleware,
+    permissionMiddleware('lead:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        const { value } = req.body as { value?: unknown };
+        if (typeof value !== 'boolean') throw new ValidationError('value (boolean) is required.');
+        const lead = await leadService.setWaitingHigherAuthority({ tenantId, userId }, req.params.id, value);
+        res.json({ data: lead });
       } catch (err) {
         next(err);
       }
