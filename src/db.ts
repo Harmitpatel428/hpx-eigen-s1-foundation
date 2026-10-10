@@ -35,6 +35,16 @@ const tenantScopedModels = [
 
 type TenantScopedModel = (typeof tenantScopedModels)[number];
 
+// Some tenant-scoped models have no `deletedAt` column (AuditLog, Pipeline). Injecting the
+// soft-delete filter into those makes Prisma reject the whole query (PrismaClientValidationError),
+// which surfaced as a hard 500 on pipeline analytics. Derive the set from the schema so adding a
+// model without `deletedAt` can never silently reintroduce that failure.
+const modelsWithDeletedAt = new Set(
+  Prisma.dmmf.datamodel.models
+    .filter((m) => m.fields.some((f) => f.name === 'deletedAt'))
+    .map((m) => m.name)
+);
+
 export const prisma = basePrisma.$extends({
   query: {
     $allModels: {
@@ -65,7 +75,8 @@ export const prisma = basePrisma.$extends({
           queryArgs.where = {
             ...where,
             tenantId: ctx.tenantId,
-            ...(model !== 'AuditLog' && !where.deletedAt ? { deletedAt: { equals: null } } : {})
+            // An explicit deletedAt in the caller's where always wins (Recycle Bin depends on it).
+            ...(modelsWithDeletedAt.has(model) && !where.deletedAt ? { deletedAt: { equals: null } } : {})
           };
         } else if (operation === 'create') {
           queryArgs.data = {
