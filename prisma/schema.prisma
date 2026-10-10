@@ -747,6 +747,11 @@ model Contact {
   @@index([tenantId, leadId])
   @@index([tenantId, ownerId])
   @@index([deletedAt])
+  // Lead search matches contact phone/email with `contains` (ILIKE '%x%'), which a b-tree cannot
+  // serve — EXPLAIN showed two full Seq Scans over Contact (150k rows, ~325ms) per search request.
+  // Trigram GIN makes those index scans. Requires the pg_trgm extension (created in the migration).
+  @@index([phone(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([email(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 // ─── OpportunityType ──────────────────────────────────────────────

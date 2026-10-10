@@ -160,3 +160,33 @@ migration SQL (`grep -rn CONCURRENTLY prisma/migrations` must stay empty).
    during the deploy window.
 5. **Then the standing seed-permissions step** — already covered by
    `deploy:db` in step 3; do not skip it (see (b)/(c) above for why).
+
+### Contact trigram search indexes (migration `20261010000000_add_contact_trgm_search_indexes`)
+
+Same lock-sensitivity rule as items #1/#3 above. Lead search runs two
+`contacts.some` ILIKE semi-joins; without a trigram index these are full
+`Seq Scan`s on `Contact` (measured at 150k rows: 301.8ms + 23.0ms; search
+query exec 379.9ms → 76.0ms with the indexes, route p50 617ms → 293ms).
+
+`Contact` is large and write-hot, so **pre-apply concurrently before
+`migrate deploy`**, via `psql` or `npx prisma db execute --stdin`:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "Contact_phone_idx"
+  ON "Contact" USING GIN ("phone" gin_trgm_ops);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "Contact_email_idx"
+  ON "Contact" USING GIN ("email" gin_trgm_ops);
+```
+
+The migration's own statements are `CREATE INDEX IF NOT EXISTS`, so they
+no-op once the above has run. Skipping the pre-apply is also correct — the
+migration then builds both GIN indexes non-concurrently, holding a write
+lock on `Contact` for the duration. Record which path was taken in the
+deploy log. If a `CREATE INDEX CONCURRENTLY` is interrupted it can leave an
+`INVALID` index behind; check and drop before retrying:
+
+```sql
+SELECT i.indexrelid::regclass AS idx FROM pg_index i WHERE NOT i.indisvalid;
+-- DROP INDEX CONCURRENTLY IF EXISTS "<name>";  -- then re-run the CREATE
+```
