@@ -1670,6 +1670,10 @@ model TenantSettings {
   leadHeaderPreference  String   @default("name")
   // Phase 1 (A): tenant-level kill switch for the Case Operations Engine; gated by case-engine:manage
   caseOperationsEngineEnabled Boolean @default(false)
+  // Copy Pending Documents reminder — org-level, mutable by role:manage.
+  // NULL = use frontend defaults (DEFAULT_TEMPLATE / "Team HPX Eigen").
+  pendingReminderTemplate     String?
+  pendingReminderOrgName      String?
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }

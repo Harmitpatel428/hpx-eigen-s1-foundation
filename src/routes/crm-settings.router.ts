@@ -1,10 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { createHash } from 'crypto';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { AuditService } from '../services/audit.service';
 import { ValidationError } from '../types/exceptions';
 
 const VALID_PREFS = new Set(['name', 'company']);
+// Variable names are case-insensitive, matching the frontend formatter.
+const PENDING_DOCS_VAR = /\{\{\s*pending_documents\s*\}\}/i;
 
 export function createCrmSettingsRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -19,6 +22,8 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
         leadHeaderPreference: row?.leadHeaderPreference ?? 'name',
         allowImpersonation: row?.allowImpersonation ?? false,
         caseOperationsEngineEnabled: row?.caseOperationsEngineEnabled ?? false,
+        pendingReminderTemplate: row?.pendingReminderTemplate ?? null,
+        pendingReminderOrgName: row?.pendingReminderOrgName ?? null,
       });
     } catch (err) { next(err); }
   });
@@ -114,6 +119,57 @@ export function createCrmSettingsRouter(prisma: PrismaClient): Router {
         }, { maxWait: 5000, timeout: 15000 });
 
         res.json({ success: true, caseOperationsEngineEnabled: enabled });
+      } catch (err) { next(err); }
+    },
+  );
+
+  // POST /api/v1/settings/crm/reminder-template — org-level "Copy Pending Documents"
+  // reminder template + organization name; role:manage gate, mirrors /lead-header.
+  router.post(
+    '/reminder-template',
+    authMiddleware,
+    permissionMiddleware('role:manage'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const { template, organizationName } = req.body as { template?: unknown; organizationName?: unknown };
+
+        if (typeof template !== 'string' || !PENDING_DOCS_VAR.test(template)) {
+          throw new ValidationError('template must be a string containing {{pending_documents}}');
+        }
+        if (typeof organizationName !== 'string' || organizationName.trim() === '') {
+          throw new ValidationError('organizationName is required');
+        }
+        if (template.length > 10000 || organizationName.length > 200) {
+          throw new ValidationError('template or organizationName too long');
+        }
+
+        await prisma.tenantSettings.upsert({
+          where: { tenantId },
+          create: { tenantId, pendingReminderTemplate: template, pendingReminderOrgName: organizationName },
+          update: { pendingReminderTemplate: template, pendingReminderOrgName: organizationName },
+        });
+
+        try {
+          await auditService.log({
+            tenantId,
+            eventType: 'TENANT_SETTINGS_UPDATED',
+            entityType: 'TenantSettings',
+            entityId: tenantId,
+            actorUserId: userId,
+            actorIp: req.ip,
+            actorUserAgent: req.headers['user-agent'],
+            operation: 'UPDATE_PENDING_REMINDER_TEMPLATE',
+            payload: {
+              pendingReminderOrgName: organizationName,
+              templateHash: createHash('sha256').update(template).digest('hex').slice(0, 8),
+            },
+          });
+        } catch (e) {
+          console.error('[AUDIT_DELIVERY_FAILURE]', e);
+        }
+
+        res.json({ success: true });
       } catch (err) { next(err); }
     },
   );
