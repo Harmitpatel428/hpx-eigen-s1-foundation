@@ -236,17 +236,18 @@ describe('Firm mandate upload', () => {
 });
 
 describe('Firm document upload (unified Document)', () => {
-  it('uploads a requirement document and moves the requirement to RECEIVED', async () => {
+  it('uploads a requirement document and moves the requirement to UNDER_VERIFICATION', async () => {
     const c = await createCase();
     const req = await createRequirement(c.id);
     const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
     expect(confirm!.status).toBe(200);
+    // File-level status is still RECEIVED (no verify); the REQUIREMENT moves to UNDER_VERIFICATION.
     expect(confirm!.body.data.status).toBe('RECEIVED');
     const doc = await prisma.document.findUnique({ where: { id: confirm!.body.data.documentId } });
     expect(doc?.uploadedByParty).toBe('FIRM');
     expect(doc?.requirementId).toBe(req.id);
     const reqRow = await prisma.docCaseDocument.findUnique({ where: { id: req.id } });
-    expect(reqRow?.status).toBe(DocDocumentStatus.RECEIVED);
+    expect(reqRow?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
   });
 
   it('uploads a general document (name required)', async () => {
@@ -344,5 +345,78 @@ describe('Firm document upload (unified Document)', () => {
     for (const s of stmts) await prisma.$executeRawUnsafe(s);
     const after = await prisma.permission.count({ where: { slug: { in: slugs } } });
     expect(after).toBe(before); // ON CONFLICT DO NOTHING → no duplicate rows
+  });
+});
+
+// ─── Strict requirement lifecycle + server-side reviewer enforcement ──────────
+describe('Requirement status workflow', () => {
+  const V = `/api/v1/documentation/documents`;
+  const mkReq = (caseId: string, over: Record<string, unknown> = {}) =>
+    prisma.docCaseDocument.create({
+      data: { tenantId: TENANT_ID, caseId, name: 'PAN Card', isMandatory: true, metadataValues: {}, status: DocDocumentStatus.UNDER_VERIFICATION, ...over },
+    });
+
+  it('invalid transition: approving a PENDING_COLLECTION requirement → 422, status unchanged', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id, { status: DocDocumentStatus.PENDING_COLLECTION });
+    const res = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED', remarks: 'ok' });
+    expect(res.status).toBe(422);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.PENDING_COLLECTION);
+  });
+
+  it('invalid transition: re-uploading onto an APPROVED requirement → 422, no file persisted', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id, { status: DocDocumentStatus.APPROVED });
+    const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
+    expect(confirm!.status).toBe(422);
+    expect(await prisma.document.count({ where: { caseId: c.id, requirementId: req.id } })).toBe(0);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.APPROVED);
+  });
+
+  it('approve blocked when a note is required but missing; allowed + trimmed note persisted when present', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id, { requireNote: true });
+    const blocked = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' });
+    expect(blocked.status).toBe(400);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+    const ok = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED', remarks: '  looks good  ' });
+    expect(ok.status).toBe(200);
+    const row = await prisma.docCaseDocument.findUnique({ where: { id: req.id } });
+    expect(row?.status).toBe(DocDocumentStatus.APPROVED);
+    expect(row?.verificationRemarks).toBe('looks good');
+  });
+
+  it('approve blocked when a date is required but missing; allowed + documentDate persisted when present', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id, { requireDate: true });
+    const blocked = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' });
+    expect(blocked.status).toBe(400);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+    const ok = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED', documentDate: '2026-05-01' });
+    expect(ok.status).toBe(200);
+    const row = await prisma.docCaseDocument.findUnique({ where: { id: req.id } });
+    expect(row?.status).toBe(DocDocumentStatus.APPROVED);
+    expect((row?.metadataValues as Record<string, unknown>)?.documentDate).toBe(new Date('2026-05-01').toISOString());
+  });
+
+  it('reject blocked on a whitespace reason; allowed + rejectionReason persisted when present', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id);
+    const blocked = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'REJECTED', rejectionReason: '   ' });
+    expect(blocked.status).toBe(400);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+    const ok = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'REJECTED', rejectionReason: 'blurry scan' });
+    expect(ok.status).toBe(200);
+    const row = await prisma.docCaseDocument.findUnique({ where: { id: req.id } });
+    expect(row?.status).toBe(DocDocumentStatus.REJECTED);
+    expect(row?.rejectionReason).toBe('blurry scan');
+  });
+
+  it('upload moves a PENDING_COLLECTION requirement to UNDER_VERIFICATION', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id, { status: DocDocumentStatus.PENDING_COLLECTION });
+    const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
+    expect(confirm!.status).toBe(200);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
   });
 });

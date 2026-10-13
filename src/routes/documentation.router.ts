@@ -312,12 +312,13 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
-        const { result, remarks } = req.body as { result: 'APPROVED' | 'REJECTED'; remarks?: string; rejectionReason?: string };
+        const { result, remarks } = req.body as { result: 'APPROVED' | 'REJECTED'; remarks?: string; rejectionReason?: string; documentDate?: string };
         if (!result || !['APPROVED', 'REJECTED'].includes(result)) throw new ValidationError('result must be APPROVED or REJECTED.');
         const doc = await svc.updateDocumentStatus({ tenantId, userId }, req.params.id, {
           status:           result as DocDocumentStatus,
           remarks,
           rejectionReason:  req.body.rejectionReason,
+          documentDate:     req.body.documentDate,
         });
         res.json({ success: true, data: doc });
       } catch (err) { next(err); }

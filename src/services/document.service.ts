@@ -202,20 +202,13 @@ export class DocumentService {
           },
         });
 
-        // Requirement status effect (I3/I6). verify → APPROVED; else requirementStatus; else RECEIVED.
+        // Requirement status effect: a firm upload ALWAYS moves the requirement to
+        // UNDER_VERIFICATION. An upload can never auto-approve the requirement (the file-level
+        // Document.status may still be VERIFIED — that is the FILE's status, not the
+        // requirement's). An invalid source state (requirement not PENDING_COLLECTION) hard-throws
+        // and aborts the tx.
         if (input.category === 'REQUIREMENT' && input.requirementId) {
-          const target: DocDocumentStatus = input.requirementStatus
-            ?? (willVerify ? DocDocumentStatus.APPROVED : DocDocumentStatus.RECEIVED);
-          const outcome = await this.docs.transitionRequirementInTx(tx, ctx, input.requirementId, target);
-          if (outcome === 'unreachable') {
-            await tx.docCaseEvent.create({
-              data: {
-                tenantId: ctx.tenantId, caseId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
-                actorUserId: ctx.userId,
-                payload: { fileId: documentId, divergence: true, note: `file attached; requirement status left unchanged (no valid transition to ${target})`, requirementId: input.requirementId, target } as unknown as Prisma.InputJsonValue,
-              },
-            });
-          }
+          await this.docs.transitionRequirementInTx(tx, ctx, input.requirementId, DocDocumentStatus.UNDER_VERIFICATION);
         }
 
         await tx.docCaseEvent.create({
@@ -396,18 +389,10 @@ export class DocumentService {
           },
         });
 
+        // A replacement upload also moves the requirement to UNDER_VERIFICATION (never
+        // auto-approves). Invalid source state hard-throws and aborts the tx.
         if (target.category === 'REQUIREMENT' && target.requirementId) {
-          const targetStatus: DocDocumentStatus = willVerify ? DocDocumentStatus.APPROVED : DocDocumentStatus.RECEIVED;
-          const outcome = await this.docs.transitionRequirementInTx(tx, ctx, target.requirementId, targetStatus);
-          if (outcome === 'unreachable') {
-            await tx.docCaseEvent.create({
-              data: {
-                tenantId: ctx.tenantId, caseId: target.caseId, eventType: DocEventType.DOCUMENT_STATUS_CHANGED,
-                actorUserId: ctx.userId,
-                payload: { fileId: newId, divergence: true, note: `replacement attached; requirement status left unchanged (no valid transition to ${targetStatus})`, requirementId: target.requirementId, target: targetStatus } as unknown as Prisma.InputJsonValue,
-              },
-            });
-          }
+          await this.docs.transitionRequirementInTx(tx, ctx, target.requirementId, DocDocumentStatus.UNDER_VERIFICATION);
         }
 
         await tx.docCaseEvent.create({

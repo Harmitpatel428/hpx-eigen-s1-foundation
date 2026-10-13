@@ -28,15 +28,19 @@ export interface TenantContext {
 
 // ─── Status transition validation ────────────────────────────────────────────
 
+// Strict lifecycle: a requirement is born PENDING_COLLECTION, an upload moves it to
+// UNDER_VERIFICATION, and a reviewer resolves it to APPROVED or REJECTED. Every other
+// status is terminal here — the enum keeps all values for backward compatibility with
+// existing rows, but no new transition is permitted beyond these three.
 const VALID_TRANSITIONS: Record<DocDocumentStatus, DocDocumentStatus[]> = {
-  REQUESTED:           ['PENDING_COLLECTION', 'NOT_APPLICABLE', 'WAIVED'],
-  PENDING_COLLECTION:  ['RECEIVED', 'NOT_APPLICABLE', 'WAIVED', 'EXPIRED'],
-  RECEIVED:            ['UNDER_VERIFICATION', 'PENDING_COLLECTION'],
+  PENDING_COLLECTION:  ['UNDER_VERIFICATION'],
   UNDER_VERIFICATION:  ['APPROVED', 'REJECTED'],
-  APPROVED:            ['EXPIRED'],
-  REJECTED:            ['RE_REQUESTED', 'WAIVED', 'MANAGER_APPROVED'],
-  RE_REQUESTED:        ['PENDING_COLLECTION', 'RECEIVED'],
-  EXPIRED:             ['RE_REQUESTED'],
+  REQUESTED:           [],
+  RECEIVED:            [],
+  APPROVED:            [],
+  REJECTED:            [],
+  RE_REQUESTED:        [],
+  EXPIRED:             [],
   NOT_APPLICABLE:      [],
   WAIVED:              [],
   MANAGER_APPROVED:    [],
@@ -495,7 +499,7 @@ export class DocumentationService {
               verificationRequired:  item.verificationRequired,
               expiryTrackingEnabled: item.expiryTrackingEnabled,
               metadataValues:        {},
-              status:                'REQUESTED',
+              status:                'PENDING_COLLECTION',
             },
           });
           documents.push(doc);
@@ -1082,7 +1086,7 @@ export class DocumentationService {
     tenantId: string,
     caseId: string,
     selection: { id: string; componentId: string; policyAssignmentId: string },
-    preset: { id: string; name: string; description: string | null; isMandatory: boolean; displayOrder: number; dedupeKey: string },
+    preset: { id: string; name: string; description: string | null; isMandatory: boolean; displayOrder: number; dedupeKey: string; requireDate: boolean; requireNote: boolean },
   ): Promise<string> {
     const mergeKey = `compdoc:${preset.dedupeKey}`;
 
@@ -1126,9 +1130,11 @@ export class DocumentationService {
           name:                 preset.name,
           description:          preset.description,
           isMandatory:          preset.isMandatory,
+          requireDate:          preset.requireDate,
+          requireNote:          preset.requireNote,
           displayOrder:         (max._max.displayOrder ?? 0) + 1,
           verificationRequired: true,
-          status:               'REQUESTED',
+          status:               'PENDING_COLLECTION',
           metadataValues:       {},
           requirementDedupeKey: mergeKey,
           isComponentMerged:    true,
@@ -1368,7 +1374,7 @@ export class DocumentationService {
           verificationRequired:  input.verificationRequired ?? true,
           expiryTrackingEnabled: input.expiryTrackingEnabled ?? false,
           notes:                 input.notes ?? null,
-          status:                'REQUESTED',
+          status:                'PENDING_COLLECTION',
           metadataValues:        {},
         },
       });
@@ -1388,9 +1394,15 @@ export class DocumentationService {
       rejectionReason?:  string;
       waivedReason?:     string;
       expiryDate?:       Date;
+      documentDate?:     string;
     }
   ) {
     return this.prisma.$transaction(async (tx) => {
+      // Race safety (guardrail #4): lock the row before reading status + asserting, so two
+      // concurrent Approves cannot both pass the transition check.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "DocCaseDocument" WHERE id = ${documentId}::uuid AND "tenantId" = ${ctx.tenantId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
+      if (locked.length === 0) throw new ResourceNotFoundError();
+
       const doc = await tx.docCaseDocument.findFirst({
         where: { id: documentId, tenantId: ctx.tenantId, deletedAt: null },
         include: { case: true },
@@ -1399,16 +1411,36 @@ export class DocumentationService {
 
       assertValidTransition(doc.status, input.status);
 
+      // Server-side reviewer enforcement — the service layer is the source of truth; never
+      // trust the client to have collected a required note/date before approving.
+      let documentDateIso: string | null = null;
+      if (input.status === 'APPROVED') {
+        if (doc.requireNote && !input.remarks?.trim()) {
+          throw new ValidationError('A verification note is required to approve this document.');
+        }
+        if (doc.requireDate) {
+          const parsed = input.documentDate ? new Date(input.documentDate) : null;
+          if (!parsed || isNaN(parsed.getTime())) {
+            throw new ValidationError('A valid document date is required to approve this document.');
+          }
+          documentDateIso = parsed.toISOString();
+        }
+      }
+      if (input.status === 'REJECTED' && !input.rejectionReason?.trim()) {
+        throw new ValidationError('A rejection reason is required to reject this document.');
+      }
+
       const now = new Date();
       const updateData: Prisma.DocCaseDocumentUpdateInput = {
         status: input.status,
         notes:  input.remarks ? (doc.notes ? `${doc.notes}\n${input.remarks}` : input.remarks) : doc.notes,
         ...(input.status === 'RECEIVED'            ? { receivedAt: now } : {}),
-        ...(input.status === 'APPROVED'            ? { verifiedAt: now, verifiedBy: ctx.userId, verificationRemarks: input.remarks ?? null } : {}),
-        ...(input.status === 'REJECTED'            ? { rejectionReason: input.rejectionReason ?? null } : {}),
+        ...(input.status === 'APPROVED'            ? { verifiedAt: now, verifiedBy: ctx.userId, verificationRemarks: input.remarks?.trim() ?? null } : {}),
+        ...(input.status === 'REJECTED'            ? { rejectionReason: input.rejectionReason!.trim() } : {}),
         ...(input.status === 'WAIVED'              ? { isWaived: true, waivedBy: ctx.userId, waivedReason: input.waivedReason ?? null } : {}),
         ...(input.status === 'UNDER_VERIFICATION'  ? { verifiedBy: ctx.userId } : {}),
         ...(input.expiryDate                       ? { expiryDate: input.expiryDate } : {}),
+        ...(documentDateIso                        ? { metadataValues: { ...(doc.metadataValues as Record<string, unknown> ?? {}), documentDate: documentDateIso } as Prisma.InputJsonValue } : {}),
       };
 
       await tx.docCaseDocument.update({ where: { id: documentId }, data: updateData });
@@ -1655,23 +1687,25 @@ export class DocumentationService {
   /**
    * Apply a validated DocCaseDocument status transition inside an EXISTING transaction.
    * Used by DocumentService when a firm upload lands on a requirement. Returns:
-   *  'applied'     — transition performed (+ event + case recalc)
-   *  'noop'        — target equals current status
-   *  'unreachable' — not a valid next status; caller leaves the status and logs a divergence (I3/I6)
+   *  'applied' — transition performed (+ event + case recalc)
+   *  'noop'    — target equals current status
+   * An invalid transition HARD-THROWS BusinessRuleViolationError and aborts the tx
+   * (e.g. re-uploading onto an APPROVED requirement). An upload must never silently
+   * diverge from the requirement's status.
    */
   async transitionRequirementInTx(
     tx: Prisma.TransactionClient,
     ctx: TenantContext,
     requirementId: string,
     toStatus: DocDocumentStatus,
-  ): Promise<'applied' | 'noop' | 'unreachable'> {
+  ): Promise<'applied' | 'noop'> {
     const doc = await tx.docCaseDocument.findFirst({
       where: { id: requirementId, tenantId: ctx.tenantId, deletedAt: null },
       select: { id: true, status: true, caseId: true },
     });
     if (!doc) throw new ResourceNotFoundError();
     if (doc.status === toStatus) return 'noop';
-    if (!VALID_TRANSITIONS[doc.status].includes(toStatus)) return 'unreachable';
+    if (!VALID_TRANSITIONS[doc.status].includes(toStatus)) throw new BusinessRuleViolationError();
 
     const now = new Date();
     await tx.docCaseDocument.update({

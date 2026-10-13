@@ -536,3 +536,20 @@ describe('Propagation of newly-added component documents', () => {
     expect(await activeSources(pan.id)).toHaveLength(1);
   });
 });
+
+describe('Materialized requirement defaults', () => {
+  it('new requirements default to PENDING_COLLECTION and carry preset requireDate/requireNote', async () => {
+    const type = await makeActiveType();
+    const comp = await addComp(type, 'PAN');
+    const presetId = await addDoc(type, comp, 'PAN');
+    // requireDate/requireNote live on the CaseTypeComponentDocument preset (Task 1 schema).
+    await prisma.caseTypeComponentDocument.update({ where: { id: presetId }, data: { requireDate: true, requireNote: true } });
+    const kase = await makeCase();
+    await assign(kase.id, { policies: [{ caseTypeId: type, componentIds: [comp] }] });
+    const docs = await activeDocs(kase.id);
+    expect(docs).toHaveLength(1);
+    expect(docs[0].status).toBe('PENDING_COLLECTION');
+    expect(docs[0].requireDate).toBe(true);
+    expect(docs[0].requireNote).toBe(true);
+  });
+});

@@ -125,7 +125,7 @@ describe('Case recalc guard — RECALC_MUTABLE statuses', () => {
     const c = await createCase(TENANT_ID, 'ACTIVE');
     const req = await createRequirement(c.id, TENANT_ID, 'PENDING_COLLECTION', true);
 
-    const res = await patchStatus(req.id, editToken, { status: 'RECEIVED' });
+    const res = await patchStatus(req.id, editToken, { status: 'UNDER_VERIFICATION' });
     expect(res.status).toBe(200);
 
     const updated = await prisma.docCase.findUniqueOrThrow({ where: { id: c.id } });
@@ -135,11 +135,13 @@ describe('Case recalc guard — RECALC_MUTABLE statuses', () => {
     expect(updated.isReady).toBe(false);
   });
 
-  it('1b. ACTIVE moves to DOCUMENTATION_READY once all mandatory requirements are ready', async () => {
+  it('1b. ACTIVE moves to DOCUMENTATION_READY once all mandatory requirements are approved', async () => {
     const c = await createCase(TENANT_ID, 'ACTIVE');
     const req = await createRequirement(c.id, TENANT_ID, 'PENDING_COLLECTION', true);
 
-    const res = await patchStatus(req.id, editToken, { status: 'WAIVED', waivedReason: 'not needed' });
+    // Strict lifecycle: PENDING_COLLECTION → UNDER_VERIFICATION → APPROVED.
+    expect((await patchStatus(req.id, editToken, { status: 'UNDER_VERIFICATION' })).status).toBe(200);
+    const res = await patchStatus(req.id, editToken, { status: 'APPROVED' });
     expect(res.status).toBe(200);
 
     const updated = await prisma.docCase.findUniqueOrThrow({ where: { id: c.id } });
@@ -173,7 +175,7 @@ describe('Case recalc guard — PROTECTED_NON_TERMINAL statuses (progress-only)'
     const c = await createCase(TENANT_ID, status);
     const req = await createRequirement(c.id, TENANT_ID, 'PENDING_COLLECTION', true);
 
-    const res = await patchStatus(req.id, editToken, { status: 'RECEIVED' });
+    const res = await patchStatus(req.id, editToken, { status: 'UNDER_VERIFICATION' });
     expect(res.status).toBe(200);
 
     const updated = await prisma.docCase.findUniqueOrThrow({ where: { id: c.id } });
@@ -193,7 +195,7 @@ describe('Case recalc guard — TERMINAL statuses (no writes at all)', () => {
     const req = await createRequirement(c.id, TENANT_ID, 'PENDING_COLLECTION', true);
     const before = await prisma.docCase.findUniqueOrThrow({ where: { id: c.id } });
 
-    const res = await patchStatus(req.id, editToken, { status: 'RECEIVED' });
+    const res = await patchStatus(req.id, editToken, { status: 'UNDER_VERIFICATION' });
     expect(res.status).toBe(200);
 
     const after = await prisma.docCase.findUniqueOrThrow({ where: { id: c.id } });
