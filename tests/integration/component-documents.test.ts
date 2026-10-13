@@ -181,6 +181,39 @@ describe('Component document CRUD', () => {
     expect((await req('POST', docsUrl(type, comp), { token: mgr.token, body: { name: 'ok', displayOrder: -1 } })).status).toBe(400);
   });
 
+  it('requireDate/requireNote: omitted on create -> false; round-trip; PATCH only changes what is sent; non-boolean -> 400', async () => {
+    const type = await makeType(); const comp = await makeComp(type);
+    const def = await req('POST', docsUrl(type, comp), { token: mgr.token, body: { name: 'Plain' } });
+    expect(def.status).toBe(201);
+    expect(def.body.data.requireDate).toBe(false);
+    expect(def.body.data.requireNote).toBe(false);
+
+    const c = await req('POST', docsUrl(type, comp), { token: mgr.token, body: { name: 'Flagged', requireDate: true, requireNote: true } });
+    expect(c.status).toBe(201);
+    expect(c.body.data.requireDate).toBe(true);
+    expect(c.body.data.requireNote).toBe(true);
+    const id = c.body.data.id;
+
+    // omitted -> unchanged
+    const p1 = await req('PATCH', `${docsUrl(type, comp)}/${id}`, { token: mgr.token, body: { name: 'Flagged2' } });
+    expect(p1.status).toBe(200);
+    expect(p1.body.data.requireDate).toBe(true);
+    expect(p1.body.data.requireNote).toBe(true);
+
+    // only one flag changes
+    const p2 = await req('PATCH', `${docsUrl(type, comp)}/${id}`, { token: mgr.token, body: { requireDate: false } });
+    expect(p2.body.data.requireDate).toBe(false);
+    expect(p2.body.data.requireNote).toBe(true);
+
+    const list = await req('GET', docsUrl(type, comp), { token: mgr.token });
+    const row = list.body.data.find((d: any) => d.id === id);
+    expect(row.requireDate).toBe(false);
+    expect(row.requireNote).toBe(true);
+
+    expect((await req('POST', docsUrl(type, comp), { token: mgr.token, body: { name: 'bad', requireDate: 'yes' } })).status).toBe(400);
+    expect((await req('PATCH', `${docsUrl(type, comp)}/${id}`, { token: mgr.token, body: { requireNote: 1 } })).status).toBe(400);
+  });
+
   it('writes rejected (422) for an archived case type, and for an archived component; reads still work', async () => {
     const type = await makeType(); const comp = await makeComp(type);
     const doc = (await req('POST', docsUrl(type, comp), { token: mgr.token, body: { name: 'GST' } })).body.data;

@@ -352,7 +352,7 @@ export class CaseTypeService {
     ctx: UserContext,
     caseTypeId: string,
     componentId: string,
-    input: { name?: string; dedupeKey?: string; description?: string | null; isMandatory?: boolean; displayOrder?: number },
+    input: { name?: string; dedupeKey?: string; description?: string | null; isMandatory?: boolean; requireDate?: boolean; requireNote?: boolean; displayOrder?: number },
   ): Promise<CaseTypeComponentDocument> {
     const name = (input.name ?? '').trim();
     if (!name || name.length > 200) throw new ValidationError('name is required and must be 200 characters or fewer.');
@@ -361,6 +361,9 @@ export class CaseTypeService {
       throw new ValidationError('displayOrder must be an integer >= 0.');
     }
     if (input.isMandatory !== undefined && typeof input.isMandatory !== 'boolean') throw new ValidationError('isMandatory must be a boolean.');
+    for (const k of ['requireDate', 'requireNote'] as const) {
+      if (input[k] !== undefined && typeof input[k] !== 'boolean') throw new ValidationError(`${k} must be a boolean.`);
+    }
     // An explicitly supplied key is normalized too, so it can never diverge from
     // the form the merge lookup uses.
     const dedupeKey = normalizeDedupeKey(input.dedupeKey !== undefined ? input.dedupeKey : name);
@@ -379,6 +382,8 @@ export class CaseTypeService {
           dedupeKey,
           description: input.description ?? null,
           isMandatory: input.isMandatory ?? false,
+          requireDate: input.requireDate ?? false,
+          requireNote: input.requireNote ?? false,
           displayOrder: input.displayOrder ?? 0,
         },
       });
@@ -392,7 +397,7 @@ export class CaseTypeService {
     caseTypeId: string,
     componentId: string,
     componentDocumentId: string,
-    input: { name?: string; description?: string | null; isMandatory?: boolean; displayOrder?: number; isActive?: boolean; dedupeKey?: string },
+    input: { name?: string; description?: string | null; isMandatory?: boolean; requireDate?: boolean; requireNote?: boolean; displayOrder?: number; isActive?: boolean; dedupeKey?: string },
   ): Promise<CaseTypeComponentDocument> {
     // dedupeKey is the merge identity: changing it would silently re-partition
     // existing shared requirements, so it is rejected outright, never ignored.
@@ -407,6 +412,9 @@ export class CaseTypeService {
       throw new ValidationError('displayOrder must be an integer >= 0.');
     }
     if (input.isMandatory !== undefined && typeof input.isMandatory !== 'boolean') throw new ValidationError('isMandatory must be a boolean.');
+    for (const k of ['requireDate', 'requireNote'] as const) {
+      if (input[k] !== undefined && typeof input[k] !== 'boolean') throw new ValidationError(`${k} must be a boolean.`);
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const type = await this.loadTypeForComponentWrite(tx, ctx.tenantId, caseTypeId);
@@ -426,6 +434,8 @@ export class CaseTypeService {
           ...(input.name !== undefined ? { name: input.name.trim() } : {}),
           ...(input.description !== undefined ? { description: input.description } : {}),
           ...(input.isMandatory !== undefined ? { isMandatory: input.isMandatory } : {}),
+          ...(input.requireDate !== undefined ? { requireDate: input.requireDate } : {}),
+          ...(input.requireNote !== undefined ? { requireNote: input.requireNote } : {}),
           ...(input.displayOrder !== undefined ? { displayOrder: input.displayOrder } : {}),
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         },
