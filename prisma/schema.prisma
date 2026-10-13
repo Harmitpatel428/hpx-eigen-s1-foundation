@@ -1374,11 +1374,13 @@ model DocCaseDocument {
   description           String?
   isMandatory           Boolean           @default(true)
   isBlocking            Boolean           @default(false)
+  requireDate           Boolean           @default(false)
+  requireNote           Boolean           @default(false)
   displayOrder          Int               @default(0)
   verificationRequired  Boolean           @default(true)
   expiryTrackingEnabled Boolean           @default(false)
   expiryDate            DateTime?
-  status                DocDocumentStatus @default(REQUESTED)
+  status                DocDocumentStatus @default(PENDING_COLLECTION)
   receivedAt            DateTime?
   verifiedAt            DateTime?
   verifiedBy            String?           @db.Uuid
@@ -1459,6 +1461,8 @@ model CaseTypeComponentDocument {
   dedupeKey    String
   description  String?
   isMandatory  Boolean   @default(false)
+  requireDate  Boolean   @default(false)
+  requireNote  Boolean   @default(false)
   displayOrder Int       @default(0)
   isActive     Boolean   @default(true)
   createdAt    DateTime  @default(now())
