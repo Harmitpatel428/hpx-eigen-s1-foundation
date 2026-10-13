@@ -101,6 +101,7 @@ async function createRequirement(caseId: string, tenantId = TENANT_ID, status: D
 const authHeaders = (token?: string) => ({ 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) });
 const post = (path: string, token?: string, body?: unknown) => fetch(`${baseUrl}${path}`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify(body ?? {}) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
 const patch = (path: string, token?: string, body?: unknown) => fetch(`${baseUrl}${path}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(body ?? {}) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+const get = (path: string, token?: string) => fetch(`${baseUrl}${path}`, { method: 'GET', headers: authHeaders(token) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
 
 async function firmMandate(caseId: string, token: string, extra: Record<string, unknown> = {}) {
   const url = await post(`/api/v1/cases/${caseId}/mandate/firm-upload-url`, token, { fileName: 'mandate.pdf', contentType: 'application/pdf', fileSizeBytes: 1024 });
@@ -397,6 +398,42 @@ describe('Requirement status workflow', () => {
     const row = await prisma.docCaseDocument.findUnique({ where: { id: req.id } });
     expect(row?.status).toBe(DocDocumentStatus.APPROVED);
     expect((row?.metadataValues as Record<string, unknown>)?.documentDate).toBe(new Date('2026-05-01').toISOString());
+  });
+
+  // --- Phase 4: full 2x2 requireDate/requireNote matrix (both-OFF and both-ON legs;
+  //     note-only is covered above at "a note is required", date-only at "a date is required"). ---
+  it('approve matrix — both flags OFF: approve succeeds with no date/note', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id); // requireDate/requireNote default false
+    const ok = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' });
+    expect(ok.status).toBe(200);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.APPROVED);
+  });
+
+  it('approve matrix — both flags ON: fails if EITHER missing (status unchanged), succeeds when both present', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id, { requireDate: true, requireNote: true });
+    expect((await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' })).status).toBe(400);
+    expect((await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED', remarks: 'note only' })).status).toBe(400);
+    expect((await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED', documentDate: '2026-05-01' })).status).toBe(400);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+    const ok = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED', remarks: 'both present', documentDate: '2026-05-01' });
+    expect(ok.status).toBe(200);
+    const row = await prisma.docCaseDocument.findUnique({ where: { id: req.id } });
+    expect(row?.status).toBe(DocDocumentStatus.APPROVED);
+    expect(row?.verificationRemarks).toBe('both present');
+    expect((row?.metadataValues as Record<string, unknown>)?.documentDate).toBe(new Date('2026-05-01').toISOString());
+  });
+
+  it('read path: getCase returns requireDate/requireNote on document payloads (QA-symptom regression)', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id, { requireDate: true, requireNote: true });
+    const res = await get(`/api/v1/documentation/cases/${c.id}`, adminToken);
+    expect(res.status).toBe(200);
+    const doc = (res.body.data.documents as Array<{ id: string; requireDate: boolean; requireNote: boolean }>).find(d => d.id === req.id);
+    expect(doc).toBeDefined();
+    expect(doc!.requireDate).toBe(true);
+    expect(doc!.requireNote).toBe(true);
   });
 
   it('reject blocked on a whitespace reason; allowed + rejectionReason persisted when present', async () => {
