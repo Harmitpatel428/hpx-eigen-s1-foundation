@@ -4,10 +4,8 @@
  * Kept for backward compatibility with any existing consumers.
  */
 import { Request, Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../db';
 import { AuthenticatedRequest } from './auth.middleware';
-
-const prisma = new PrismaClient();
 
 export function requireRole(allowedRoles: string[]) {
   return async (req: Request, res: Response, next: NextFunction) => {

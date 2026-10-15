@@ -1,7 +1,8 @@
-import { PrismaClient, SessionStatus } from '@prisma/client';
+import { SessionStatus } from '@prisma/client';
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
+import { prisma } from '../db';
 import { requestContextStorage, RequestContext } from '../context/request-context';
 import { PermissionService, PermissionManifest } from '../services/permission.service';
 import {
@@ -28,7 +29,6 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-const prisma = new PrismaClient();
 const permissionService = new PermissionService(prisma);
 
 /**
@@ -109,28 +109,41 @@ export async function authMiddleware(
       throw new AuthenticationFailedError();
     }
 
-    // Touch lastActivityAt on every authenticated request
-    await prisma.session.update({
-      where: { id: sessionId },
-      data: { lastActivityAt: new Date() },
-    });
+    // Touch lastActivityAt, but throttle: only write when it has gone stale (>60s).
+    // Keeps the per-request write off the hot path for active sessions while
+    // preserving ~60s-granular activity tracking (the only reader is the session
+    // list display, sessions.router.ts).
+    const ACTIVITY_TOUCH_MS = 60_000;
+    const lastActivity = session.lastActivityAt?.getTime() ?? 0;
+    const touch =
+      Date.now() - lastActivity > ACTIVITY_TOUCH_MS
+        ? prisma.session.update({
+            where: { id: sessionId },
+            data: { lastActivityAt: new Date() },
+          })
+        : Promise.resolve();
 
-    // Promote CREATED → ACTIVE on first authenticated request
-    if (session.status === SessionStatus.CREATED) {
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { status: SessionStatus.ACTIVE },
-      });
-    }
+    // Promote CREATED → ACTIVE on first authenticated request (rare)
+    const promote =
+      session.status === SessionStatus.CREATED
+        ? prisma.session.update({
+            where: { id: sessionId },
+            data: { status: SessionStatus.ACTIVE },
+          })
+        : Promise.resolve();
 
-    // Fetch user's team/department context for ABAC scope resolution
-    const userRecord = await prisma.user.findFirst({
-      where: { id: userId, tenantId, deletedAt: { equals: null } },
-      select: { teamId: true, departmentId: true },
-    });
-
-    // Load permission manifest (Redis-backed with DB fallback)
-    const permissions = await permissionService.getPermissionManifest(userId, tenantId);
+    // The user context fetch and the permission manifest are independent of each
+    // other and of the two session writes — run them all concurrently instead of
+    // paying 4 sequential round trips.
+    const [userRecord, permissions] = await Promise.all([
+      prisma.user.findFirst({
+        where: { id: userId, tenantId, deletedAt: { equals: null } },
+        select: { teamId: true, departmentId: true },
+      }),
+      permissionService.getPermissionManifest(userId, tenantId),
+      promote,
+      touch,
+    ]);
 
     (req as AuthenticatedRequest).user = {
       userId,

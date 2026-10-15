@@ -26,11 +26,33 @@ export class AuditService {
   }
 
   private async findLeaf(tx: Prisma.TransactionClient, tenantId: string): Promise<string | null> {
-    // Check if any rows exist
-    const count = await tx.auditLog.count({ where: { tenantId } });
-    if (count === 0) return null; // genesis case
+    // Appends are serialized per tenant by the advisory lock held in appendInTx, so the
+    // chain is strictly linear and append-only and the tip is the most recently inserted
+    // row. Fast path (O(log n), uses the [tenantId, createdAt] + [tenantId, previousHash]
+    // indexes): take the newest row and confirm nothing chains off it.
+    //
+    // `id` is a random uuid and `createdAt` is millisecond-granular, so neither is a safe
+    // monotonic tiebreak — if the newest-by-createdAt row is NOT the tip (only possible
+    // when the last rows share a createdAt ms), fall back to the exact structural anti-join.
+    // Branch / circular / content integrity are the job of verifyChain(), not the write
+    // hot path; the fallback below still refuses to append onto a branched or cyclic chain.
+    const newest = await tx.$queryRaw<{ currentHash: string }[]>`
+      SELECT "currentHash" FROM "AuditLog"
+      WHERE "tenantId" = ${tenantId}::uuid
+      ORDER BY "createdAt" DESC
+      LIMIT 1
+    `;
+    if (newest.length === 0) return null; // genesis: no rows yet
 
-    // Find leaf: row where no successor exists
+    const tip = newest[0].currentHash;
+    const successor = await tx.$queryRaw<{ one: number }[]>`
+      SELECT 1 AS one FROM "AuditLog"
+      WHERE "tenantId" = ${tenantId}::uuid AND "previousHash" = ${tip}
+      LIMIT 1
+    `;
+    if (successor.length === 0) return tip; // confirmed tip
+
+    // Rare: a createdAt tie meant the newest row was not the tip. Resolve exactly.
     const leaves: { currentHash: string }[] = await tx.$queryRaw`
       SELECT a."currentHash"
       FROM "AuditLog" a
@@ -40,11 +62,10 @@ export class AuditService {
           WHERE s."tenantId" = ${tenantId}::uuid
             AND s."previousHash" = a."currentHash"
         )
+      LIMIT 2
     `;
-
     if (leaves.length === 1) return leaves[0].currentHash;
-    if (leaves.length > 1) throw new AuditChainBranchError();
-    // leaves.length === 0 means circular reference — should not happen
+    // 0 ⇒ every row has a successor (cycle); ≥2 ⇒ branch. Both are corruption.
     throw new AuditChainBranchError();
   }
 
