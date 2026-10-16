@@ -141,6 +141,11 @@ describe('Case recalc guard — RECALC_MUTABLE statuses', () => {
 
     // Strict lifecycle: PENDING_COLLECTION → UNDER_VERIFICATION → APPROVED.
     expect((await patchStatus(req.id, editToken, { status: 'UNDER_VERIFICATION' })).status).toBe(200);
+    // Approval now requires a live uploaded file for the requirement (guard C); an
+    // UNDER_VERIFICATION requirement implies one in production (confirmUpload creates it).
+    await prisma.document.create({
+      data: { tenantId: TENANT_ID, caseId: c.id, requirementId: req.id, category: 'REQUIREMENT', name: 'PAN Card', originalFilename: 'pan.pdf', storageKey: `test/${req.id}`, mimeType: 'application/pdf', sizeBytes: 1024, sourceChannel: 'EMAIL', uploadedByParty: 'FIRM' },
+    });
     const res = await patchStatus(req.id, editToken, { status: 'APPROVED' });
     expect(res.status).toBe(200);
 

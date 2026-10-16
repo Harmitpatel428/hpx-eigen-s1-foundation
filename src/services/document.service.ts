@@ -426,11 +426,17 @@ export class DocumentService {
   async softDelete(ctx: TenantContext, documentId: string) {
     return this.prisma.$transaction(async (tx) => {
       const doc = await tx.document.findFirst({
-        where: { id: documentId, tenantId: ctx.tenantId, deletedAt: null }, select: { id: true, caseId: true },
+        where: { id: documentId, tenantId: ctx.tenantId, deletedAt: null }, select: { id: true, caseId: true, requirementId: true, category: true },
       });
       if (!doc) throw new ResourceNotFoundError();
       await tx.$queryRaw`SELECT id FROM "DocCase" WHERE id = ${doc.caseId}::uuid AND "tenantId" = ${ctx.tenantId}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
       await tx.document.update({ where: { id: documentId }, data: { deletedAt: new Date(), isActive: false } });
+      if (doc.category === 'REQUIREMENT' && doc.requirementId) {
+        const remaining = await tx.document.count({
+          where: { tenantId: ctx.tenantId, requirementId: doc.requirementId, category: 'REQUIREMENT', isActive: true, deletedAt: null },
+        });
+        if (remaining === 0) await this.docs.resetRequirementToPendingInTx(tx, ctx, doc.requirementId);
+      }
       await tx.docCaseEvent.create({
         data: {
           tenantId: ctx.tenantId, caseId: doc.caseId, eventType: DocEventType.DOCUMENT_REMOVED, actorUserId: ctx.userId,

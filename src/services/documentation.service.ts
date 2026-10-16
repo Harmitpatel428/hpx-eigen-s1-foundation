@@ -38,7 +38,7 @@ const VALID_TRANSITIONS: Record<DocDocumentStatus, DocDocumentStatus[]> = {
   REQUESTED:           [],
   RECEIVED:            [],
   APPROVED:            [],
-  REJECTED:            [],
+  REJECTED:            ['UNDER_VERIFICATION'],
   RE_REQUESTED:        [],
   EXPIRED:             [],
   NOT_APPLICABLE:      [],
@@ -1415,6 +1415,12 @@ export class DocumentationService {
       // trust the client to have collected a required note/date before approving.
       let documentDateIso: string | null = null;
       if (input.status === 'APPROVED') {
+        const activeFileCount = await tx.document.count({
+          where: { tenantId: ctx.tenantId, requirementId: documentId, category: 'REQUIREMENT', isActive: true, deletedAt: null },
+        });
+        if (activeFileCount === 0) {
+          throw new ValidationError('Cannot approve: no document has been uploaded for this requirement.');
+        }
         if (doc.requireNote && !input.remarks?.trim()) {
           throw new ValidationError('A verification note is required to approve this document.');
         }
@@ -1444,6 +1450,14 @@ export class DocumentationService {
       };
 
       await tx.docCaseDocument.update({ where: { id: documentId }, data: updateData });
+
+      if (input.status === 'REJECTED') {
+        // Free the one-active-file-per-requirement unique index; the file stays viewable.
+        await tx.document.updateMany({
+          where: { tenantId: ctx.tenantId, requirementId: documentId, category: 'REQUIREMENT', isActive: true, deletedAt: null },
+          data: { isActive: false },
+        });
+      }
 
       // Determine event type
       const eventTypeMap: Partial<Record<DocDocumentStatus, DocEventType>> = {
@@ -1725,6 +1739,33 @@ export class DocumentationService {
         tenantId: ctx.tenantId, caseId: doc.caseId, documentId: requirementId,
         eventType: eventTypeMap[toStatus] ?? 'DOCUMENT_STATUS_CHANGED', actorUserId: ctx.userId,
         fromStatus: doc.status, toStatus, payload: {} as Prisma.InputJsonValue,
+      },
+    });
+    await this._recalcAndUpdateCase(tx, doc.caseId, ctx.tenantId);
+    return 'applied';
+  }
+
+  /** Dedicated reset (NOT a forward transition): last active file removed -> back to PENDING_COLLECTION. */
+  async resetRequirementToPendingInTx(
+    tx: Prisma.TransactionClient,
+    ctx: TenantContext,
+    requirementId: string,
+  ): Promise<'applied' | 'noop'> {
+    const doc = await tx.docCaseDocument.findFirst({
+      where: { id: requirementId, tenantId: ctx.tenantId, deletedAt: null },
+      select: { id: true, status: true, caseId: true },
+    });
+    if (!doc) return 'noop';
+    if (doc.status === 'PENDING_COLLECTION') return 'noop';
+    await tx.docCaseDocument.update({
+      where: { id: requirementId },
+      data: { status: 'PENDING_COLLECTION', verifiedAt: null, verifiedBy: null, verificationRemarks: null, rejectionReason: null, receivedAt: null },
+    });
+    await tx.docCaseEvent.create({
+      data: {
+        tenantId: ctx.tenantId, caseId: doc.caseId, documentId: requirementId,
+        eventType: 'DOCUMENT_STATUS_CHANGED', actorUserId: ctx.userId,
+        fromStatus: doc.status, toStatus: 'PENDING_COLLECTION', payload: {} as Prisma.InputJsonValue,
       },
     });
     await this._recalcAndUpdateCase(tx, doc.caseId, ctx.tenantId);

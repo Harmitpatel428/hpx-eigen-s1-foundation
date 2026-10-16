@@ -352,10 +352,18 @@ describe('Firm document upload (unified Document)', () => {
 // ─── Strict requirement lifecycle + server-side reviewer enforcement ──────────
 describe('Requirement status workflow', () => {
   const V = `/api/v1/documentation/documents`;
-  const mkReq = (caseId: string, over: Record<string, unknown> = {}) =>
-    prisma.docCaseDocument.create({
+  // An UNDER_VERIFICATION requirement implies a live file (approval is now guarded on it).
+  const mkReq = async (caseId: string, over: Record<string, unknown> = {}) => {
+    const req = await prisma.docCaseDocument.create({
       data: { tenantId: TENANT_ID, caseId, name: 'PAN Card', isMandatory: true, metadataValues: {}, status: DocDocumentStatus.UNDER_VERIFICATION, ...over },
     });
+    if (req.status === DocDocumentStatus.UNDER_VERIFICATION) {
+      await prisma.document.create({
+        data: { tenantId: TENANT_ID, caseId, requirementId: req.id, category: 'REQUIREMENT', name: 'PAN Card', originalFilename: 'pan.pdf', storageKey: `test/${req.id}`, mimeType: 'application/pdf', sizeBytes: 1024, sourceChannel: 'EMAIL', uploadedByParty: 'FIRM' },
+      });
+    }
+    return req;
+  };
 
   it('invalid transition: approving a PENDING_COLLECTION requirement → 422, status unchanged', async () => {
     const c = await createCase();
@@ -455,5 +463,61 @@ describe('Requirement status workflow', () => {
     const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
     expect(confirm!.status).toBe(200);
     expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+});
+
+describe('document lifecycle re-upload + approve guard (bugfix)', () => {
+  const V = `/api/v1/documentation/documents`;
+  const del = (p: string, token?: string) => fetch(`${baseUrl}${p}`, { method: 'DELETE', headers: authHeaders(token) }).then((r) => ({ status: r.status }));
+  const status = async (id: string) => (await prisma.docCaseDocument.findUnique({ where: { id } }))?.status;
+  const setup = async () => {
+    const c = await createCase();
+    const req = await createRequirement(c.id);
+    const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
+    expect(confirm!.status).toBe(200);
+    return { c, req, fileId: confirm!.body.data.documentId as string };
+  };
+
+  it('delete -> re-upload works', async () => {
+    const { c, req, fileId } = await setup();
+    expect((await del(`/api/v1/documentation/files/${fileId}`, adminToken)).status).toBe(204);
+    expect(await status(req.id)).toBe(DocDocumentStatus.PENDING_COLLECTION);
+    const again = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
+    expect(again.confirm!.status).toBe(200);
+    expect(await status(req.id)).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+
+  it('reject -> re-upload works; rejected file stays viewable but inactive', async () => {
+    const { c, req, fileId } = await setup();
+    expect((await patch(`${V}/${req.id}/verify`, adminToken, { result: 'REJECTED', rejectionReason: 'blurry' })).status).toBe(200);
+    expect(await status(req.id)).toBe(DocDocumentStatus.REJECTED);
+    const old = await prisma.document.findUnique({ where: { id: fileId } });
+    expect(old?.isActive).toBe(false);
+    expect(old?.deletedAt).toBeNull();
+    const again = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
+    expect(again.confirm!.status).toBe(200);
+    expect(await status(req.id)).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+
+  it('approve blocked when the file was deleted', async () => {
+    const { req, fileId } = await setup();
+    await del(`/api/v1/documentation/files/${fileId}`, adminToken);
+    const res = await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(await status(req.id)).not.toBe(DocDocumentStatus.APPROVED);
+  });
+
+  it('deleting the file of an APPROVED requirement resets it', async () => {
+    const { req, fileId } = await setup();
+    expect((await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' })).status).toBe(200);
+    expect(await status(req.id)).toBe(DocDocumentStatus.APPROVED);
+    expect((await del(`/api/v1/documentation/files/${fileId}`, adminToken)).status).toBe(204);
+    expect(await status(req.id)).toBe(DocDocumentStatus.PENDING_COLLECTION);
+  });
+
+  it('approve succeeds with a live file', async () => {
+    const { req } = await setup();
+    expect((await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' })).status).toBe(200);
+    expect(await status(req.id)).toBe(DocDocumentStatus.APPROVED);
   });
 });
