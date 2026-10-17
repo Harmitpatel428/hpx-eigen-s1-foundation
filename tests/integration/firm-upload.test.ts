@@ -54,11 +54,13 @@ const TENANT_ID = crypto.randomUUID();
 const OTHER_TENANT_ID = crypto.randomUUID();
 const ADMIN_ID = crypto.randomUUID();       // all firm-upload perms + verify
 const UPLOADER_ID = crypto.randomUUID();     // mandate:upload + doc:upload + doc:view (NO verify/file:manage)
+const EDITOR_ID = crypto.randomUUID();       // doc:view + doc:upload + doc:edit + doc:file:manage (NO doc:verify)
 const NOPERMS_ID = crypto.randomUUID();      // no perms
 const OTHER_ADMIN_ID = crypto.randomUUID();
 
 let adminToken: string;
 let uploaderToken: string;
+let editorToken: string;
 let noPermsToken: string;
 let otherToken: string;
 
@@ -129,6 +131,7 @@ beforeAll(async () => {
   await prisma.user.createMany({ data: [
     { id: ADMIN_ID, email: `fu-admin-${TENANT_ID.slice(0, 8)}@x.com`, password: pw, tenantId: TENANT_ID },
     { id: UPLOADER_ID, email: `fu-upl-${TENANT_ID.slice(0, 8)}@x.com`, password: pw, tenantId: TENANT_ID },
+    { id: EDITOR_ID, email: `fu-edt-${TENANT_ID.slice(0, 8)}@x.com`, password: pw, tenantId: TENANT_ID },
     { id: NOPERMS_ID, email: `fu-nop-${TENANT_ID.slice(0, 8)}@x.com`, password: pw, tenantId: TENANT_ID },
     { id: OTHER_ADMIN_ID, email: `fu-oth-${OTHER_TENANT_ID.slice(0, 8)}@x.com`, password: pw, tenantId: OTHER_TENANT_ID },
   ] });
@@ -142,6 +145,12 @@ beforeAll(async () => {
   for (const s of ['mandate:upload', 'mandate:view', 'doc:view', 'doc:upload']) await grant(uploaderRole.id, s);
   await prisma.userRole.create({ data: { userId: UPLOADER_ID, roleId: uploaderRole.id, scopeType: ScopeType.ORGANIZATION } });
   uploaderToken = await makeSession(UPLOADER_ID, TENANT_ID);
+
+  // Collector/editor: can edit + manage files, but may NOT approve/reject (no doc:verify).
+  const editorRole = await prisma.role.create({ data: { tenantId: TENANT_ID, name: 'FU Editor', isSystem: false } });
+  for (const s of ['doc:view', 'doc:upload', 'doc:edit', 'doc:file:manage']) await grant(editorRole.id, s);
+  await prisma.userRole.create({ data: { userId: EDITOR_ID, roleId: editorRole.id, scopeType: ScopeType.ORGANIZATION } });
+  editorToken = await makeSession(EDITOR_ID, TENANT_ID);
 
   const noRole = await prisma.role.create({ data: { tenantId: TENANT_ID, name: 'FU NoPerms', isSystem: false } });
   await prisma.userRole.create({ data: { userId: NOPERMS_ID, roleId: noRole.id, scopeType: ScopeType.ORGANIZATION } });
@@ -463,6 +472,70 @@ describe('Requirement status workflow', () => {
     const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
     expect(confirm!.status).toBe(200);
     expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+});
+
+// ─── D1: requirement approve/reject requires doc:verify, on BOTH status-write paths ──
+describe('D1 — requirement approve/reject requires doc:verify (RBAC)', () => {
+  const V = `/api/v1/documentation/documents`;
+  // An UNDER_VERIFICATION requirement implies a live file (the approve guard needs it).
+  const mkUV = async (caseId: string) => {
+    const req = await prisma.docCaseDocument.create({
+      data: { tenantId: TENANT_ID, caseId, name: 'PAN Card', isMandatory: true, metadataValues: {}, status: DocDocumentStatus.UNDER_VERIFICATION },
+    });
+    await prisma.document.create({
+      data: { tenantId: TENANT_ID, caseId, requirementId: req.id, category: 'REQUIREMENT', name: 'PAN Card', originalFilename: 'pan.pdf', storageKey: `test/${req.id}`, mimeType: 'application/pdf', sizeBytes: 1024, sourceChannel: 'EMAIL', uploadedByParty: 'FIRM' },
+    });
+    return req;
+  };
+
+  it('doc:edit without doc:verify → 403 approving via /status (the bypass door), status unchanged', async () => {
+    const c = await createCase();
+    const req = await mkUV(c.id);
+    const res = await patch(`${V}/${req.id}/status`, editorToken, { status: 'APPROVED' });
+    expect(res.status).toBe(403);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+
+  it('doc:edit without doc:verify → 403 rejecting via /status, status unchanged', async () => {
+    const c = await createCase();
+    const req = await mkUV(c.id);
+    const res = await patch(`${V}/${req.id}/status`, editorToken, { status: 'REJECTED', rejectionReason: 'bad' });
+    expect(res.status).toBe(403);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+
+  it('doc:edit without doc:verify → 200 for PENDING_COLLECTION→UNDER_VERIFICATION via /status (non-verify transition still allowed)', async () => {
+    const c = await createCase();
+    const req = await prisma.docCaseDocument.create({ data: { tenantId: TENANT_ID, caseId: c.id, name: 'PAN Card', isMandatory: true, metadataValues: {}, status: DocDocumentStatus.PENDING_COLLECTION } });
+    const res = await patch(`${V}/${req.id}/status`, editorToken, { status: 'UNDER_VERIFICATION' });
+    expect(res.status).toBe(200);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+
+  it('doc:verify → 200 approving via /status (verifiers may use either path)', async () => {
+    const c = await createCase();
+    const req = await mkUV(c.id);
+    const res = await patch(`${V}/${req.id}/status`, adminToken, { status: 'APPROVED' });
+    expect(res.status).toBe(200);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.APPROVED);
+  });
+
+  it('/verify remains route-gated: doc:edit without doc:verify → 403', async () => {
+    const c = await createCase();
+    const req = await mkUV(c.id);
+    const res = await patch(`${V}/${req.id}/verify`, editorToken, { result: 'APPROVED' });
+    expect(res.status).toBe(403);
+  });
+
+  it('file-level canVerify guard regression: doc:file:manage without doc:verify → 403 on /files VERIFIED, 200 on a non-verify transition', async () => {
+    const c = await createCase();
+    const { confirm } = await firmDoc(c.id, adminToken, { category: 'GENERAL', name: 'FileGuard' });
+    const id = confirm!.body.data.documentId;
+    const verifyRes = await patch(`/api/v1/documentation/files/${id}/status`, editorToken, { status: 'VERIFIED' });
+    expect(verifyRes.status).toBe(403);
+    const reviewRes = await patch(`/api/v1/documentation/files/${id}/status`, editorToken, { status: 'UNDER_REVIEW' });
+    expect(reviewRes.status).toBe(200);
   });
 });
 

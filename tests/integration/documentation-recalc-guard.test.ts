@@ -79,7 +79,9 @@ beforeAll(async () => {
   await prisma.user.create({ data: { id: USER_ID, email: `rg-${TENANT_ID.slice(0, 8)}@x.com`, password: pw, tenantId: TENANT_ID } });
 
   const editRole = await prisma.role.create({ data: { tenantId: TENANT_ID, name: 'RG Editor', isSystem: true } });
-  await grant(editRole.id, 'doc:edit');
+  // doc:verify is required to approve/reject via /status (D1); this suite drives those
+  // transitions to exercise recalc, so the fixture holds both capabilities.
+  for (const s of ['doc:edit', 'doc:verify']) await grant(editRole.id, s);
   await prisma.userRole.create({ data: { userId: USER_ID, roleId: editRole.id, scopeType: ScopeType.ORGANIZATION } });
   editToken = await makeSession(USER_ID, TENANT_ID);
 

@@ -19,6 +19,7 @@ import {
   ResourceNotFoundError,
   BusinessRuleViolationError,
   DuplicateResourceError,
+  AuthorizationError,
 } from '../types/exceptions';
 
 export interface TenantContext {
@@ -1395,7 +1396,8 @@ export class DocumentationService {
       waivedReason?:     string;
       expiryDate?:       Date;
       documentDate?:     string;
-    }
+    },
+    canVerify: boolean,
   ) {
     return this.prisma.$transaction(async (tx) => {
       // Race safety (guardrail #4): lock the row before reading status + asserting, so two
@@ -1410,6 +1412,15 @@ export class DocumentationService {
       if (!doc) throw new ResourceNotFoundError();
 
       assertValidTransition(doc.status, input.status);
+
+      // D1: approve/reject is the reviewer decision gated by doc:verify. The service is the
+      // source of truth — BOTH the /verify and /status routes land here, so enforce the
+      // capability in-service (mirrors the file-level guard in document.service.ts) rather
+      // than trusting a single route's permission middleware. Non-verify transitions
+      // (e.g. *→UNDER_VERIFICATION) stay doc:edit-only.
+      if ((input.status === 'APPROVED' || input.status === 'REJECTED') && !canVerify) {
+        throw new AuthorizationError();
+      }
 
       // Server-side reviewer enforcement — the service layer is the source of truth; never
       // trust the client to have collected a required note/date before approving.

@@ -301,7 +301,7 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
         const doc = await svc.updateDocumentStatus({ tenantId, userId }, req.params.id, {
           status, remarks, rejectionReason, waivedReason,
           expiryDate: expiryDate ? new Date(expiryDate) : undefined,
-        });
+        }, hasPermission(req, 'doc:verify'));
         res.json({ success: true, data: doc });
       } catch (err) { next(err); }
     }
@@ -319,7 +319,7 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
           remarks,
           rejectionReason:  req.body.rejectionReason,
           documentDate:     req.body.documentDate,
-        });
+        }, true); // route already enforces doc:verify
         res.json({ success: true, data: doc });
       } catch (err) { next(err); }
     }
