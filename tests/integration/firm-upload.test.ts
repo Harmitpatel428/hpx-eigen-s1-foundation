@@ -45,6 +45,7 @@ jest.mock('../../src/services/email.service', () => ({
 import { createMandateRouter } from '../../src/routes/mandate.router';
 import { createDocumentationRouter } from '../../src/routes/documentation.router';
 import { AppException } from '../../src/types/exceptions';
+import { AuditService } from '../../src/services/audit.service';
 
 const prisma = new PrismaClient();
 let server: http.Server;
@@ -606,5 +607,26 @@ describe('document lifecycle re-upload + approve guard (bugfix)', () => {
     const { req } = await setup();
     expect((await patch(`${V}/${req.id}/verify`, adminToken, { result: 'APPROVED' })).status).toBe(200);
     expect(await status(req.id)).toBe(DocDocumentStatus.APPROVED);
+  });
+});
+
+// ─── D3: upload-driven requirement transition is recorded in the hash-chain audit ────
+describe('D3 — hash-chain audit on upload-driven requirement transition', () => {
+  it('upload to a PENDING_COLLECTION requirement writes a DOC_DOCUMENT_STATUS_CHANGED audit row; chain verifies', async () => {
+    const c = await createCase();
+    const req = await createRequirement(c.id); // PENDING_COLLECTION
+    const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
+    expect(confirm!.status).toBe(200);
+
+    const rows = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityType: 'DocCaseDocument', entityId: req.id, eventType: 'DOC_DOCUMENT_STATUS_CHANGED' },
+    });
+    expect(rows.length).toBe(1);
+    expect((rows[0].beforeState as Record<string, unknown>)?.status).toBe('PENDING_COLLECTION');
+    expect((rows[0].afterState as Record<string, unknown>)?.status).toBe('UNDER_VERIFICATION');
+
+    const { valid, errors } = await new AuditService(prisma).verifyChain(TENANT_ID);
+    expect(errors).toEqual([]);
+    expect(valid).toBe(true);
   });
 });

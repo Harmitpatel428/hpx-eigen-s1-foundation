@@ -1750,6 +1750,18 @@ export class DocumentationService {
         fromStatus: doc.status, toStatus, payload: {} as Prisma.InputJsonValue,
       },
     });
+    // D3: record the requirement status change in the tamper-evident audit chain too (not
+    // just DocCaseEvent). Upload/replace-driven transitions previously left no DOC_DOCUMENT_
+    // STATUS_CHANGED row, unlike the reviewer path in updateDocumentStatus. appendInTx joins
+    // this tx so the write is atomic with the transition.
+    await this.audit.appendInTx(tx, {
+      tenantId: ctx.tenantId, actorUserId: ctx.userId,
+      eventType: 'DOC_DOCUMENT_STATUS_CHANGED', entityType: 'DocCaseDocument', entityId: requirementId,
+      operation: 'UPDATE',
+      payload: { fromStatus: doc.status, toStatus, trigger: 'FILE_UPLOAD' },
+      beforeState: { status: doc.status },
+      afterState: { status: toStatus },
+    });
     await this._recalcAndUpdateCase(tx, doc.caseId, ctx.tenantId);
     return 'applied';
   }
