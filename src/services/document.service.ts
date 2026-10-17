@@ -74,7 +74,6 @@ type ConfirmInput = {
   expiresAt?: Date | null;
   receivedAt?: Date | null;
   verify?: boolean;
-  requirementStatus?: DocDocumentStatus;
 };
 
 type ReplaceInput = {

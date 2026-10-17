@@ -278,12 +278,16 @@ describe('Firm document upload (unified Document)', () => {
     expect(url.status).toBe(403);
   });
 
-  it('rejects verify=true + requirementStatus (400 mutual exclusion)', async () => {
+  it('ignores a stray requirementStatus on confirm-upload (D2: dead field, no mutual-exclusion error)', async () => {
     const c = await createCase();
     const req = await createRequirement(c.id);
     const url = await post(`/api/v1/documentation/cases/${c.id}/files/upload-url`, adminToken, { fileName: 'd.pdf', contentType: 'application/pdf', fileSizeBytes: 1024 });
+    // verify + requirementStatus together no longer 400 — requirementStatus is accepted-and-ignored.
     const confirm = await post(`/api/v1/documentation/cases/${c.id}/files/confirm-upload`, adminToken, { uploadId: url.body.data.uploadId, fileName: 'd.pdf', category: 'REQUIREMENT', requirementId: req.id, sourceChannel: 'EMAIL', verify: true, requirementStatus: 'RECEIVED' });
-    expect(confirm.status).toBe(400);
+    expect(confirm.status).toBe(200);
+    expect(confirm.body.data.status).toBe('VERIFIED'); // verify honored
+    // requirementStatus:'RECEIVED' is IGNORED — a firm upload always drives UNDER_VERIFICATION.
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
   });
 
   it('409 on a second active document for the same requirement', async () => {
@@ -471,6 +475,16 @@ describe('Requirement status workflow', () => {
     const req = await mkReq(c.id, { status: DocDocumentStatus.PENDING_COLLECTION });
     const { confirm } = await firmDoc(c.id, adminToken, { category: 'REQUIREMENT', requirementId: req.id });
     expect(confirm!.status).toBe(200);
+    expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
+  });
+
+  // D4: no transition edge targets WAIVED/RECEIVED, so /status can never reach them.
+  // Guards the dead-branch removal from updateDocumentStatus (behavior-preserving).
+  it('rejects unreachable target statuses via /status (D4: no WAIVED/RECEIVED edges)', async () => {
+    const c = await createCase();
+    const req = await mkReq(c.id); // UNDER_VERIFICATION + live file
+    expect((await patch(`${V}/${req.id}/status`, adminToken, { status: 'WAIVED', waivedReason: 'x' })).status).toBe(422);
+    expect((await patch(`${V}/${req.id}/status`, adminToken, { status: 'RECEIVED' })).status).toBe(422);
     expect((await prisma.docCaseDocument.findUnique({ where: { id: req.id } }))?.status).toBe(DocDocumentStatus.UNDER_VERIFICATION);
   });
 });

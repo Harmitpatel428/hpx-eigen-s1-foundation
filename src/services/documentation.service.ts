@@ -1393,7 +1393,6 @@ export class DocumentationService {
       status:            DocDocumentStatus;
       remarks?:          string;
       rejectionReason?:  string;
-      waivedReason?:     string;
       expiryDate?:       Date;
       documentDate?:     string;
     },
@@ -1448,13 +1447,14 @@ export class DocumentationService {
       }
 
       const now = new Date();
+      // Only PENDING_COLLECTION->UNDER_VERIFICATION, UNDER_VERIFICATION->APPROVED/REJECTED and
+      // REJECTED->UNDER_VERIFICATION are reachable (see VALID_TRANSITIONS); branches for other
+      // target statuses were unreachable dead code and have been removed (D4).
       const updateData: Prisma.DocCaseDocumentUpdateInput = {
         status: input.status,
         notes:  input.remarks ? (doc.notes ? `${doc.notes}\n${input.remarks}` : input.remarks) : doc.notes,
-        ...(input.status === 'RECEIVED'            ? { receivedAt: now } : {}),
         ...(input.status === 'APPROVED'            ? { verifiedAt: now, verifiedBy: ctx.userId, verificationRemarks: input.remarks?.trim() ?? null } : {}),
         ...(input.status === 'REJECTED'            ? { rejectionReason: input.rejectionReason!.trim() } : {}),
-        ...(input.status === 'WAIVED'              ? { isWaived: true, waivedBy: ctx.userId, waivedReason: input.waivedReason ?? null } : {}),
         ...(input.status === 'UNDER_VERIFICATION'  ? { verifiedBy: ctx.userId } : {}),
         ...(input.expiryDate                       ? { expiryDate: input.expiryDate } : {}),
         ...(documentDateIso                        ? { metadataValues: { ...(doc.metadataValues as Record<string, unknown> ?? {}), documentDate: documentDateIso } as Prisma.InputJsonValue } : {}),
@@ -1470,13 +1470,11 @@ export class DocumentationService {
         });
       }
 
-      // Determine event type
+      // Determine event type (only reachable target statuses; see D4 note above)
       const eventTypeMap: Partial<Record<DocDocumentStatus, DocEventType>> = {
-        RECEIVED:           'DOCUMENT_RECEIVED',
         UNDER_VERIFICATION: 'DOCUMENT_VERIFIED',
         APPROVED:           'DOCUMENT_APPROVED',
         REJECTED:           'DOCUMENT_REJECTED',
-        WAIVED:             'DOCUMENT_WAIVED',
       };
 
       await tx.docCaseEvent.create({

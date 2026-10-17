@@ -293,13 +293,13 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
-        const { status, remarks, rejectionReason, waivedReason, expiryDate } = req.body as {
+        const { status, remarks, rejectionReason, expiryDate } = req.body as {
           status: DocDocumentStatus; remarks?: string; rejectionReason?: string;
-          waivedReason?: string; expiryDate?: string;
+          expiryDate?: string;
         };
         if (!status) throw new ValidationError('status is required.');
         const doc = await svc.updateDocumentStatus({ tenantId, userId }, req.params.id, {
-          status, remarks, rejectionReason, waivedReason,
+          status, remarks, rejectionReason,
           expiryDate: expiryDate ? new Date(expiryDate) : undefined,
         }, hasPermission(req, 'doc:verify'));
         res.json({ success: true, data: doc });
@@ -376,8 +376,6 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
         if (b.internalNote !== undefined && b.internalNote !== null && (typeof b.internalNote !== 'string' || b.internalNote.length > 2000)) throw new ValidationError('internalNote must be at most 2000 characters.');
         if (b.clientVisible !== undefined && typeof b.clientVisible !== 'boolean') throw new ValidationError('clientVisible must be a boolean.');
         if (b.verify !== undefined && typeof b.verify !== 'boolean') throw new ValidationError('verify must be a boolean.');
-        // F4: verify and requirementStatus are mutually exclusive.
-        if (b.verify === true && b.requirementStatus !== undefined && b.requirementStatus !== null) throw new ValidationError('Choose verify or an explicit requirementStatus, not both.');
 
         const caseRow = await prisma.docCase.findFirst({ where: { id: req.params.caseId, tenantId }, select: { createdAt: true } });
         let receivedAt: Date | null = null;
@@ -400,7 +398,7 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
             name: b.name as string | undefined, requirementId: b.requirementId as string | undefined,
             sourceChannel: b.sourceChannel as DocumentSourceChannel, internalNote: b.internalNote as string | undefined,
             clientVisible: b.clientVisible as boolean | undefined, expiresAt, receivedAt,
-            verify: b.verify as boolean | undefined, requirementStatus: b.requirementStatus as DocDocumentStatus | undefined,
+            verify: b.verify as boolean | undefined,
           },
           hasPermission(req, 'doc:verify'),
         );
