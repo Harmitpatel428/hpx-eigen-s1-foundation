@@ -95,7 +95,7 @@ const TERMINAL_STATUSES: DocCaseStatus[] = ['CLOSED', 'CANCELLED', 'CLOSED_NO_DO
 // Not queried directly (the guard excludes TERMINAL_STATUSES via `notIn` instead, so a
 // concurrent transition into terminal is still handled safely) — kept for readability
 // and to name the statuses the progress-only branch below applies to.
-const PROTECTED_NON_TERMINAL_STATUSES: DocCaseStatus[] = ['INCOMING', 'RETURNED', 'TRANSFERRED_TO_PROCESS'];
+const PROTECTED_NON_TERMINAL_STATUSES: DocCaseStatus[] = ['INCOMING', 'RETURNED', 'PENDING_PROCESS_REVIEW', 'RETURNED_TO_DOCUMENTATION', 'TRANSFERRED_TO_PROCESS'];
 
 // ─── Smart suggestion keyword map ────────────────────────────────────────────
 
@@ -148,7 +148,12 @@ export function getSuggestions(presetName: string): string[] {
 // ─── Multi-policy assignment helpers ─────────────────────────────────────────
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ASSIGN_ALLOWED_STATUSES: DocCaseStatus[] = ['INCOMING', 'RETURNED', 'ACTIVE', 'DOCUMENTATION_READY'];
+// RETURNED_TO_DOCUMENTATION is included: when Process returns a case for a
+// MISSING_DOCUMENT / INCORRECT_DOCUMENT reason, the Documentation team must be
+// able to attach the corrective document — excluding it would dead-end the
+// ratified return workflow. PENDING_PROCESS_REVIEW / TRANSFERRED_TO_PROCESS are
+// excluded: the case is Process-owned and frozen for Documentation edits.
+const ASSIGN_ALLOWED_STATUSES: DocCaseStatus[] = ['INCOMING', 'RETURNED', 'ACTIVE', 'DOCUMENTATION_READY', 'RETURNED_TO_DOCUMENTATION'];
 const DESELECT_SAFE_STATUSES: DocDocumentStatus[] = ['REQUESTED', 'PENDING_COLLECTION'];
 
 export interface PolicyInput {
@@ -1302,6 +1307,8 @@ export class DocumentationService {
       totalCases,
       activeCases,
       readyCases,
+      pendingProcessReview,
+      returnedToDocumentation,
       transferredCases,
       pendingVerification,
       overdueDocCount,
@@ -1309,6 +1316,8 @@ export class DocumentationService {
       this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null } }),
       this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'ACTIVE' } }),
       this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, isReady: true, status: 'DOCUMENTATION_READY' } }),
+      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'PENDING_PROCESS_REVIEW' } }),
+      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'RETURNED_TO_DOCUMENTATION' } }),
       this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'TRANSFERRED_TO_PROCESS' } }),
       this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'UNDER_VERIFICATION' } }),
       this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'EXPIRED' } }),
@@ -1330,6 +1339,8 @@ export class DocumentationService {
       totalCases,
       activeCases,
       readyCases,
+      pendingProcessReview,
+      returnedToDocumentation,
       transferredCases,
       pendingVerification,
       overdueDocCount,

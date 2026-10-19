@@ -185,6 +185,8 @@ describe('progress stage mapping', () => {
     [DocCaseStatus.RETURNED, 'RECEIVED'],
     [DocCaseStatus.ACTIVE, 'IN_REVIEW'],
     [DocCaseStatus.DOCUMENTATION_READY, 'VERIFIED'],
+    [DocCaseStatus.PENDING_PROCESS_REVIEW, 'PROCESSING'],
+    [DocCaseStatus.RETURNED_TO_DOCUMENTATION, 'IN_REVIEW'],
     [DocCaseStatus.TRANSFERRED_TO_PROCESS, 'PROCESSING'],
     [DocCaseStatus.CLOSED, 'COMPLETED'],
   ])('%s → %s', (status, expected) => {

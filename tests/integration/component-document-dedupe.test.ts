@@ -553,3 +553,21 @@ describe('Materialized requirement defaults', () => {
     expect(docs[0].requireNote).toBe(true);
   });
 });
+
+describe('assignment and Doc→Process status gate', () => {
+  it('ALLOWS policy assignment on a RETURNED_TO_DOCUMENTATION case (corrective-doc fix loop)', async () => {
+    const { type, A } = await abcFixture();
+    const kase = await makeCase('RETURNED_TO_DOCUMENTATION');
+    expect((await assign(kase.id, { policies: [{ caseTypeId: type, componentIds: [A] }] })).status).toBe(200);
+    expect((await activeDocs(kase.id)).length).toBeGreaterThan(0);
+  });
+
+  it('BLOCKS policy assignment once Process owns the case (PENDING_PROCESS_REVIEW, TRANSFERRED_TO_PROCESS)', async () => {
+    const { type, A } = await abcFixture();
+    for (const status of ['PENDING_PROCESS_REVIEW', 'TRANSFERRED_TO_PROCESS'] as const) {
+      const kase = await makeCase(status);
+      const r = await assign(kase.id, { policies: [{ caseTypeId: type, componentIds: [A] }] });
+      expect(r.status).toBe(422);
+    }
+  });
+});

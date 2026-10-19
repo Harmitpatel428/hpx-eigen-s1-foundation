@@ -93,13 +93,20 @@ export function canTransition(
         return deny('This case has already been accepted — use Return instead.');
       return ALLOW;
 
-    // Return is valid ONLY after acceptance, and never once Process owns the case.
+    // Return is valid ONLY after acceptance, and never once Process owns the case
+    // (PENDING_PROCESS_REVIEW = awaiting Process acceptance, TRANSFERRED_TO_PROCESS =
+    // accepted). A case Process sent back (RETURNED_TO_DOCUMENTATION) is Doc-owned
+    // again, so Sales-return is valid from it.
     case 'RETURN':
-      if (status === DocCaseStatus.TRANSFERRED_TO_PROCESS)
+      if (status === DocCaseStatus.TRANSFERRED_TO_PROCESS || status === DocCaseStatus.PENDING_PROCESS_REVIEW)
         return deny('Process owns this case. Use a Process correction flow.');
       if (status === DocCaseStatus.CLOSED || status === DocCaseStatus.CANCELLED)
         return deny('This case is closed.');
-      if (status !== DocCaseStatus.ACTIVE && status !== DocCaseStatus.DOCUMENTATION_READY)
+      if (
+        status !== DocCaseStatus.ACTIVE &&
+        status !== DocCaseStatus.DOCUMENTATION_READY &&
+        status !== DocCaseStatus.RETURNED_TO_DOCUMENTATION
+      )
         return deny('Only an accepted case can be returned.');
       return ALLOW;
 

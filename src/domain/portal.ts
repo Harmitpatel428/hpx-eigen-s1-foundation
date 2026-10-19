@@ -116,8 +116,13 @@ export function progressStageFor(status: DocCaseStatus): string {
       return 'IN_REVIEW';
     case DocCaseStatus.DOCUMENTATION_READY:
       return 'VERIFIED';
+    // Handed to Process (awaiting acceptance) or accepted — the client sees "processing".
+    case DocCaseStatus.PENDING_PROCESS_REVIEW:
     case DocCaseStatus.TRANSFERRED_TO_PROCESS:
       return 'PROCESSING';
+    // Process sent it back; Documentation is reworking it — back to "under review".
+    case DocCaseStatus.RETURNED_TO_DOCUMENTATION:
+      return 'IN_REVIEW';
     case DocCaseStatus.CLOSED:
       return 'COMPLETED';
     default:

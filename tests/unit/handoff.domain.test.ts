@@ -53,6 +53,16 @@ describe('handoff state machine', () => {
       expect(r.reason).toMatch(/Process owns this case/i);
     });
 
+    it('BLOCKS return while PENDING_PROCESS_REVIEW (Process is reviewing)', () => {
+      const r = canTransition('RETURN', DocCaseStatus.PENDING_PROCESS_REVIEW, ACCEPTED, false);
+      expect(r.allowed).toBe(false);
+      expect(r.reason).toMatch(/Process owns this case/i);
+    });
+
+    it('ALLOWS return from RETURNED_TO_DOCUMENTATION (Doc-owned again)', () => {
+      expect(canTransition('RETURN', DocCaseStatus.RETURNED_TO_DOCUMENTATION, ACCEPTED, false).allowed).toBe(true);
+    });
+
     it('blocks return on a CLOSED case', () => {
       expect(canTransition('RETURN', DocCaseStatus.CLOSED, ACCEPTED, false).allowed).toBe(false);
     });
