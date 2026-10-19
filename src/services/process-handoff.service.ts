@@ -113,7 +113,7 @@ export class ProcessHandoffService {
 
   /** The Process incoming queue: cases awaiting Process acceptance (tenant-scoped). */
   async listPendingForProcess(ctx: TenantContext) {
-    return this.prisma.docCase.findMany({
+    const cases = await this.prisma.docCase.findMany({
       where: {
         tenantId: ctx.tenantId,
         status: DocCaseStatus.PENDING_PROCESS_REVIEW,
@@ -122,9 +122,28 @@ export class ProcessHandoffService {
       include: {
         lead: { select: { id: true, firstName: true, lastName: true, company: true, phone: true } },
         preset: { select: { id: true, name: true } },
+        caseType: { select: { id: true, name: true } },
       },
       orderBy: { processHandoffAt: 'asc' },
     });
+
+    // DocCase has no user relation for processHandoffBy — resolve display names with a
+    // manual map (cf. the Lead ownerMap pattern). Falls back to null (FE shows the id).
+    const byIds = [...new Set(cases.map((c) => c.processHandoffBy).filter((x): x is string => !!x))];
+    const users = byIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: byIds }, tenantId: ctx.tenantId },
+          select: { id: true, firstName: true, lastName: true, email: true },
+        })
+      : [];
+    const nameOf = (u: { firstName: string | null; lastName: string | null; email: string }) =>
+      [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
+    const nameById = new Map(users.map((u) => [u.id, nameOf(u)]));
+
+    return cases.map((c) => ({
+      ...c,
+      processHandoffByName: c.processHandoffBy ? nameById.get(c.processHandoffBy) ?? null : null,
+    }));
   }
 
   // ─── Internals ─────────────────────────────────────────────────────────────

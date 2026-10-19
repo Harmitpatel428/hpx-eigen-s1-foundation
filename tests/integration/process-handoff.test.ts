@@ -141,7 +141,12 @@ describe('Doc → Process handover', () => {
 
     const queue = await get('/api/v1/process/cases', adminToken);
     expect(queue.status).toBe(200);
-    expect(queue.body.data.some((x: any) => x.id === c.id)).toBe(true);
+    const row = queue.body.data.find((x: any) => x.id === c.id);
+    expect(row).toBeTruthy();
+    // 6a: queue payload carries caseType (null when unset) and a resolved transferred-by name.
+    expect('caseType' in row).toBe(true);
+    expect(typeof row.processHandoffByName).toBe('string');
+    expect(row.processHandoffByName.length).toBeGreaterThan(0);
 
     expect((await accept(c.id)).status).toBe(200);
     const accepted = await prisma.docCase.findUnique({ where: { id: c.id } });
