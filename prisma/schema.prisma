@@ -1023,6 +1023,11 @@ enum DocCaseStatus {
   // which deletes nothing and leaves the case in INCOMING for the Sales owner to fix & resend.
   RETURNED
   DOCUMENTATION_READY
+  // PENDING_PROCESS_REVIEW — handed to Process, awaiting explicit Process acceptance.
+  PENDING_PROCESS_REVIEW
+  // RETURNED_TO_DOCUMENTATION — Process returned the case; Documentation-owned, work reopened.
+  RETURNED_TO_DOCUMENTATION
+  // TRANSFERRED_TO_PROCESS — Process accepted; Process owns the case (post-acceptance).
   TRANSFERRED_TO_PROCESS
   CLOSED
   CANCELLED
@@ -1061,6 +1066,27 @@ enum HandoffReturnReason {
   WRONG_PRESET
   INCOMPLETE_INFORMATION
   DUPLICATE_CASE
+  COMPLIANCE_ISSUE
+  OTHER
+}
+
+// ─── Documentation → Process handoff (second, independent handoff dimension) ──
+// Tracked separately from HandoffState so the Sales→Doc handoff history is never
+// overwritten. See .planning/doc-to-process-handover-design.md.
+enum ProcessHandoffState {
+  NONE
+  PENDING_REVIEW
+  ACCEPTED
+  RETURNED
+}
+
+// Process-side return reasons. Mandatory free-text note (>=10 chars) accompanies
+// every return. Ratified 2026-10-19 (design §A.5 / J-4).
+enum ProcessReturnReason {
+  MISSING_DOCUMENT
+  INCORRECT_DOCUMENT
+  DATA_MISMATCH
+  NEEDS_CLARIFICATION
   COMPLIANCE_ISSUE
   OTHER
 }
@@ -1258,6 +1284,21 @@ model DocCase {
   handoffPhoneSnapshot  String?
   handoffPresetSnapshot String?              @db.Uuid
 
+  // ─── Documentation → Process handoff (Option B) ──────────────────────
+  // Independent of the Sales→Doc handoff block above. See
+  // .planning/doc-to-process-handover-design.md §C.2.
+  processHandoffState     ProcessHandoffState  @default(NONE)
+  processHandoffAt        DateTime?
+  processHandoffBy        String?              @db.Uuid // Documentation user who transferred
+  processAssignedTo       String?              @db.Uuid // Process owner after acceptance
+  processAcceptedAt       DateTime?
+  processAcceptedBy       String?              @db.Uuid
+  processReturnedAt       DateTime?
+  processReturnCount      Int                  @default(0)
+  processReturnReasonCode ProcessReturnReason?
+  processReturnReasonNote String?
+  handoverRemarks         String?                       // optional remarks captured at transfer
+
   // ─── Client portal ───────────────────────────────────────────────
   // Non-null == portal is live. Set once, on first client-visible publish.
   portalEnabledAt            DateTime?
@@ -1297,6 +1338,7 @@ model DocCase {
   @@index([tenantId, isReady])
   @@index([deletedAt])
   @@index([tenantId, handoffState])
+  @@index([tenantId, processHandoffState])
   @@index([autoDropAt])
   // Composite index for closed-case queries (status + closedAt). Hand-written in
   // migration 20260909100000_case_id_and_close_no_docs; this line only catches the
