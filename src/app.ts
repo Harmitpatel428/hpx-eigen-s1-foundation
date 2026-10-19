@@ -35,6 +35,7 @@ import { createTeamsRouter } from './routes/teams.router';
 
 // ─── Route Factories (S4 Documentation Tracker) ───────────────────────────────
 import { createDocumentationRouter } from './routes/documentation.router';
+import { createProcessRouter } from './routes/process.router';
 
 // ─── Route Factories (Phase 1-B: Handoff + Client Portal) ────────────────────
 import {
@@ -158,6 +159,7 @@ app.use('/api/v1/teams', createTeamsRouter(prisma));
 
 // ─── S4 Documentation Tracker ─────────────────────────────────────────────────
 app.use('/api/v1/documentation', createDocumentationRouter(prisma));
+app.use('/api/v1/process', createProcessRouter(prisma));
 
 // ─── Phase 1-B: Handoff + Client Portal ───────────────────────────────────────
 // /portal is deliberately PUBLIC (its own token scheme) — do not add authMiddleware.

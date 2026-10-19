@@ -9,6 +9,7 @@ import {
   Prisma,
   CaseFieldType,
   CaseFieldConditionOperator,
+  ProcessHandoffState,
 } from '@prisma/client';
 import { operatorAllowedForType, validateScalarConditionValue } from './case-field.validation';
 import { normalizeDedupeKey } from './case-type.service';
@@ -20,7 +21,9 @@ import {
   BusinessRuleViolationError,
   DuplicateResourceError,
   AuthorizationError,
+  ConflictError,
 } from '../types/exceptions';
+import { canTransition as canProcessTransition, precondition as processPrecondition } from '../domain/process-handoff';
 
 export interface TenantContext {
   tenantId: string;
@@ -1659,48 +1662,70 @@ export class DocumentationService {
 
   // ─── TRANSFER TO PROCESS ───────────────────────────────────────────────────
 
-  async transferToProcess(ctx: TenantContext, caseId: string) {
+  /**
+   * Documentation hands a ready case to Process (Option B). The case enters
+   * PENDING_PROCESS_REVIEW and awaits explicit Process acceptance — it does NOT
+   * become Process-owned here. State legality is the domain state machine's
+   * call; the preconditioned updateMany is the single concurrency guard (a
+   * 0-row result means another actor moved the case first → ConflictError).
+   */
+  async transferToProcess(ctx: TenantContext, caseId: string, remarks?: string) {
     return this.prisma.$transaction(async (tx) => {
       const docCase = await tx.docCase.findFirst({
         where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null },
+        select: { status: true, processHandoffState: true, isReady: true },
       });
       if (!docCase) throw new ResourceNotFoundError();
 
-      // Must be ready or have manager override
+      // State legality (duplicate-transfer / wrong-state) → 422.
+      const check = canProcessTransition('TRANSFER', docCase.status, docCase.processHandoffState);
+      if (!check.allowed) throw new BusinessRuleViolationError(check.reason);
+
+      // Readiness: all mandatory docs approved, OR a manager override exists.
       if (!docCase.isReady) {
         const override = await tx.docManagerOverride.findFirst({
           where: { caseId, tenantId: ctx.tenantId },
           orderBy: { allowedAt: 'desc' },
         });
-        if (!override) throw new BusinessRuleViolationError();
+        if (!override) throw new BusinessRuleViolationError('Case is not ready for Process and has no manager override.');
       }
 
-      if (docCase.status === 'TRANSFERRED_TO_PROCESS') throw new BusinessRuleViolationError();
-
       const now = new Date();
-      await tx.docCase.update({
-        where: { id: caseId },
+      const pre = processPrecondition('TRANSFER');
+      const result = await tx.docCase.updateMany({
+        where: {
+          id: caseId, tenantId: ctx.tenantId, deletedAt: null,
+          status: { in: pre.status },
+          processHandoffState: { in: pre.processHandoffState },
+        },
         data: {
-          status:        'TRANSFERRED_TO_PROCESS',
-          transferredAt: now,
-          transferredBy: ctx.userId,
+          status:              DocCaseStatus.PENDING_PROCESS_REVIEW,
+          processHandoffState: ProcessHandoffState.PENDING_REVIEW,
+          processHandoffAt:    now,
+          processHandoffBy:    ctx.userId,
+          handoverRemarks:     remarks?.trim() ? remarks.trim() : null,
+          transferredAt:       now,
+          transferredBy:       ctx.userId,
         },
       });
+      // Lost the race: the case left the transferable state between read and write.
+      if (result.count === 0) throw new ConflictError();
 
       await tx.docCaseEvent.create({
         data: {
           tenantId:    ctx.tenantId,
           caseId,
-          eventType:   'TRANSFERRED_TO_PROCESS',
+          eventType:   DocEventType.PROCESS_REVIEW_REQUESTED,
           actorUserId: ctx.userId,
-          payload:     { transferredAt: now.toISOString() } as unknown as Prisma.InputJsonValue,
+          // remarks is bounded (<=2000 chars, validated at the route) before it reaches here.
+          payload:     { transferredAt: now.toISOString(), remarks: remarks?.trim() || null } as unknown as Prisma.InputJsonValue,
         },
       });
 
       await this.audit.log({
         tenantId: ctx.tenantId, actorUserId: ctx.userId,
-        eventType: 'DOC_CASE_TRANSFERRED', entityType: 'DocCase', entityId: caseId,
-        operation: 'UPDATE', payload: { status: 'TRANSFERRED_TO_PROCESS' },
+        eventType: 'DOC_CASE_PROCESS_REVIEW_REQUESTED', entityType: 'DocCase', entityId: caseId,
+        operation: 'UPDATE', payload: { status: 'PENDING_PROCESS_REVIEW' },
       });
 
       return tx.docCase.findFirst({ where: { id: caseId }, include: { lead: true, preset: true } });

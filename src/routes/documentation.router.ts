@@ -212,7 +212,14 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
-        const result = await svc.transferToProcess({ tenantId, userId }, req.params.id);
+        const { remarks } = (req.body ?? {}) as { remarks?: unknown };
+        if (remarks !== undefined && remarks !== null) {
+          if (typeof remarks !== 'string') throw new ValidationError('remarks must be a string.');
+          if (remarks.length > 2000) throw new ValidationError('remarks must be 2000 characters or fewer.');
+        }
+        const result = await svc.transferToProcess(
+          { tenantId, userId }, req.params.id, typeof remarks === 'string' ? remarks : undefined,
+        );
         res.json({ success: true, data: result });
       } catch (err) { next(err); }
     }

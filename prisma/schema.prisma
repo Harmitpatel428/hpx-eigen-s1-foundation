@@ -1136,6 +1136,10 @@ enum DocEventType {
   HANDOFF_RESENT
   HANDOFF_AUTO_DROPPED
   MANAGER_REVIEW_COMPLETED
+  // ─── Process handoff (Doc → Process, Option B) ───────────────────
+  PROCESS_REVIEW_REQUESTED
+  PROCESS_HANDOFF_ACCEPTED
+  PROCESS_HANDOFF_RETURNED
   // ─── Client portal ───────────────────────────────────────────────
   CLIENT_VISIBLE_PUBLISHED
   PORTAL_CONTACT_CHANGE_REQUESTED

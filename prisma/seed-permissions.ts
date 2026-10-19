@@ -112,6 +112,10 @@ const PERMISSIONS = [
   { slug: 'mandate:send',           module: 'Documentation', description: 'Send mandate upload requests to clients' },
   { slug: 'mandate:verify',         module: 'Documentation', description: 'Verify or reject uploaded mandate documents' },
   { slug: 'mandate:view',           module: 'Documentation', description: 'View mandate requests and uploads for a case' },
+  // Process department (Doc → Process handover, Option B — seeded via migration 20261019000100)
+  { slug: 'process:view',   module: 'Process', description: 'View the Process incoming queue' },
+  { slug: 'process:accept', module: 'Process', description: 'Accept a case handed to the Process department' },
+  { slug: 'process:return', module: 'Process', description: 'Return a case to Documentation from the Process queue' },
   // Case Operations Engine (Phase 1 (A) — new)
   { slug: 'case-engine:manage',      module: 'Case Engine', description: 'Enable or disable the Case Operations Engine for the tenant' },
   { slug: 'case-field:view',         module: 'Case Engine', description: 'View custom case field definitions' },
@@ -146,6 +150,11 @@ const PRESET_ROLES: Record<string, string[]> = {
     'contact:view', 'contact:create', 'contact:edit',
     'opportunity:view', 'opportunity:create', 'opportunity:edit',
     'activity:view', 'activity:create', 'activity:edit',
+  ],
+  // Process department — exactly the three Doc→Process queue permissions (ratified 2026-10-19).
+  // No doc:* / handoff:* here; Process neither documents nor runs the Sales handoff.
+  'Process': [
+    'process:view', 'process:accept', 'process:return',
   ],
 };
 
