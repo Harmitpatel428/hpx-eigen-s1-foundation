@@ -8,6 +8,9 @@ module.exports = {
   maxWorkers: 1,
   globalSetup: './tests/db-safety-check.js',
   setupFiles: ['./tests/setup-env.js'],
+  // Disconnect every PrismaClient a suite opens, after that suite — otherwise per-file
+  // clients accumulate connections across the serial run and exhaust Postgres.
+  setupFilesAfterEnv: ['./tests/disconnect-clients.js'],
   coverageDirectory: 'coverage',
   collectCoverageFrom: ['src/**/*.{ts,js}'],
   transform: {
