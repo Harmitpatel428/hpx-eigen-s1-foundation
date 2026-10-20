@@ -115,19 +115,37 @@ export class ProcessHandoffService {
 
   /** The Process incoming queue: cases awaiting Process acceptance (tenant-scoped). */
   async listPendingForProcess(ctx: TenantContext) {
-    const cases = await this.prisma.docCase.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        status: DocCaseStatus.PENDING_PROCESS_REVIEW,
-        deletedAt: null,
-      },
-      include: {
-        lead: { select: { id: true, firstName: true, lastName: true, company: true, phone: true } },
-        preset: { select: { id: true, name: true } },
-        caseType: { select: { id: true, name: true } },
-      },
-      orderBy: { processHandoffAt: 'asc' },
-    });
+    // The list and the header counts are independent → run them concurrently (one wall-time
+    // instead of two serial round-trips). The transferred-by lookup below depends on the
+    // list's ids, so it must stay sequential after it.
+    const [cases, grouped] = await Promise.all([
+      this.prisma.docCase.findMany({
+        where: { tenantId: ctx.tenantId, status: DocCaseStatus.PENDING_PROCESS_REVIEW, deletedAt: null },
+        include: {
+          lead: { select: { id: true, firstName: true, lastName: true, company: true, phone: true } },
+          preset: { select: { id: true, name: true } },
+          caseType: { select: { id: true, name: true } },
+        },
+        orderBy: { processHandoffAt: 'asc' },
+      }),
+      // Header counts carried in THIS (process:view) response so the queue header does not
+      // depend on the doc:view-gated dashboard. Same tenant scope, over the full set.
+      this.prisma.docCase.groupBy({
+        by: ['status'],
+        where: {
+          tenantId: ctx.tenantId,
+          deletedAt: null,
+          status: {
+            in: [
+              DocCaseStatus.PENDING_PROCESS_REVIEW,
+              DocCaseStatus.TRANSFERRED_TO_PROCESS,
+              DocCaseStatus.RETURNED_TO_DOCUMENTATION,
+            ],
+          },
+        },
+        _count: { _all: true },
+      }),
+    ]);
 
     // DocCase has no user relation for processHandoffBy — resolve display names with a
     // manual map (cf. the Lead ownerMap pattern). Falls back to null (FE shows the id).
@@ -141,32 +159,13 @@ export class ProcessHandoffService {
     const nameOf = (u: { firstName: string | null; lastName: string | null; email: string }) =>
       [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
     const nameById = new Map(users.map((u) => [u.id, nameOf(u)]));
-    const rows = cases.map((c) => ({
-      ...c,
-      processHandoffByName: c.processHandoffBy ? nameById.get(c.processHandoffBy) ?? null : null,
-    }));
-
-    // Header counts carried in THIS (process:view) response so the queue header does not
-    // depend on the doc:view-gated dashboard. Same tenant scope, over the full set.
-    const grouped = await this.prisma.docCase.groupBy({
-      by: ['status'],
-      where: {
-        tenantId: ctx.tenantId,
-        deletedAt: null,
-        status: {
-          in: [
-            DocCaseStatus.PENDING_PROCESS_REVIEW,
-            DocCaseStatus.TRANSFERRED_TO_PROCESS,
-            DocCaseStatus.RETURNED_TO_DOCUMENTATION,
-          ],
-        },
-      },
-      _count: { _all: true },
-    });
     const n = (s: DocCaseStatus) => grouped.find((g) => g.status === s)?._count._all ?? 0;
 
     return {
-      cases: rows,
+      cases: cases.map((c) => ({
+        ...c,
+        processHandoffByName: c.processHandoffBy ? nameById.get(c.processHandoffBy) ?? null : null,
+      })),
       counts: {
         incoming: n(DocCaseStatus.PENDING_PROCESS_REVIEW),
         processing: n(DocCaseStatus.TRANSFERRED_TO_PROCESS),
