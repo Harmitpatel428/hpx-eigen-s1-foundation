@@ -1733,10 +1733,11 @@ export class DocumentationService {
         },
       });
 
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, actorUserId: ctx.userId,
         eventType: 'DOC_CASE_PROCESS_REVIEW_REQUESTED', entityType: 'DocCase', entityId: caseId,
-        operation: 'UPDATE', payload: { status: 'PENDING_PROCESS_REVIEW' },
+        operation: 'UPDATE', payload: { status: 'PENDING_PROCESS_REVIEW', hasRemarks: !!remarks?.trim() },
       });
 
       return tx.docCase.findFirst({ where: { id: caseId }, include: { lead: true, preset: true } });

@@ -56,10 +56,11 @@ export class ProcessHandoffService {
       if (result.count === 0) throw new ConflictError();
 
       await this.event(tx, ctx, caseId, DocEventType.PROCESS_HANDOFF_ACCEPTED, {});
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, actorUserId: ctx.userId,
         eventType: 'PROCESS_HANDOFF_ACCEPTED', entityType: 'DocCase', entityId: caseId,
-        operation: 'UPDATE', payload: { caseNumber: docCase.caseNumber },
+        operation: 'UPDATE', payload: { caseNumber: docCase.caseNumber, processAssignedTo: docCase.processAssignedTo ?? ctx.userId },
       });
       return tx.docCase.findFirst({ where: { id: caseId }, include: { lead: true, preset: true } });
     });
@@ -102,10 +103,11 @@ export class ProcessHandoffService {
       await this.event(tx, ctx, caseId, DocEventType.PROCESS_HANDOFF_RETURNED, {
         reasonCode, hasNote: !!note.trim(),
       });
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, actorUserId: ctx.userId,
         eventType: 'PROCESS_HANDOFF_RETURNED', entityType: 'DocCase', entityId: caseId,
-        operation: 'UPDATE', payload: { caseNumber: docCase.caseNumber, reasonCode },
+        operation: 'UPDATE', payload: { caseNumber: docCase.caseNumber, reasonCode, processReturnCount: docCase.processReturnCount + 1 },
       });
       return tx.docCase.findFirst({ where: { id: caseId }, include: { lead: true, preset: true } });
     });

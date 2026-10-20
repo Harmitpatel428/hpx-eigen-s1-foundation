@@ -1080,8 +1080,8 @@ enum ProcessHandoffState {
   RETURNED
 }
 
-// Process-side return reasons. Mandatory free-text note (>=10 chars) accompanies
-// every return. Ratified 2026-10-19 (design §A.5 / J-4).
+// Process-side return reasons. Reason is always required; a free-text note is
+// required only when reason = OTHER. Ratified 2026-10-19 (design §A.5 / J-4).
 enum ProcessReturnReason {
   MISSING_DOCUMENT
   INCORRECT_DOCUMENT
