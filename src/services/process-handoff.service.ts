@@ -141,11 +141,38 @@ export class ProcessHandoffService {
     const nameOf = (u: { firstName: string | null; lastName: string | null; email: string }) =>
       [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
     const nameById = new Map(users.map((u) => [u.id, nameOf(u)]));
-
-    return cases.map((c) => ({
+    const rows = cases.map((c) => ({
       ...c,
       processHandoffByName: c.processHandoffBy ? nameById.get(c.processHandoffBy) ?? null : null,
     }));
+
+    // Header counts carried in THIS (process:view) response so the queue header does not
+    // depend on the doc:view-gated dashboard. Same tenant scope, over the full set.
+    const grouped = await this.prisma.docCase.groupBy({
+      by: ['status'],
+      where: {
+        tenantId: ctx.tenantId,
+        deletedAt: null,
+        status: {
+          in: [
+            DocCaseStatus.PENDING_PROCESS_REVIEW,
+            DocCaseStatus.TRANSFERRED_TO_PROCESS,
+            DocCaseStatus.RETURNED_TO_DOCUMENTATION,
+          ],
+        },
+      },
+      _count: { _all: true },
+    });
+    const n = (s: DocCaseStatus) => grouped.find((g) => g.status === s)?._count._all ?? 0;
+
+    return {
+      cases: rows,
+      counts: {
+        incoming: n(DocCaseStatus.PENDING_PROCESS_REVIEW),
+        processing: n(DocCaseStatus.TRANSFERRED_TO_PROCESS),
+        returned: n(DocCaseStatus.RETURNED_TO_DOCUMENTATION),
+      },
+    };
   }
 
   // ─── Internals ─────────────────────────────────────────────────────────────

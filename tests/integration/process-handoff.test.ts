@@ -141,12 +141,21 @@ describe('Doc → Process handover', () => {
 
     const queue = await get('/api/v1/process/cases', adminToken);
     expect(queue.status).toBe(200);
-    const row = queue.body.data.find((x: any) => x.id === c.id);
+    const row = queue.body.data.cases.find((x: any) => x.id === c.id);
     expect(row).toBeTruthy();
     // 6a: queue payload carries caseType (null when unset) and a resolved transferred-by name.
     expect('caseType' in row).toBe(true);
     expect(typeof row.processHandoffByName).toBe('string');
     expect(row.processHandoffByName.length).toBeGreaterThan(0);
+
+    // Header counts travel in the process:view response and equal direct status counts.
+    const [inc, proc, ret] = await Promise.all([
+      prisma.docCase.count({ where: { tenantId: TENANT_ID, deletedAt: null, status: 'PENDING_PROCESS_REVIEW' } }),
+      prisma.docCase.count({ where: { tenantId: TENANT_ID, deletedAt: null, status: 'TRANSFERRED_TO_PROCESS' } }),
+      prisma.docCase.count({ where: { tenantId: TENANT_ID, deletedAt: null, status: 'RETURNED_TO_DOCUMENTATION' } }),
+    ]);
+    expect(queue.body.data.counts).toEqual({ incoming: inc, processing: proc, returned: ret });
+    expect(inc).toBeGreaterThanOrEqual(1);
 
     expect((await accept(c.id)).status).toBe(200);
     const accepted = await prisma.docCase.findUnique({ where: { id: c.id } });
@@ -154,7 +163,9 @@ describe('Doc → Process handover', () => {
     expect(accepted?.processAssignedTo).toBe(ADMIN_ID);
 
     const queue2 = await get('/api/v1/process/cases', adminToken);
-    expect(queue2.body.data.some((x: any) => x.id === c.id)).toBe(false);
+    expect(queue2.body.data.cases.some((x: any) => x.id === c.id)).toBe(false);
+    // The accepted case moved out of incoming and into processing.
+    expect(queue2.body.data.counts.processing).toBeGreaterThanOrEqual(1);
   });
 
   it('transfer → return (reason) → RETURNED_TO_DOCUMENTATION → re-transfer', async () => {
