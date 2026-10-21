@@ -6,7 +6,7 @@
  * isolation), and that confirmHandoff auto-assigns a case number.
  */
 import 'dotenv/config';
-import { describe, it, beforeAll, afterAll, expect } from '@jest/globals';
+import { describe, it, beforeAll, afterAll, afterEach, expect, jest } from '@jest/globals';
 import { PrismaClient, DocCaseStatus, ScopeType } from '@prisma/client';
 import * as crypto from 'crypto';
 import * as http from 'http';
@@ -17,6 +17,7 @@ import bcrypt from 'bcryptjs';
 import { generateCaseNumber } from '../../src/domain/caseNumber';
 import { createCasesRouter } from '../../src/routes/handoff.router';
 import { HandoffService } from '../../src/services/handoff.service';
+import { AuditService } from '../../src/services/audit.service';
 import { AppException } from '../../src/types/exceptions';
 
 const prisma = new PrismaClient();
@@ -208,5 +209,67 @@ describe('POST /cases/:caseId/generate-case-id', () => {
     });
     const r = await postGenerateCaseId(otherCase.id, jwtToken);
     expect(r.status).toBe(404);
+  });
+});
+
+/**
+ * Inbound handoff audit atomicity — the HANDOFF_* audit rows must share the
+ * state-change transaction (appendInTx), not run in their own (log). Asserts the
+ * audit row exists iff the state change committed, including a rollback case.
+ */
+describe('inbound handoff audit atomicity (appendInTx shares the state-change tx)', () => {
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  async function qualifiedLead(tag: string) {
+    return prisma.lead.create({
+      data: {
+        tenantId: TENANT_ID, firstName: 'Atomic', lastName: tag,
+        email: `atomic-${tag}-${crypto.randomUUID()}@example.com`, stage: 'QUALIFIED',
+      },
+    });
+  }
+
+  it('commits the HANDOFF_CREATED audit row in-transaction, never via its own-tx log()', async () => {
+    const lead = await qualifiedLead('ok');
+    const logSpy = jest.spyOn(AuditService.prototype, 'log');
+    const handoff = new HandoffService(prisma);
+
+    const result = await handoff.confirmHandoff({ tenantId: TENANT_ID, userId: USER_ID }, lead.id);
+
+    // committed → exactly one audit row, appended in-tx (the own-tx log() path is never used).
+    expect(logSpy).not.toHaveBeenCalled();
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityId: result.id, eventType: 'HANDOFF_CREATED' },
+    });
+    expect(audits).toHaveLength(1);
+  });
+
+  it('leaves zero orphan audit rows when the transaction aborts after the audit append', async () => {
+    const lead = await qualifiedLead('rollback');
+    // Force a mid-transaction failure *after* the audit row is inserted: appendInTx runs
+    // (inside the outer tx), then throws. Because the append shares the state-change tx,
+    // the whole thing rolls back — no DocCase and no orphan audit row.
+    const realAppend = AuditService.prototype.appendInTx;
+    (AuditService.prototype as any).appendInTx = async function (this: AuditService, tx: unknown, input: unknown) {
+      await (realAppend as any).call(this, tx, input);
+      throw new Error('injected mid-transaction failure');
+    };
+    try {
+      const handoff = new HandoffService(prisma);
+      await expect(
+        handoff.confirmHandoff({ tenantId: TENANT_ID, userId: USER_ID }, lead.id),
+      ).rejects.toThrow('injected mid-transaction failure');
+    } finally {
+      AuditService.prototype.appendInTx = realAppend;
+    }
+
+    // state change rolled back: no DocCase for the lead …
+    const caseAfter = await prisma.docCase.findFirst({ where: { tenantId: TENANT_ID, leadId: lead.id } });
+    expect(caseAfter).toBeNull();
+    // … and no orphan audit row (the HANDOFF_CREATED payload carries leadId).
+    const orphan = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, eventType: 'HANDOFF_CREATED', payload: { path: ['leadId'], equals: lead.id } },
+    });
+    expect(orphan).toHaveLength(0);
   });
 });

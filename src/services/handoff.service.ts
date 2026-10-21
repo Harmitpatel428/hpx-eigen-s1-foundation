@@ -100,7 +100,8 @@ export class HandoffService {
         },
       });
 
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId,
         eventType: 'HANDOFF_CREATED',
         entityType: 'DocCase',
@@ -135,7 +136,8 @@ export class HandoffService {
       });
 
       await this.event(tx, ctx, caseId, DocEventType.HANDOFF_ACCEPTED, {});
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, eventType: 'HANDOFF_ACCEPTED', entityType: 'DocCase',
         entityId: caseId, actorUserId: ctx.userId, operation: 'UPDATE',
         payload: { caseNumber: docCase.caseNumber },
@@ -178,7 +180,8 @@ export class HandoffService {
       await this.event(tx, ctx, caseId, DocEventType.HANDOFF_REJECTED, {
         reasonCode, note: note.trim(), returnCount, managerReviewRequired,
       });
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, eventType: 'HANDOFF_REJECTED', entityType: 'DocCase',
         entityId: caseId, actorUserId: ctx.userId, operation: 'UPDATE',
         payload: { reasonCode, returnCount, managerReviewRequired },
@@ -225,7 +228,8 @@ export class HandoffService {
       await this.event(tx, ctx, caseId, DocEventType.CASE_RETURNED, {
         reasonCode, note: note.trim(), returnCount, managerReviewRequired,
       });
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, eventType: 'CASE_RETURNED', entityType: 'DocCase',
         entityId: caseId, actorUserId: ctx.userId, operation: 'UPDATE',
         payload: { reasonCode, returnCount, managerReviewRequired },
@@ -286,7 +290,8 @@ export class HandoffService {
         resolutionNote: resolutionNote.trim(),
         previousReason: docCase.returnReasonCode,
       });
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, eventType: 'HANDOFF_RESENT', entityType: 'DocCase',
         entityId: caseId, actorUserId: ctx.userId, operation: 'UPDATE',
         payload: { previousReason: docCase.returnReasonCode, returnCount: docCase.returnCount },
@@ -314,7 +319,8 @@ export class HandoffService {
       });
 
       await this.event(tx, ctx, caseId, DocEventType.MANAGER_REVIEW_COMPLETED, { note: note.trim() });
-      await this.audit.log({
+      // In-transaction audit (design §H): the hash-chain append shares the state-change tx.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, eventType: 'MANAGER_REVIEW_COMPLETED', entityType: 'DocCase',
         entityId: caseId, actorUserId: ctx.userId, operation: 'UPDATE',
         payload: { note: note.trim() },
