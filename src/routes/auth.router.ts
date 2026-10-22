@@ -133,7 +133,15 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       }
 
       const attempts = await checkLoginAttempts(email);
-      if (attempts > 5) return res.status(429).json({ success: false, error: { message: 'Too many attempts' } });
+      if (attempts > 5) {
+        // Flat {code,message} like every other login failure — the client reads data.message.
+        res.setHeader('Retry-After', '60');
+        return res.status(429).json({
+          success: false,
+          code: 'TOO_MANY_ATTEMPTS',
+          message: 'Too many login attempts. Please wait a minute and try again.'
+        });
+      }
       
       // User lookup (INCLUDE emailVerified)
       console.log('[LOGIN] Looking up user:', email);
