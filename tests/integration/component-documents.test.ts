@@ -98,6 +98,8 @@ afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
   for (const t of tracked) {
     await prisma.docCaseDocumentComponentSource.deleteMany({ where: { tenantId: t } }).catch(() => {});
+    await prisma.docCase.deleteMany({ where: { tenantId: t } }).catch(() => {});
+    await prisma.lead.deleteMany({ where: { tenantId: t } }).catch(() => {});
     await prisma.caseTypeComponentDocument.deleteMany({ where: { tenantId: t } }).catch(() => {});
     await prisma.caseTypeComponent.deleteMany({ where: { tenantId: t } }).catch(() => {});
     await prisma.caseType.deleteMany({ where: { tenantId: t } }).catch(() => {});
@@ -249,5 +251,53 @@ describe('Component document CRUD', () => {
     const compB = await makeComp(typeB);
     expect((await req('GET', docsUrl(typeA, compB), { token: mgr.token })).status).toBe(404);
     expect((await req('POST', docsUrl(typeA, compB), { token: mgr.token, body: { name: 'Z' } })).status).toBe(404);
+  });
+});
+
+describe('Component document hard delete', () => {
+  const mkDoc = async (t: string, c: string, name = 'PAN') =>
+    (await req('POST', docsUrl(t, c), { token: mgr.token, body: { name } })).body.data.id as string;
+
+  it('deletes a never-used document; it no longer lists (even includeInactive)', async () => {
+    const type = await makeType(); const comp = await makeComp(type); const id = await mkDoc(type, comp);
+    const del = await req('DELETE', `${docsUrl(type, comp)}/${id}`, { token: mgr.token });
+    expect(del.status).toBe(200);
+    expect(del.body.data).toEqual({ caseTypeId: type, componentId: comp, componentDocumentId: id });
+    expect((await req('GET', `${docsUrl(type, comp)}?includeInactive=true`, { token: mgr.token })).body.data).toHaveLength(0);
+    const audit = await prisma.auditLog.findFirst({ where: { tenantId, eventType: 'CASE_TYPE_COMPONENT_DOCUMENT_DELETED', entityId: id } });
+    expect(audit).not.toBeNull();
+  });
+
+  it('rejects (422, archive instead) a document referenced by a case source row', async () => {
+    const type = await makeType(); const comp = await makeComp(type); const id = await mkDoc(type, comp);
+    const lead = await prisma.lead.create({ data: { tenantId, firstName: 'T', lastName: 'C' }, select: { id: true } });
+    const creator = await prisma.user.findFirstOrThrow({ where: { tenantId }, select: { id: true } });
+    const docCase = await prisma.docCase.create({ data: { tenantId, leadId: lead.id, createdBy: creator.id }, select: { id: true } });
+    const pa = await prisma.docCasePolicyAssignment.create({ data: { tenantId, caseId: docCase.id, caseTypeId: type }, select: { id: true } });
+    const pc = await prisma.docCasePolicyComponent.create({ data: { tenantId, caseId: docCase.id, policyAssignmentId: pa.id, componentId: comp }, select: { id: true } });
+    const cd = await prisma.docCaseDocument.create({ data: { tenantId, caseId: docCase.id, name: 'PAN' }, select: { id: true } });
+    await prisma.docCaseDocumentComponentSource.create({ data: { tenantId, caseId: docCase.id, documentId: cd.id, policyAssignmentId: pa.id, policyComponentId: pc.id, componentId: comp, componentDocumentId: id } });
+
+    const del = await req('DELETE', `${docsUrl(type, comp)}/${id}`, { token: mgr.token });
+    expect(del.status).toBe(422);
+    expect(del.body.message).toMatch(/archive it instead/);
+    expect(await prisma.caseTypeComponentDocument.count({ where: { id } })).toBe(1);
+  });
+
+  it('requires case-type:manage (viewer gets 403) and leaves the document', async () => {
+    const type = await makeType(); const comp = await makeComp(type); const id = await mkDoc(type, comp);
+    expect((await req('DELETE', `${docsUrl(type, comp)}/${id}`, { token: viewer.token })).status).toBe(403);
+    expect(await prisma.caseTypeComponentDocument.count({ where: { id } })).toBe(1);
+  });
+
+  it('IDOR: wrong componentId or caseTypeId in the path gets 404, document untouched', async () => {
+    const typeA = await makeType(); const compA = await makeComp(typeA); const compA2 = await makeComp(typeA);
+    const typeB = await makeType(); const compB = await makeComp(typeB);
+    const id = await mkDoc(typeA, compA);
+    expect((await req('DELETE', `${docsUrl(typeA, compA2)}/${id}`, { token: mgr.token })).status).toBe(404);
+    expect((await req('DELETE', `${docsUrl(typeB, compB)}/${id}`, { token: mgr.token })).status).toBe(404);
+    expect((await req('DELETE', `${docsUrl(typeB, compA)}/${id}`, { token: mgr.token })).status).toBe(404);
+    expect((await req('DELETE', `${docsUrl(typeA, compA)}/${id}`, { token: otherMgr.token })).status).toBe(404);
+    expect(await prisma.caseTypeComponentDocument.count({ where: { id } })).toBe(1);
   });
 });

@@ -445,6 +445,33 @@ export class CaseTypeService {
     }, TX_OPTS);
   }
 
+  /**
+   * Hard-deletes a component document ONLY if no case has ever used it (no
+   * DocCaseDocumentComponentSource row, soft-deleted included); otherwise archive it.
+   */
+  async deleteComponentDocument(ctx: UserContext, caseTypeId: string, componentId: string, componentDocumentId: string): Promise<void> {
+    const archiveInstead = () => new BusinessRuleViolationError('This document has been used by one or more cases; archive it instead.');
+    await this.prisma.$transaction(async (tx) => {
+      const type = await this.loadTypeForComponentWrite(tx, ctx.tenantId, caseTypeId);
+      const component = await this.loadComponentForWrite(tx, ctx.tenantId, type.id, componentId);
+      // IDOR guard: the document must belong to this tenant AND this component (which belongs to this type).
+      const doc = await tx.caseTypeComponentDocument.findFirst({ where: { id: componentDocumentId, tenantId: ctx.tenantId, componentId: component.id } });
+      if (!doc) throw new ResourceNotFoundError();
+
+      const used = await tx.docCaseDocumentComponentSource.count({ where: { tenantId: ctx.tenantId, componentDocumentId: doc.id } });
+      if (used > 0) throw archiveInstead();
+
+      try {
+        await tx.caseTypeComponentDocument.delete({ where: { id: doc.id } });
+      } catch (err) {
+        // TOCTOU backstop: a source row created after the count trips onDelete: Restrict.
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') throw archiveInstead();
+        throw err;
+      }
+      await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_TYPE_COMPONENT_DOCUMENT_DELETED', 'CaseTypeComponentDocument', doc.id, 'DELETE', { caseTypeId: type.id, componentId: component.id }, { name: doc.name, isActive: doc.isActive }));
+    }, TX_OPTS);
+  }
+
   /** Loads a component for a document write; rejects inactive/soft-deleted ones (422). */
   private async loadComponentForWrite(
     tx: Prisma.TransactionClient,

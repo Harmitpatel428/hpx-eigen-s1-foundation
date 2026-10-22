@@ -110,6 +110,9 @@ export function createCaseTypesRouter(prisma: PrismaClient): Router {
       res.json({ success: true, data: doc });
     } catch (e) { next(e); }
   });
+  router.delete('/:caseTypeId/components/:componentId/documents/:componentDocumentId', permissionMiddleware(MANAGE), async (req, res, next) => {
+    try { await service.deleteComponentDocument(ctxOf(req), req.params.caseTypeId, req.params.componentId, req.params.componentDocumentId); res.json({ success: true, data: { caseTypeId: req.params.caseTypeId, componentId: req.params.componentId, componentDocumentId: req.params.componentDocumentId } }); } catch (e) { next(e); }
+  });
 
   return router;
 }
