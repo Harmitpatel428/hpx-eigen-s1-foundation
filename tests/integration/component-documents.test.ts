@@ -268,7 +268,7 @@ describe('Component document hard delete', () => {
     expect(audit).not.toBeNull();
   });
 
-  it('rejects (422, archive instead) a document referenced by a case source row', async () => {
+  it('hard-deletes a document used by a live case, detaching its source rows but leaving the case document', async () => {
     const type = await makeType(); const comp = await makeComp(type); const id = await mkDoc(type, comp);
     const lead = await prisma.lead.create({ data: { tenantId, firstName: 'T', lastName: 'C' }, select: { id: true } });
     const creator = await prisma.user.findFirstOrThrow({ where: { tenantId }, select: { id: true } });
@@ -279,9 +279,39 @@ describe('Component document hard delete', () => {
     await prisma.docCaseDocumentComponentSource.create({ data: { tenantId, caseId: docCase.id, documentId: cd.id, policyAssignmentId: pa.id, policyComponentId: pc.id, componentId: comp, componentDocumentId: id } });
 
     const del = await req('DELETE', `${docsUrl(type, comp)}/${id}`, { token: mgr.token });
-    expect(del.status).toBe(422);
-    expect(del.body.message).toMatch(/archive it instead/);
-    expect(await prisma.caseTypeComponentDocument.count({ where: { id } })).toBe(1);
+    expect(del.status).toBe(200);
+    // the preset is permanently gone
+    expect(await prisma.caseTypeComponentDocument.count({ where: { id } })).toBe(0);
+    // its source/provenance rows are detached (deleted), satisfying the FK
+    expect(await prisma.docCaseDocumentComponentSource.count({ where: { componentDocumentId: id } })).toBe(0);
+    // the case's own document requirement is untouched
+    expect(await prisma.docCaseDocument.count({ where: { id: cd.id } })).toBe(1);
+  });
+
+  // Detach is lifecycle-agnostic: the delete removes the source rows regardless of whether the
+  // referencing case, or the source row itself, is soft-deleted.
+  it('hard-deletes and detaches even when the case, or the source row itself, is soft-deleted', async () => {
+    const mkRef = async (soft: 'case' | 'source') => {
+      const type = await makeType(); const comp = await makeComp(type); const id = await mkDoc(type, comp);
+      const lead = await prisma.lead.create({ data: { tenantId, firstName: 'T', lastName: 'C' }, select: { id: true } });
+      const creator = await prisma.user.findFirstOrThrow({ where: { tenantId }, select: { id: true } });
+      const docCase = await prisma.docCase.create({ data: { tenantId, leadId: lead.id, createdBy: creator.id }, select: { id: true } });
+      const pa = await prisma.docCasePolicyAssignment.create({ data: { tenantId, caseId: docCase.id, caseTypeId: type }, select: { id: true } });
+      const pc = await prisma.docCasePolicyComponent.create({ data: { tenantId, caseId: docCase.id, policyAssignmentId: pa.id, componentId: comp }, select: { id: true } });
+      const cd = await prisma.docCaseDocument.create({ data: { tenantId, caseId: docCase.id, name: 'PAN' }, select: { id: true } });
+      const src = await prisma.docCaseDocumentComponentSource.create({ data: { tenantId, caseId: docCase.id, documentId: cd.id, policyAssignmentId: pa.id, policyComponentId: pc.id, componentId: comp, componentDocumentId: id }, select: { id: true } });
+      if (soft === 'case') await prisma.docCase.update({ where: { id: docCase.id }, data: { deletedAt: new Date() } });
+      else await prisma.docCaseDocumentComponentSource.update({ where: { id: src.id }, data: { deletedAt: new Date() } });
+      return { type, comp, id };
+    };
+
+    for (const soft of ['case', 'source'] as const) {
+      const { type, comp, id } = await mkRef(soft);
+      const del = await req('DELETE', `${docsUrl(type, comp)}/${id}`, { token: mgr.token });
+      expect(del.status).toBe(200);
+      expect(await prisma.caseTypeComponentDocument.count({ where: { id } })).toBe(0);
+      expect(await prisma.docCaseDocumentComponentSource.count({ where: { componentDocumentId: id } })).toBe(0);
+    }
   });
 
   it('requires case-type:manage (viewer gets 403) and leaves the document', async () => {

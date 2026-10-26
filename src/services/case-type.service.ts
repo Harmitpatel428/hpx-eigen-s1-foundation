@@ -446,11 +446,11 @@ export class CaseTypeService {
   }
 
   /**
-   * Hard-deletes a component document ONLY if no case has ever used it (no
-   * DocCaseDocumentComponentSource row, soft-deleted included); otherwise archive it.
+   * Hard-deletes a component document. If it has propagated to cases, those provenance/source
+   * link rows are deleted first (detaching the preset from the cases); the cases' own
+   * DocCaseDocument requirements are left intact.
    */
   async deleteComponentDocument(ctx: UserContext, caseTypeId: string, componentId: string, componentDocumentId: string): Promise<void> {
-    const archiveInstead = () => new BusinessRuleViolationError('This document has been used by one or more cases; archive it instead.');
     await this.prisma.$transaction(async (tx) => {
       const type = await this.loadTypeForComponentWrite(tx, ctx.tenantId, caseTypeId);
       const component = await this.loadComponentForWrite(tx, ctx.tenantId, type.id, componentId);
@@ -458,16 +458,12 @@ export class CaseTypeService {
       const doc = await tx.caseTypeComponentDocument.findFirst({ where: { id: componentDocumentId, tenantId: ctx.tenantId, componentId: component.id } });
       if (!doc) throw new ResourceNotFoundError();
 
-      const used = await tx.docCaseDocumentComponentSource.count({ where: { tenantId: ctx.tenantId, componentDocumentId: doc.id } });
-      if (used > 0) throw archiveInstead();
-
-      try {
-        await tx.caseTypeComponentDocument.delete({ where: { id: doc.id } });
-      } catch (err) {
-        // TOCTOU backstop: a source row created after the count trips onDelete: Restrict.
-        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') throw archiveInstead();
-        throw err;
-      }
+      // Detach this preset from any cases that materialized it: delete the provenance/source link
+      // rows (which carry the onDelete: Restrict FK to this document), then hard-delete the preset.
+      // The cases' own DocCaseDocument requirements are left intact — only the link to the preset
+      // is removed.
+      await tx.docCaseDocumentComponentSource.deleteMany({ where: { tenantId: ctx.tenantId, componentDocumentId: doc.id } });
+      await tx.caseTypeComponentDocument.delete({ where: { id: doc.id } });
       await this.audit.appendInTx(tx, this.auditRow(ctx, 'CASE_TYPE_COMPONENT_DOCUMENT_DELETED', 'CaseTypeComponentDocument', doc.id, 'DELETE', { caseTypeId: type.id, componentId: component.id }, { name: doc.name, isActive: doc.isActive }));
     }, TX_OPTS);
   }
