@@ -6,6 +6,7 @@ import {
   LeadStage,
   LeadPriority,
   OpportunityCurrency,
+  UserStatus,
   Prisma,
 } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -20,6 +21,14 @@ import { logger } from '../utils/logger';
 /** Shared owner select — used by list GET enrichment and PUT response.
  *  Changing this here changes both; shapes cannot drift. */
 export const OWNER_SELECT = { id: true, firstName: true, lastName: true } as const;
+
+/** Response of GET /bulk-assign/documentation-assignees (consumed by the Documentation assign UI).
+ *  `departmentId` is the resolved Documentation department id for AUTO distribution — the backend is
+ *  the single source of truth for it, so the frontend never re-implements the name heuristic. */
+export interface DocumentationAssigneesResponse {
+  departmentId: string | null;
+  users: Array<{ id: string; firstName: string | null; lastName: string | null; email: string }>;
+}
 
 /**
  * Import note routing — single source of truth for how an imported row's note is stored.
@@ -397,6 +406,54 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         await checkBulkOperationLimit(userId, tenantId);
         const result = await leadService.bulkAssign({ tenantId, userId }, { leadIds, mode, userId: targetUserId, departmentId });
         res.json({ data: result });
+      } catch (err) { next(err); }
+    }
+  );
+
+  // ─── GET /api/v1/leads/bulk-assign/documentation-assignees ──────
+  // Assignable pool for Documentation-department lead assignment: ALL active users of the caller's
+  // tenant who sit in the Documentation department (no role filter). Read-only — assignment itself
+  // goes through POST /bulk-assign (MANUAL/AUTO). Returns the resolved Documentation departmentId too,
+  // so the frontend uses it for AUTO without re-implementing the dept-name heuristic.
+  router.get(
+    '/bulk-assign/documentation-assignees',
+    authMiddleware,
+    permissionMiddleware('lead:assign'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId } = (req as AuthenticatedRequest).user;
+        // ponytail: Department has no `type` column; same name heuristic as auth.router nameToType
+        // (contains 'doc', not 'sales'/'process'). Ceiling: a mis-named dept is mis-resolved — add Department.type.
+        const docDepts = await prisma.department.findMany({
+          where: {
+            tenantId,
+            name: { contains: 'doc', mode: 'insensitive' },
+            NOT: [
+              { name: { contains: 'sales', mode: 'insensitive' } },
+              { name: { contains: 'process', mode: 'insensitive' } },
+            ],
+          },
+          select: { id: true },
+        });
+        if (docDepts.length === 0) {
+          const empty: DocumentationAssigneesResponse = { departmentId: null, users: [] };
+          res.json(empty);
+          return;
+        }
+        // Single source of truth for AUTO: only an unambiguous single match yields a departmentId.
+        const departmentId = docDepts.length === 1 ? docDepts[0].id : null;
+        const users = await prisma.user.findMany({
+          where: {
+            tenantId,
+            deletedAt: null,
+            status: UserStatus.ACTIVE,
+            departmentId: { in: docDepts.map((d) => d.id) },
+          },
+          select: { id: true, firstName: true, lastName: true, email: true },
+          orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }, { id: 'asc' }],
+        });
+        const payload: DocumentationAssigneesResponse = { departmentId, users };
+        res.json(payload);
       } catch (err) { next(err); }
     }
   );

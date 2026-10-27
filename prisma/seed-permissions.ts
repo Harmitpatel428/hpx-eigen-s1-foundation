@@ -156,6 +156,14 @@ const PRESET_ROLES: Record<string, string[]> = {
   'Process': [
     'process:view', 'process:accept', 'process:return',
   ],
+  // Documentation department — the role that can assign Documentation-department leads
+  // (mirrors Sales Manager's assign capability, scoped to Documentation). Least privilege.
+  // NOTE: lead:assign is tenant-wide — POST /bulk-assign is not department-scoped, so this role
+  // (like Sales Manager) can reassign ANY tenant lead via the API; the Documentation scoping is
+  // UI-level. Tighten only by introducing a department-scoped assign permission (not in scope here).
+  'Documentation Manager': [
+    'lead:view', 'lead:assign', 'doc:view',
+  ],
 };
 
 async function main(): Promise<void> {
