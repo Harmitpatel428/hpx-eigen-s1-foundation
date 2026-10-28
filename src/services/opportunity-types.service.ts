@@ -147,8 +147,8 @@ export class OpportunityTypesService {
     for (const id of typeIds) {
       if (otherType && id === otherType.id) continue;
       updates.push(
-        this.prisma.opportunityType.update({
-          where: { id },
+        this.prisma.opportunityType.updateMany({
+          where: { id, tenantId: ctx.tenantId },
           data: { displayOrder: order++ }
         })
       );
@@ -156,8 +156,8 @@ export class OpportunityTypesService {
     
     if (otherType) {
       updates.push(
-        this.prisma.opportunityType.update({
-          where: { id: otherType.id },
+        this.prisma.opportunityType.updateMany({
+          where: { id: otherType.id, tenantId: ctx.tenantId },
           data: { displayOrder: order }
         })
       );

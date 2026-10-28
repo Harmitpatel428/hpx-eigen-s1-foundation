@@ -3,9 +3,11 @@ import bcrypt from 'bcryptjs';
 import { AuditService } from './audit.service';
 import { EmailService, emailCanSend } from './email.service';
 import { TokenService } from './auth/TokenService';
+import { PermissionService } from './permission.service';
 import { logger } from '../utils/logger';
 import {
   ResourceNotFoundError,
+  AuthorizationError,
   DuplicateResourceError,
   BusinessRuleViolationError,
   InvitationAlreadyAcceptedError
@@ -37,6 +39,13 @@ export class InvitationService {
       where: { id: roleId, tenantId, deletedAt: { equals: null } }
     });
     if (!role) throw new ResourceNotFoundError();
+
+    // No privilege escalation: the invitee's role may not carry any permission the inviter lacks.
+    const [roleGrants, inviterManifest] = await Promise.all([
+      this.prisma.rolePermission.findMany({ where: { roleId }, select: { permission: { select: { slug: true } } } }),
+      new PermissionService(this.prisma).buildManifestFromDB(invitedBy, tenantId),
+    ]);
+    if (roleGrants.some(g => !(g.permission.slug in inviterManifest))) throw new AuthorizationError();
 
     // Block if an active user with this email already exists in this tenant
     const existingUser = await this.prisma.user.findFirst({

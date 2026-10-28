@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 
 const RESERVED_KEYS = new Set([
@@ -51,7 +51,7 @@ export function createLeadFieldsRouter(prisma: PrismaClient): Router {
   });
 
   // POST /api/v1/lead-fields — create a custom field def
-  router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', permissionMiddleware('lead:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { name, type, options = [], required = false } = req.body as {
@@ -78,7 +78,7 @@ export function createLeadFieldsRouter(prisma: PrismaClient): Router {
   });
 
   // PATCH /api/v1/lead-fields/:id — update a custom field def
-  router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.patch('/:id', permissionMiddleware('lead:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { id } = req.params;
@@ -117,7 +117,7 @@ export function createLeadFieldsRouter(prisma: PrismaClient): Router {
   });
 
   // DELETE /api/v1/lead-fields/:id — remove a custom field def
-  router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', permissionMiddleware('lead:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { id } = req.params;

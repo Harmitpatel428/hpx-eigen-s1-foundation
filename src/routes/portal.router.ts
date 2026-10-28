@@ -4,6 +4,7 @@ import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../m
 import { PortalService, PortalVerificationFailed } from '../services/portal.service';
 import { PORTAL_VERIFICATION_FAILED, PORTAL_HTTP_STATUS } from '../domain/portal';
 import { logger } from '../utils/logger';
+import { ValidationError } from '../types/exceptions';
 
 /**
  * PUBLIC router — no authMiddleware on the client-facing routes.
@@ -22,15 +23,22 @@ export function createPortalRouter(prisma: PrismaClient): Router {
     res.status(PORTAL_HTTP_STATUS).json(PORTAL_VERIFICATION_FAILED);
   };
 
-  const clientIp = (req: Request): string =>
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || 'unknown';
+  // req.ip honours Express 'trust proxy' (app.ts, TRUST_PROXY_HOPS); never read x-forwarded-for directly —
+  // a client-supplied header would let an attacker rotate the lockout key.
+  const clientIp = (req: Request): string => req.ip || 'unknown';
 
   /** POST /api/v1/portal/verify — Case number + last 4 phone digits. No OTP. */
   router.post('/verify', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { caseNumber, phoneLast4 } = req.body as { caseNumber?: string; phoneLast4?: string };
+      const { caseNumber, phoneLast4 } = (req.body ?? {}) as { caseNumber?: unknown; phoneLast4?: unknown };
+      if (typeof caseNumber !== 'string' || !caseNumber.trim()) {
+        throw new ValidationError('caseNumber is required.');
+      }
+      if (typeof phoneLast4 !== 'string' || !/^\d{4}$/.test(phoneLast4)) {
+        throw new ValidationError('phoneLast4 must be exactly 4 digits.');
+      }
       const result = await portal.verify(
-        caseNumber ?? '', phoneLast4 ?? '', clientIp(req), req.headers['user-agent'],
+        caseNumber, phoneLast4, clientIp(req), req.headers['user-agent'],
       );
       res.json({ success: true, data: result });
     } catch (err) {

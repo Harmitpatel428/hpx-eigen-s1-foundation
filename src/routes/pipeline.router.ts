@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient, OpportunityStage } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { PipelineService } from '../services/pipeline.service';
 import { ValidationError } from '../types/exceptions';
 
@@ -13,7 +13,7 @@ export function createPipelineRouter(prisma: PrismaClient): Router {
    * Get pipeline analytics for the tenant dashboard.
    * Returns: active count, total value, by-stage counts, stage velocity, closure stats.
    */
-  router.get('/analytics', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/analytics', authMiddleware, permissionMiddleware('opportunity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const analytics = await pipelineService.getPipelineAnalytics({ tenantId, userId });
@@ -28,7 +28,7 @@ export function createPipelineRouter(prisma: PrismaClient): Router {
    * Get all opportunities currently in a specific pipeline stage.
    * Used for kanban board column population.
    */
-  router.get('/stage/:stage', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/stage/:stage', authMiddleware, permissionMiddleware('opportunity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const stage = req.params.stage as OpportunityStage;
@@ -46,7 +46,7 @@ export function createPipelineRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/pipeline/velocity ───────────────────────────────────
   /** Get average days per stage across all completed transitions */
-  router.get('/velocity', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/velocity', authMiddleware, permissionMiddleware('opportunity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const velocity = await pipelineService.getStageVelocity({ tenantId, userId });
@@ -58,7 +58,7 @@ export function createPipelineRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/pipeline/opportunities/:id/history ─────────────────
   /** Get the full stage transition history for a specific opportunity */
-  router.get('/opportunities/:id/history', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/opportunities/:id/history', authMiddleware, permissionMiddleware('opportunity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const history = await pipelineService.getOpportunityHistory(
@@ -73,7 +73,7 @@ export function createPipelineRouter(prisma: PrismaClient): Router {
 
   // ─── GET /api/pipeline/opportunities/:id/current-stage ───────────
   /** Get the current active stage record for an opportunity */
-  router.get('/opportunities/:id/current-stage', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/opportunities/:id/current-stage', authMiddleware, permissionMiddleware('opportunity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const currentStage = await pipelineService.getCurrentStage(
@@ -91,7 +91,7 @@ export function createPipelineRouter(prisma: PrismaClient): Router {
    * Predict the expected closure date for an opportunity
    * based on stage velocity analytics.
    */
-  router.get('/opportunities/:id/predict-close', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  router.get('/opportunities/:id/predict-close', authMiddleware, permissionMiddleware('opportunity:view'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId, tenantId } = (req as AuthenticatedRequest).user;
       const predictedDate = await pipelineService.predictClosureDate(

@@ -32,9 +32,8 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
       );
 
       res.json({ data: invoices, total: invoices.length });
-    } catch (err: any) {
-      console.error('Error fetching invoices:', err);
-      res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    } catch (err) {
+      next(err);
     }
   });
 
@@ -103,9 +102,8 @@ export function createInvoicesRouter(prisma: PrismaClient): Router {
       );
 
       res.status(201).json(invoice);
-    } catch (err: any) {
-      console.error('Error creating invoice:', err);
-      res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    } catch (err) {
+      next(err);
     }
   });
 

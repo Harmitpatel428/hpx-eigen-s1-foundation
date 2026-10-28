@@ -66,6 +66,10 @@ import * as Sentry from '@sentry/node';
 
 const app = express();
 
+// Trust only the real proxy hop count (req.ip / rate limiting key off it). Default false = socket address,
+// correct for local dev. Production behind a load balancer MUST set TRUST_PROXY_HOPS to the hop count.
+app.set('trust proxy', process.env.TRUST_PROXY_HOPS ? Number(process.env.TRUST_PROXY_HOPS) : false);
+
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV,

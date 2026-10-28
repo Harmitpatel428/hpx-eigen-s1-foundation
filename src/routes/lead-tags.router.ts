@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { authMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 
 export function createLeadTagsRouter(prisma: PrismaClient): Router {
@@ -34,7 +34,7 @@ export function createLeadTagsRouter(prisma: PrismaClient): Router {
 
   // ─── POST /api/v1/lead-tags ───────────────────────────────────────
   /** Create a new tag (or return existing one by name). */
-  router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/', permissionMiddleware('lead:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
       const { name, color } = req.body as { name?: string; color?: string };
@@ -62,7 +62,7 @@ export function createLeadTagsRouter(prisma: PrismaClient): Router {
 
   // ─── DELETE /api/v1/lead-tags/:id ────────────────────────────────
   /** Soft-delete a tag and remove all its lead assignments. */
-  router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  router.delete('/:id', permissionMiddleware('lead:edit'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { tenantId } = (req as AuthenticatedRequest).user;
 

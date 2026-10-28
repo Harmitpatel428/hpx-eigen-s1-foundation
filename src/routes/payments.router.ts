@@ -32,9 +32,8 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
       );
 
       res.json({ data: payments, total: payments.length });
-    } catch (err: any) {
-      console.error('Error fetching payments:', err);
-      res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    } catch (err) {
+      next(err);
     }
   });
 
@@ -100,9 +99,8 @@ export function createPaymentsRouter(prisma: PrismaClient): Router {
       );
 
       res.status(201).json(payment);
-    } catch (err: any) {
-      console.error('Error creating payment:', err);
-      res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    } catch (err) {
+      next(err);
     }
   });
 
