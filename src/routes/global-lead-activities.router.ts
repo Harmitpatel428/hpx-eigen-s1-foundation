@@ -4,6 +4,7 @@ import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../m
 import { LeadActivitiesService, GlobalFilter } from '../services/lead-activities.service';
 import { ValidationError } from '../types/exceptions';
 import { buildOwnerFilter, type ScopeType } from '../utils/scope.helper';
+import { assertLeadInScope } from '../utils/lead-scope.helper';
 
 const VALID_FILTERS: GlobalFilter[] = ['ALL', 'DUE_TODAY', 'UPCOMING', 'OVERDUE', 'MINE'];
 
@@ -56,6 +57,7 @@ export function createGlobalLeadActivitiesRouter(prisma: PrismaClient): Router {
         if (!leadId) throw new ValidationError('leadId is required.');
         if (!type) throw new ValidationError('type is required.');
         if (!subject || !subject.trim()) throw new ValidationError('subject is required.');
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, leadId);
         const activity = await service.createActivity(
           { tenantId, userId },
           { leadId, type, subject: subject.trim(), scheduledAt, metadata }

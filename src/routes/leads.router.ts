@@ -14,6 +14,7 @@ import { LeadService, FOLLOW_UP_REQUIRED_STAGES } from '../services/lead.service
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 import { checkImportRateLimit, checkBulkOperationLimit } from '../services/auth/RateLimitService';
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
+import { assertLeadInScope, leadOwnerFilter } from '../utils/lead-scope.helper';
 import { phoneSearchCondition } from '../utils/phone-search.util';
 import { normalizePhone } from '../utils/phone.util';
 import { logger } from '../utils/logger';
@@ -422,6 +423,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
+        // departmentId still resolves the Documentation dept for AUTO distribution only.
         // ponytail: Department has no `type` column; same name heuristic as auth.router nameToType
         // (contains 'doc', not 'sales'/'process'). Ceiling: a mis-named dept is mis-resolved — add Department.type.
         const docDepts = await prisma.department.findMany({
@@ -435,19 +437,28 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
           },
           select: { id: true },
         });
-        if (docDepts.length === 0) {
-          const empty: DocumentationAssigneesResponse = { departmentId: null, users: [] };
-          res.json(empty);
-          return;
-        }
         // Single source of truth for AUTO: only an unambiguous single match yields a departmentId.
         const departmentId = docDepts.length === 1 ? docDepts[0].id : null;
+        // MANUAL pool is MARKER-based, not department- or lead:view-based: active tenant users who
+        // hold `lead:receive:documentation` via a NON-system (same-tenant, non-deleted) role. The
+        // isSystem:false filter excludes Organization Admin (the only system role, which holds every
+        // permission incl. the marker). Role/UserRole/Role aren't tenant-scoped by db.ts, so the
+        // tenant + soft-delete filters on `role` are load-bearing.
         const users = await prisma.user.findMany({
           where: {
             tenantId,
             deletedAt: null,
             status: UserStatus.ACTIVE,
-            departmentId: { in: docDepts.map((d) => d.id) },
+            userRoles: {
+              some: {
+                role: {
+                  tenantId,
+                  deletedAt: null,
+                  isSystem: false,
+                  permissions: { some: { permission: { slug: 'lead:receive:documentation' } } },
+                },
+              },
+            },
           },
           select: { id: true, firstName: true, lastName: true, email: true },
           orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }, { id: 'asc' }],
@@ -470,7 +481,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         const { ids } = req.body as { ids: string[] };
         if (!Array.isArray(ids) || ids.length === 0) throw new ValidationError('ids array is required.');
         if (ids.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
-        const result = await leadService.bulkSoftDelete({ tenantId, userId }, ids);
+        const result = await leadService.bulkSoftDelete({ tenantId, userId }, ids, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
         res.json({ data: result });
       } catch (err) {
         next(err);
@@ -490,7 +501,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         const { ids } = req.body as { ids: string[] };
         if (!Array.isArray(ids) || ids.length === 0) throw new ValidationError('ids array is required.');
         if (ids.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
-        const result = await leadService.bulkRestore({ tenantId, userId }, ids);
+        const result = await leadService.bulkRestore({ tenantId, userId }, ids, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
         res.json({ data: result });
       } catch (err) {
         next(err);
@@ -510,7 +521,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
         const { ids } = req.body as { ids: string[] };
         if (!Array.isArray(ids) || ids.length === 0) throw new ValidationError('ids array is required.');
         if (ids.length > 200) throw new ValidationError('Maximum 200 leads per bulk operation.');
-        const result = await leadService.bulkPermanentDelete({ tenantId, userId }, ids);
+        const result = await leadService.bulkPermanentDelete({ tenantId, userId }, ids, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
         res.json({ data: result });
       } catch (err) {
         next(err);
@@ -1336,8 +1347,14 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        const lead = await leadService.getLeadById({ tenantId, userId }, req.params.id);
+        const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
+        // Caller-scope enforcement (same filter as list/export): lead:view alone must not expose
+        // any tenant lead by id. getLeadById stays unscoped — mutation paths reuse it.
+        const ownerFilter = await buildOwnerFilter(
+          (scope ?? 'OWN') as ScopeType, userId, teamId, departmentId, prisma, true
+        );
+        const lead = await prisma.lead.findFirst({ where: { id: req.params.id, tenantId, ...ownerFilter } });
+        if (!lead) throw new ResourceNotFoundError();
         res.json(lead);
       } catch (err) {
         next(err);
@@ -1354,6 +1371,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
       try {
         const userReq = req as AuthenticatedRequest;
         const { userId, tenantId, decision } = userReq.user;
+        await assertLeadInScope(userReq.user, prisma, req.params.id);
         const {
           firstName,
           lastName,
@@ -1449,7 +1467,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
             freeformAddress,
             customFieldValues: Array.isArray(customFieldValues) ? customFieldValues : undefined,
             tagNames: Array.isArray(tagNames) ? tagNames : undefined,
-          }
+          },
+          await leadOwnerFilter(userReq.user, prisma)
         );
 
         const owner = lead.ownerId
@@ -1473,6 +1492,7 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.id);
         const { contact, opportunity } = req.body as {
           contact: {
             firstName: string;
@@ -1511,7 +1531,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
                 ? new Date(opportunity.expectedCloseDate)
                 : undefined,
             },
-          }
+          },
+          await leadOwnerFilter((req as AuthenticatedRequest).user, prisma)
         );
 
         res.status(201).json(result);
@@ -1531,9 +1552,10 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.id);
         const { value } = req.body as { value?: unknown };
         if (typeof value !== 'boolean') throw new ValidationError('value (boolean) is required.');
-        const lead = await leadService.setWaitingHigherAuthority({ tenantId, userId }, req.params.id, value);
+        const lead = await leadService.setWaitingHigherAuthority({ tenantId, userId }, req.params.id, value, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
         res.json({ data: lead });
       } catch (err) {
         next(err);
@@ -1549,7 +1571,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        await leadService.deleteLead({ tenantId, userId }, req.params.id);
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.id);
+        await leadService.deleteLead({ tenantId, userId }, req.params.id, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
         res.status(204).send();
       } catch (err) {
         next(err);
@@ -1565,7 +1588,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        await leadService.restoreLead({ tenantId, userId }, req.params.id);
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.id, { deleted: true });
+        await leadService.restoreLead({ tenantId, userId }, req.params.id, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
         res.json({ message: 'Lead restored.' });
       } catch (err) {
         next(err);
@@ -1581,7 +1605,8 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        await leadService.permanentDeleteLead({ tenantId, userId }, req.params.id);
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.id, { deleted: true });
+        await leadService.permanentDeleteLead({ tenantId, userId }, req.params.id, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
         res.status(204).send();
       } catch (err) {
         next(err);
@@ -1596,8 +1621,11 @@ export function createLeadsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { tenantId } = (req as AuthenticatedRequest).user;
-        const lead = await prisma.lead.findFirst({ where: { id: req.params.id, tenantId, deletedAt: null } });
+        const { userId, tenantId, teamId, departmentId, scope } = (req as AuthenticatedRequest).user;
+        const ownerFilter = await buildOwnerFilter(
+          (scope ?? 'OWN') as ScopeType, userId, teamId, departmentId, prisma, true
+        );
+        const lead = await prisma.lead.findFirst({ where: { id: req.params.id, tenantId, deletedAt: null, ...ownerFilter } });
         if (!lead) { res.status(404).json({ error: { message: 'Lead not found.' } }); return; }
         const phones = await leadService.phoneService.listByLead(req.params.id, tenantId);
         res.json({ data: phones });

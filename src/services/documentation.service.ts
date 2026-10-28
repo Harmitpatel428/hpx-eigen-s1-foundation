@@ -577,6 +577,8 @@ export class DocumentationService {
       fieldFilters?: { fieldId: string; operator: string; value?: unknown }[];
       sortBy?:      string;
       sortDir?:     string;
+      /** Restrict to cases this user is assigned to / process-assigned to / owns the lead of. */
+      restrictToUserId?: string;
     } = {}
   ) {
     const SORTABLE = ['createdAt', 'priority', 'completionPercent', 'targetDate'];
@@ -598,10 +600,19 @@ export class DocumentationService {
     const pageSize = Math.min(100, filters.pageSize ?? 25);
     const skip     = (page - 1) * pageSize;
 
+    const conjuncts: Prisma.DocCaseWhereInput[] = [...fieldClauses];
+    if (filters.restrictToUserId) {
+      conjuncts.push({ OR: [
+        { assignedTo: filters.restrictToUserId },
+        { processAssignedTo: filters.restrictToUserId },
+        { lead: { ownerId: filters.restrictToUserId } },
+      ] });
+    }
+
     const where: Prisma.DocCaseWhereInput = {
       tenantId:  ctx.tenantId,
       deletedAt: null,
-      ...(fieldClauses.length ? { AND: fieldClauses } : {}),
+      ...(conjuncts.length ? { AND: conjuncts } : {}),
       ...(filters.status     ? { status: filters.status }     : {}),
       ...(filters.assignedTo ? { assignedTo: filters.assignedTo } : {}),
       ...(filters.isReady !== undefined ? { isReady: filters.isReady } : {}),
@@ -702,9 +713,17 @@ export class DocumentationService {
     return clauses;
   }
 
-  async getCaseById(ctx: TenantContext, caseId: string) {
+  async getCaseById(ctx: TenantContext, caseId: string, opts: { restrictToUserId?: string } = {}) {
     const docCase = await this.prisma.docCase.findFirst({
-      where: { id: caseId, tenantId: ctx.tenantId, deletedAt: null },
+      where: {
+        id: caseId, tenantId: ctx.tenantId, deletedAt: null,
+        // Same union as listCases: out-of-scope reads as not-found.
+        ...(opts.restrictToUserId ? { AND: [{ OR: [
+          { assignedTo: opts.restrictToUserId },
+          { processAssignedTo: opts.restrictToUserId },
+          { lead: { ownerId: opts.restrictToUserId } },
+        ] }] } : {}),
+      },
       include: {
         lead:   { select: { id: true, firstName: true, lastName: true, company: true, email: true, phone: true, status: true } },
         preset: { select: { id: true, name: true, category: true, color: true, icon: true } },

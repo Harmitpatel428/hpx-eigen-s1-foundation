@@ -79,8 +79,7 @@ export function createMandateRouter(prisma: PrismaClient): Router {
   const router = Router();
   const svc = new MandateService(prisma);
 
-  const clientIp = (req: Request): string =>
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || 'unknown';
+  const clientIp = (req: Request): string => req.ip || 'unknown';
 
   // ─── Staff authenticated routes ─────────────────────────────────────────
 

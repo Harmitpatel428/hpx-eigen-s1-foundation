@@ -19,6 +19,10 @@ function makePrismaMock() {
       findMany: jest.fn(),
       updateMany: jest.fn()
     },
+    // Tenant-ref validation (assertTenantRefs) looks these up; default to valid same-tenant rows.
+    lead: { findFirst: jest.fn().mockResolvedValue({ id: 'lead-1' }) },
+    contact: { findFirst: jest.fn().mockResolvedValue({ leadId: 'lead-1' }) },
+    user: { findFirst: jest.fn().mockResolvedValue({ id: 'user-1' }) },
     auditLog: {
       findFirst: jest.fn().mockResolvedValue(null),
       count: jest.fn().mockResolvedValue(0),
@@ -70,6 +74,9 @@ describe('OpportunityService', () => {
         const tx = {
           opportunity: { create: jest.fn().mockResolvedValue(SAMPLE_OPP) },
           pipeline: { create: jest.fn().mockResolvedValue({}) },
+          lead: prisma.lead,
+          contact: prisma.contact,
+          user: prisma.user,
           auditLog: prisma.auditLog,
           $executeRaw: prisma.$executeRaw,
           $queryRaw: prisma.$queryRaw

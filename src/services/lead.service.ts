@@ -5,6 +5,8 @@ import { PhoneService } from './phone.service';
 import { phoneSearchCondition } from '../utils/phone-search.util';
 import { ValidationError, BusinessRuleViolationError, AppException, RetryTag, ResourceNotFoundError } from '../types/exceptions';
 import { AuthorizationDecision } from '../types/authorization';
+import type { LeadOwnerFilter } from '../utils/scope.helper';
+import { orNotFound } from '../utils/atomic-scope';
 
 const PERSON_FIELDS = ['firstName', 'lastName', 'email', 'phone', 'company'] as const;
 type PersonField = typeof PERSON_FIELDS[number];
@@ -442,7 +444,8 @@ export class LeadService {
     ctx: TenantContext,
     decision: AuthorizationDecision | undefined,
     leadId: string,
-    input: UpdateLeadInput
+    input: UpdateLeadInput,
+    ownerFilter: LeadOwnerFilter = {}
   ) {
     if (decision && !decision.allowed)
       throw new AppException('AUTHORIZATION_ERROR', 'Permission denied.', RetryTag.NON_RETRYABLE, 403);
@@ -486,8 +489,10 @@ export class LeadService {
       String(input.followUpDate ?? '') !== String((beforeLead as any).followUpDate ?? '');
 
     const lead = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.lead.update({
-        where: { id: leadId },
+      // Scope folded into the write's own WHERE: a lead reassigned out of scope after the router's
+      // pre-check matches no row -> P2025 -> 404 + tx rollback (no TOCTOU).
+      const updated = await orNotFound(tx.lead.update({
+        where: { id: leadId, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter } as Prisma.LeadWhereUniqueInput,
         data: {
           ...(input.firstName !== undefined ? { firstName: input.firstName } : {}),
           ...(input.lastName !== undefined ? { lastName: input.lastName } : {}),
@@ -523,7 +528,7 @@ export class LeadService {
           ...(input.freeformAddress !== undefined ? { freeformAddress: input.freeformAddress } : {}),
           ...(input.customFieldValues !== undefined ? { customFieldValues: input.customFieldValues } : {}),
         } as any,
-      });
+      }));
 
       // Phone change: deactivate old, attach new, sync mirror
       if (input.phone !== undefined) {
@@ -730,13 +735,20 @@ export class LeadService {
    * Convert a lead to a Contact + Opportunity in a single transaction.
    * Sets lead status = CONVERTED and creates a Pipeline entry for the opportunity.
    */
-  async convertLead(ctx: TenantContext, leadId: string, input: ConvertLeadInput) {
+  async convertLead(ctx: TenantContext, leadId: string, input: ConvertLeadInput, ownerFilter: LeadOwnerFilter = {}) {
     const lead = await this.getLeadById(ctx, leadId);
     if (lead.status === LeadStatus.CONVERTED) {
       throw new BusinessRuleViolationError();
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
+      // Scope-guarded status flip FIRST: it takes the lead row lock and re-checks tenant/scope in
+      // its own WHERE, so a lead reassigned since the router's pre-check 404s before anything is created.
+      await orNotFound(tx.lead.update({
+        where: { id: leadId, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter } as Prisma.LeadWhereUniqueInput,
+        data: { status: LeadStatus.CONVERTED },
+      }));
+
       const contact = await tx.contact.create({
         data: {
           tenantId: ctx.tenantId,
@@ -776,11 +788,6 @@ export class LeadService {
         },
       });
 
-      await tx.lead.update({
-        where: { id: leadId },
-        data: { status: LeadStatus.CONVERTED },
-      });
-
       return { contact, opportunity };
     });
 
@@ -805,12 +812,12 @@ export class LeadService {
    * Toggle the manual "waiting for higher authority" flag (idempotent).
    * Tenant-scoped existence check first; audited like other lead mutations.
    */
-  async setWaitingHigherAuthority(ctx: TenantContext, leadId: string, value: boolean) {
+  async setWaitingHigherAuthority(ctx: TenantContext, leadId: string, value: boolean, ownerFilter: LeadOwnerFilter = {}) {
     await this.getLeadById(ctx, leadId); // 404s if the lead isn't in the caller's tenant
-    const lead = await this.prisma.lead.update({
-      where: { id: leadId },
+    const lead = await orNotFound(this.prisma.lead.update({
+      where: { id: leadId, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter } as Prisma.LeadWhereUniqueInput,
       data: { waitingHigherAuthority: value },
-    });
+    }));
     await this.audit.log({
       tenantId: ctx.tenantId,
       eventType: 'LEAD_WAITING_HIGHER_AUTHORITY_SET',
@@ -824,13 +831,13 @@ export class LeadService {
   }
 
   /** Soft-delete a lead */
-  async deleteLead(ctx: TenantContext, leadId: string) {
+  async deleteLead(ctx: TenantContext, leadId: string, ownerFilter: LeadOwnerFilter = {}) {
     await this.getLeadById(ctx, leadId);
 
-    await this.prisma.lead.update({
-      where: { id: leadId },
+    await orNotFound(this.prisma.lead.update({
+      where: { id: leadId, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter } as Prisma.LeadWhereUniqueInput,
       data: { deletedAt: new Date() },
-    });
+    }));
 
     await this.audit.log({
       tenantId: ctx.tenantId,
@@ -844,9 +851,9 @@ export class LeadService {
   }
 
   /** Bulk soft-delete */
-  async bulkSoftDelete(ctx: TenantContext, leadIds: string[]) {
+  async bulkSoftDelete(ctx: TenantContext, leadIds: string[], ownerFilter: LeadOwnerFilter = {}) {
     const result = await this.prisma.lead.updateMany({
-      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: null },
+      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter },
       data: { deletedAt: new Date() },
     });
 
@@ -897,16 +904,16 @@ export class LeadService {
   }
 
   /** Restore a soft-deleted lead */
-  async restoreLead(ctx: TenantContext, leadId: string) {
+  async restoreLead(ctx: TenantContext, leadId: string, ownerFilter: LeadOwnerFilter = {}) {
     const lead = await this.prisma.lead.findFirst({ where: { id: leadId, tenantId: ctx.tenantId, deletedAt: { not: null } } });
     if (!lead) throw new ResourceNotFoundError();
 
     // deletedAt must be set explicitly in the where: the global db.ts extension
     // injects `deletedAt: null` otherwise, which never matches a soft-deleted row (P2025).
-    await this.prisma.lead.update({
-      where: { id: leadId, deletedAt: { not: null } },
+    await orNotFound(this.prisma.lead.update({
+      where: { id: leadId, tenantId: ctx.tenantId, deletedAt: { not: null }, ...ownerFilter } as Prisma.LeadWhereUniqueInput,
       data: { deletedAt: null },
-    });
+    }));
 
     await this.audit.log({
       tenantId: ctx.tenantId,
@@ -920,9 +927,9 @@ export class LeadService {
   }
 
   /** Bulk restore soft-deleted leads */
-  async bulkRestore(ctx: TenantContext, leadIds: string[]) {
+  async bulkRestore(ctx: TenantContext, leadIds: string[], ownerFilter: LeadOwnerFilter = {}) {
     const result = await this.prisma.lead.updateMany({
-      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: { not: null } },
+      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: { not: null }, ...ownerFilter },
       data: { deletedAt: null },
     });
 
@@ -941,14 +948,16 @@ export class LeadService {
   }
 
   /** Permanently delete a lead */
-  async permanentDeleteLead(ctx: TenantContext, leadId: string) {
+  async permanentDeleteLead(ctx: TenantContext, leadId: string, ownerFilter: LeadOwnerFilter = {}) {
     // Explicit deletedAt:{not:null} — without it the db.ts extension injects
     // deletedAt:null and the soft-deleted row is never found (P2025).
     const lead = await this.prisma.lead.findFirst({ where: { id: leadId, tenantId: ctx.tenantId, deletedAt: { not: null } } });
     if (!lead) throw new ResourceNotFoundError();
     if (!lead.deletedAt) throw new ValidationError('Lead must be soft-deleted before permanent deletion.');
 
-    await this.prisma.lead.delete({ where: { id: leadId, deletedAt: { not: null } } });
+    await orNotFound(this.prisma.lead.delete({
+      where: { id: leadId, tenantId: ctx.tenantId, deletedAt: { not: null }, ...ownerFilter } as Prisma.LeadWhereUniqueInput,
+    }));
 
     await this.audit.log({
       tenantId: ctx.tenantId,
@@ -962,9 +971,9 @@ export class LeadService {
   }
 
   /** Bulk permanently delete leads */
-  async bulkPermanentDelete(ctx: TenantContext, leadIds: string[]) {
+  async bulkPermanentDelete(ctx: TenantContext, leadIds: string[], ownerFilter: LeadOwnerFilter = {}) {
     const result = await this.prisma.lead.deleteMany({
-      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: { not: null } },
+      where: { id: { in: leadIds }, tenantId: ctx.tenantId, deletedAt: { not: null }, ...ownerFilter },
     });
 
     await this.audit.log({

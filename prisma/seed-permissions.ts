@@ -112,6 +112,8 @@ const PERMISSIONS = [
   { slug: 'mandate:send',           module: 'Documentation', description: 'Send mandate upload requests to clients' },
   { slug: 'mandate:verify',         module: 'Documentation', description: 'Verify or reject uploaded mandate documents' },
   { slug: 'mandate:view',           module: 'Documentation', description: 'View mandate requests and uploads for a case' },
+  { slug: 'lead:receive:documentation', module: 'Documentation', description: 'Eligible to be assigned Documentation-department leads (assignee pool marker)' },
+  { slug: 'doc:case:view-all',          module: 'Documentation', description: 'View the full Documentation case queue; without it a doc:view user sees only their own/assigned cases' },
   // Process department (Doc → Process handover, Option B — seeded via migration 20261019000100)
   { slug: 'process:view',   module: 'Process', description: 'View the Process incoming queue' },
   { slug: 'process:accept', module: 'Process', description: 'Accept a case handed to the Process department' },
@@ -163,6 +165,7 @@ const PRESET_ROLES: Record<string, string[]> = {
   // UI-level. Tighten only by introducing a department-scoped assign permission (not in scope here).
   'Documentation Manager': [
     'lead:view', 'lead:assign', 'doc:view',
+    'lead:receive:documentation', 'doc:case:view-all',
   ],
 };
 
@@ -224,6 +227,22 @@ async function main(): Promise<void> {
         data: permIds.map(pid => ({ roleId: role.id, permissionId: pid })),
         skipDuplicates: true,
       });
+    }
+
+    // ── Step 4b: Documentation Executive marker (tenant-defined role; grant only if present) ─
+    // Role NAME is seed config (allowed). Documentation Executive is in the assignee pool but
+    // NOT the full-queue role, so it gets lead:receive:documentation only (no doc:case:view-all).
+    const docExec = await prisma.role.findFirst({
+      where: { tenantId: tenant.id, name: 'Documentation Executive', deletedAt: null },
+    });
+    if (docExec) {
+      const markerId = permBySlug['lead:receive:documentation']?.id;
+      if (markerId) {
+        await prisma.rolePermission.createMany({
+          data: [{ roleId: docExec.id, permissionId: markerId }],
+          skipDuplicates: true,
+        });
+      }
     }
 
     // Invalidate Redis cache for this tenant

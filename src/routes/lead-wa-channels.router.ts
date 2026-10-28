@@ -2,12 +2,23 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
+import { assertLeadInScope, leadOwnerFilter } from '../utils/lead-scope.helper';
+import { leadInScope, orNotFound } from '../utils/atomic-scope';
 
 const VALID_TYPES = ['INDIVIDUAL_NUMBER', 'GROUP', 'USERNAME', 'BUSINESS_ACCOUNT'] as const;
 type ChannelType = typeof VALID_TYPES[number];
 
 export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
   const router = Router({ mergeParams: true });
+
+  // Scope fragments folded into the write's own WHERE (atomic with the write; no TOCTOU):
+  //  - assignment row: its parent lead is live + in the caller's scope
+  //  - channel row: it is assigned to this lead and that lead is live + in scope
+  async function writeScopes(req: Request, leadId: string) {
+    const user = (req as AuthenticatedRequest).user;
+    const lead = leadInScope(user.tenantId, await leadOwnerFilter(user, prisma));
+    return { assignment: { lead }, channel: { tenantId: user.tenantId, leads: { some: { leadId, lead } } } };
+  }
 
   // GET /api/v1/leads/:leadId/wa-channels
   router.get(
@@ -16,15 +27,10 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { tenantId } = (req as AuthenticatedRequest).user;
         const { leadId } = req.params;
-
-        // verify lead belongs to tenant
-        const lead = await (prisma as any).lead.findFirst({
-          where: { id: leadId, tenantId, deletedAt: null },
-          select: { id: true },
-        });
-        if (!lead) throw new ResourceNotFoundError();
+        // Owner-scope gate: lead:view alone must not expose any lead's WhatsApp channels by id
+        // (same visible-set rule as the contacts/notes read subresources). Enforces tenant + scope.
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, leadId);
 
         const assignments = await (prisma as any).leadWhatsAppChannel.findMany({
           where: { leadId },
@@ -60,6 +66,7 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.leadId);
         const { leadId } = req.params;
         const { channelType, identifier, displayName, isPrimary, role, label } = req.body as {
           channelType?: ChannelType;
@@ -147,6 +154,7 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
         const { leadId, channelId } = req.params;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, leadId);
         const { displayName, label, isPrimary, role, status } = req.body as {
           displayName?: string;
           label?: string | null;
@@ -165,15 +173,16 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
           throw new ValidationError('status must be ACTIVE, INVALID, or ARCHIVED.');
         }
 
+        const scopes = await writeScopes(req, leadId);
         await (prisma as any).$transaction(async (tx: any) => {
           if (displayName !== undefined || status !== undefined) {
-            await tx.whatsAppChannel.update({
-              where: { id: channelId },
+            await orNotFound(tx.whatsAppChannel.update({
+              where: { id: channelId, ...scopes.channel },
               data: {
                 ...(displayName !== undefined ? { displayName: displayName.trim() } : {}),
                 ...(status !== undefined ? { status } : {}),
               },
-            });
+            }));
           }
 
           if (isPrimary === true) {
@@ -183,14 +192,14 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
             });
           }
 
-          await tx.leadWhatsAppChannel.update({
-            where: { leadId_channelId: { leadId, channelId } },
+          await orNotFound(tx.leadWhatsAppChannel.update({
+            where: { leadId_channelId: { leadId, channelId }, ...scopes.assignment },
             data: {
               ...(isPrimary !== undefined ? { isPrimary } : {}),
               ...(role !== undefined ? { role } : {}),
               ...(label !== undefined ? { label } : {}),
             },
-          });
+          }));
         });
 
         const assignments = await (prisma as any).leadWhatsAppChannel.findMany({
@@ -228,6 +237,7 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
         const { leadId, channelId } = req.params;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, leadId);
 
         const assignment = await (prisma as any).leadWhatsAppChannel.findFirst({
           where: { leadId, channelId },
@@ -235,11 +245,12 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
         });
         if (!assignment || assignment.channel.tenantId !== tenantId) throw new ResourceNotFoundError();
 
+        const scopes = await writeScopes(req, leadId);
         await (prisma as any).$transaction(async (tx: any) => {
-          await tx.whatsAppChannel.update({
-            where: { id: channelId },
+          await orNotFound(tx.whatsAppChannel.update({
+            where: { id: channelId, ...scopes.channel },
             data: { status: 'ARCHIVED' },
-          });
+          }));
 
           // If archived channel was primary, auto-promote the next active channel
           if (assignment.isPrimary) {
@@ -291,6 +302,7 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
         const { leadId, channelId } = req.params;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, leadId);
 
         const assignment = await (prisma as any).leadWhatsAppChannel.findFirst({
           where: { leadId, channelId },
@@ -299,15 +311,16 @@ export function createLeadWaChannelsRouter(prisma: PrismaClient): Router {
         if (!assignment || assignment.channel.tenantId !== tenantId) throw new ResourceNotFoundError();
         if (assignment.channel.status === 'ARCHIVED') throw new ValidationError('Cannot set an archived channel as primary.');
 
+        const scopes = await writeScopes(req, leadId);
         await (prisma as any).$transaction(async (tx: any) => {
           await tx.leadWhatsAppChannel.updateMany({
             where: { leadId },
             data: { isPrimary: false },
           });
-          await tx.leadWhatsAppChannel.update({
-            where: { leadId_channelId: { leadId, channelId } },
+          await orNotFound(tx.leadWhatsAppChannel.update({
+            where: { leadId_channelId: { leadId, channelId }, ...scopes.assignment },
             data: { isPrimary: true },
-          });
+          }));
         });
 
         const assignments = await (prisma as any).leadWhatsAppChannel.findMany({

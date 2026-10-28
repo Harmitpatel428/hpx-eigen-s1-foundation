@@ -1,4 +1,5 @@
-import { PrismaClient, LeadActivityType } from '@prisma/client';
+import { PrismaClient, LeadActivityType, Prisma } from '@prisma/client';
+import { orNotFound } from '../utils/atomic-scope';
 
 interface TenantContext { tenantId: string; userId: string; }
 
@@ -108,7 +109,8 @@ export class LeadNotesService {
     noteId: string,
     content?: string,
     followUpDate?: Date | null,
-    followUpTime?: string | null
+    followUpTime?: string | null,
+    scope: Prisma.LeadNoteWhereInput = {}
   ) {
     // Fetch note and verify ownership + tenant
     const note = await this.prisma.leadNote.findFirst({
@@ -135,8 +137,9 @@ export class LeadNotesService {
     }
 
     // **CRITICAL: createdAt MUST NEVER CHANGE**
-    return this.prisma.leadNote.update({
-      where: { id: noteId },
+    // `scope` (leadId + parent-lead scope relation filter) rides in the write's own WHERE -> atomic.
+    return orNotFound(this.prisma.leadNote.update({
+      where: { id: noteId, tenantId: ctx.tenantId, ...scope } as Prisma.LeadNoteWhereUniqueInput,
       data: {
         content: content?.trim() || note.content,
         followUpDate: followUpDate === null ? null : (followUpDate || note.followUpDate),
@@ -144,7 +147,7 @@ export class LeadNotesService {
         updatedAt: new Date(),
         // createdAt is NOT included here - Prisma will not allow changing it
       },
-    });
+    }));
   }
 
   /**
@@ -162,15 +165,15 @@ export class LeadNotesService {
   /**
    * Soft-delete a note (preserve history)
    */
-  async deleteNote(ctx: TenantContext, noteId: string) {
+  async deleteNote(ctx: TenantContext, noteId: string, scope: Prisma.LeadNoteWhereInput = {}) {
     const note = await this.prisma.leadNote.findFirst({
       where: { id: noteId, tenantId: ctx.tenantId },
     });
     if (!note) throw { code: 'NOTE_NOT_FOUND' };
 
-    return this.prisma.leadNote.update({
-      where: { id: noteId },
+    return orNotFound(this.prisma.leadNote.update({
+      where: { id: noteId, tenantId: ctx.tenantId, ...scope } as Prisma.LeadNoteWhereUniqueInput,
       data: { deletedAt: new Date() },
-    });
+    }));
   }
 }

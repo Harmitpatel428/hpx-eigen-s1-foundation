@@ -21,6 +21,12 @@ function getDepartmentType(name: string): 'SALES' | 'PROCESS' | 'DOCUMENTATION' 
   return 'SALES';
 }
 
+const DEPT_VIEW_PERMISSION = {
+  SALES: 'opportunity:view',
+  PROCESS: 'process:view',
+  DOCUMENTATION: 'doc:view',
+} as const;
+
 export function createDashboardRouter(prisma: PrismaClient): Router {
   const router = Router();
 
@@ -75,7 +81,7 @@ export function createDashboardRouter(prisma: PrismaClient): Router {
       const isSuperAdmin = (authReq as any).user?.permissions?.['*'] !== undefined
         || (authReq as any).user?.permissions?.['admin:all'] !== undefined;
 
-      if (!isSuperAdmin && userRecord.departmentId && userRecord.departmentId !== requestedDeptId) {
+      if (!isSuperAdmin && userRecord.departmentId !== requestedDeptId) { // null dept never matches -> 403
         return res.status(403).json({
           success: false,
           error: { code: 'FORBIDDEN', message: 'Access denied to this department.' }
@@ -96,6 +102,17 @@ export function createDashboardRouter(prisma: PrismaClient): Router {
       }
 
       const deptType = getDepartmentType(department.name);
+
+      // Each department's KPIs need that department's view permission — otherwise any
+      // authenticated user (incl. one with no department) could read any department's aggregates.
+      const requiredSlug = DEPT_VIEW_PERMISSION[deptType];
+      const grant = (authReq as any).user?.permissions?.[requiredSlug];
+      if (!grant || (typeof grant === 'object' && !grant.allowed)) {
+        return res.status(403).json({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'Access denied.' }
+        });
+      }
 
       // ─── Route to metric generator ─────────────────────────────────
       let metrics: Record<string, unknown>;

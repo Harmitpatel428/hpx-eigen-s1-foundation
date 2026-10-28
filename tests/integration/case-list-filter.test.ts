@@ -58,6 +58,10 @@ beforeAll(async () => {
   const role = await prisma.role.create({ data: { tenantId: t.tenantId, name: `CL-${uid().slice(0, 8)}` } });
   const perm = await prisma.permission.findFirst({ where: { slug: 'doc:view' } });
   await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: perm!.id } });
+  // Full case-queue access (this suite tests list filter/sort mechanics over all cases).
+  // Without doc:case:view-all the list is union-scoped to the caller's own/assigned cases.
+  const viewAll = await prisma.permission.findFirst({ where: { slug: 'doc:case:view-all' } });
+  await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: viewAll!.id } });
   await prisma.userRole.create({ data: { userId: user.id, roleId: role.id, scopeType: ScopeType.ORGANIZATION } });
   const sid = uid();
   await prisma.session.create({ data: { id: sid, userId: user.id, tenantId: t.tenantId, status: 'ACTIVE', expiresAt: new Date(Date.now() + 3.6e6), ipAddress: '127.0.0.1', refreshTokenHash: crypto.createHash('sha256').update(uid()).digest('hex') } });

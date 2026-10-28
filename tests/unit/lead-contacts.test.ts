@@ -5,6 +5,13 @@
 import { Request, Response, NextFunction } from 'express';
 import { createLeadContactsRouter } from '../../src/routes/lead-contacts.router';
 
+// Owner-scope write gate has its own integration coverage (tests/integration/lead-mutation-scope.test.ts);
+// these unit tests exercise handler logic with a mocked prisma, so the gate is a no-op here.
+jest.mock('../../src/utils/lead-scope.helper', () => ({
+  assertLeadInScope: jest.fn().mockResolvedValue(undefined),
+  leadOwnerFilter: jest.fn().mockResolvedValue({}),
+}));
+
 function makePrismaMock() {
   const txMock: any = {
     contact: {
@@ -505,7 +512,7 @@ describe('lead-contacts router', () => {
 
       // Soft-delete happened (no guard threw)
       expect(mock.contact.update).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { id: 'c-main' }, data: { deletedAt: expect.any(Date) } }),
+        expect.objectContaining({ where: expect.objectContaining({ id: 'c-main', leadId: LEAD_ID }), data: { deletedAt: expect.any(Date) } }),
       );
       expect(next).not.toHaveBeenCalled();
     });

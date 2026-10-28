@@ -3,6 +3,9 @@ import { PrismaClient } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 import { PhoneService } from '../services/phone.service';
+import { buildOwnerFilter, type ScopeType } from '../utils/scope.helper';
+import { assertLeadInScope, leadOwnerFilter } from '../utils/lead-scope.helper';
+import { leadInScope, orNotFound } from '../utils/atomic-scope';
 
 /**
  * Build the Lead person-cache payload from a contact's fields, dropping `email`
@@ -48,8 +51,21 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
     permissionMiddleware('lead:view'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { tenantId } = (req as AuthenticatedRequest).user;
+        const { userId, tenantId, scope, teamId, departmentId } = (req as AuthenticatedRequest).user;
         const { leadId } = req.params;
+
+        // Verify the user's scope grants access to this lead
+        const ownerFilter = await buildOwnerFilter(
+          (scope ?? 'OWN') as ScopeType, userId, teamId ?? null, departmentId ?? null, prisma, true
+        );
+        const visible = await prisma.lead.findFirst({
+          where: { id: leadId, tenantId, deletedAt: null, ...ownerFilter },
+          select: { id: true },
+        });
+        if (!visible) {
+          res.status(404).json({ error: { message: 'Lead not found.' } });
+          return;
+        }
 
         const contacts = await (prisma as any).contact.findMany({
           where: { leadId, tenantId, deletedAt: null },
@@ -76,6 +92,7 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
         };
 
         if (!firstName || !lastName) throw new ValidationError('firstName and lastName are required.');
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.leadId);
 
         const lead = await (prisma as any).lead.findFirst({ where: { id: leadId, tenantId, deletedAt: null } });
         if (!lead) throw new ResourceNotFoundError();
@@ -119,6 +136,7 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.leadId);
         const { leadId, contactId } = req.params;
         const { firstName, lastName, email, phone, title, role, isMain, company } = req.body as {
           firstName?: string; lastName?: string; email?: string; phone?: string;
@@ -128,12 +146,15 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
         const existing = await (prisma as any).contact.findFirst({ where: { id: contactId, leadId, tenantId, deletedAt: null } });
         if (!existing) throw new ResourceNotFoundError();
 
+        // The contact write below carries the parent-lead scope in its own WHERE (atomic; no TOCTOU).
+        const parentScope = leadInScope(tenantId, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma));
+
         await (prisma as any).$transaction(async (tx: any) => {
           if (isMain === true) {
             await tx.contact.updateMany({ where: { leadId, tenantId, deletedAt: null, id: { not: contactId } }, data: { isMain: false } });
           }
-          await tx.contact.update({
-            where: { id: contactId },
+          await orNotFound(tx.contact.update({
+            where: { id: contactId, leadId, tenantId, deletedAt: null, lead: parentScope },
             data: {
               ...(firstName !== undefined ? { firstName } : {}),
               ...(lastName !== undefined ? { lastName } : {}),
@@ -144,7 +165,7 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
               ...(company !== undefined ? { company } : {}),
               ...(isMain !== undefined ? { isMain } : {}),
             },
-          });
+          }));
           if (phone !== undefined && existing.phone !== phone) {
             if (existing.phone) await phoneService.deactivate(tx, leadId, existing.phone);
             if (phone) await phoneService.attach(tx, leadId, tenantId, phone, { isPrimary: isMain === true, source: 'MANUAL' });
@@ -210,12 +231,17 @@ export function createLeadContactsRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId } = (req as AuthenticatedRequest).user;
+        await assertLeadInScope((req as AuthenticatedRequest).user, prisma, req.params.leadId);
         const { leadId, contactId } = req.params;
 
         const existing = await (prisma as any).contact.findFirst({ where: { id: contactId, leadId, tenantId, deletedAt: null } });
         if (!existing) throw new ResourceNotFoundError();
 
-        await (prisma as any).contact.update({ where: { id: contactId }, data: { deletedAt: new Date() } });
+        // Scope folded into the soft-delete's own WHERE: reassigned-out-of-scope since the pre-check -> 404.
+        await orNotFound((prisma as any).contact.update({
+          where: { id: contactId, leadId, tenantId, deletedAt: null, lead: leadInScope(tenantId, await leadOwnerFilter((req as AuthenticatedRequest).user, prisma)) },
+          data: { deletedAt: new Date() },
+        }));
 
         // Deactivate phone in history (keeps record)
         if (existing.phone) {

@@ -126,7 +126,10 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
           try { parsedFilters = JSON.parse(fieldFilters); } catch { throw new ValidationError('fieldFilters must be valid JSON.'); }
           if (!Array.isArray(parsedFilters)) throw new ValidationError('fieldFilters must be a JSON array.');
         }
+        // Callers without doc:case:view-all only see cases they are assigned to / own (union scope).
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
         const result = await svc.listCases({ tenantId, userId }, {
+          restrictToUserId: canViewAll ? undefined : userId,
           status:     status as DocCaseStatus | undefined,
           assignedTo,
           isReady:    isReady !== undefined ? isReady === 'true' : undefined,
@@ -201,7 +204,8 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
-        const docCase = await svc.getCaseById({ tenantId, userId }, req.params.id);
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const docCase = await svc.getCaseById({ tenantId, userId }, req.params.id, { restrictToUserId: canViewAll ? undefined : userId });
         res.json({ success: true, data: docCase });
       } catch (err) { next(err); }
     }
@@ -420,7 +424,8 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
         if (!UUID_RE.test(req.params.id)) throw new ValidationError('Invalid document id.');
-        const result = await docFiles.getViewUrl({ tenantId, userId }, req.params.id);
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const result = await docFiles.getViewUrl({ tenantId, userId }, req.params.id, { restrictToUserId: canViewAll ? undefined : userId });
         res.json({ success: true, data: result });
       } catch (err) { next(err); }
     }

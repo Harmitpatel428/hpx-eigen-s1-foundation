@@ -29,8 +29,8 @@ let docOnly: string; // doc:view only
 const tracked: string[] = [];
 let selF: string, textF: string, optA: string, optB: string;
 
-async function actor(tenantId: string, slugs: string[]): Promise<string> {
-  const user = await prisma.user.create({ data: { id: uid(), tenantId, email: `rp-${uid()}@test.invalid`, password: 'x', status: UserStatus.ACTIVE }, select: { id: true } });
+async function actor(tenantId: string, slugs: string[], departmentId: string | null = null): Promise<string> {
+  const user = await prisma.user.create({ data: { id: uid(), tenantId, email: `rp-${uid()}@test.invalid`, password: 'x', status: UserStatus.ACTIVE, departmentId }, select: { id: true } });
   const role = await prisma.role.create({ data: { tenantId, name: `RP-${uid().slice(0, 8)}` } });
   for (const slug of slugs) {
     const p = await prisma.permission.findFirst({ where: { slug } });
@@ -65,7 +65,8 @@ beforeAll(async () => {
   t = await provisionTenant(prisma, permissionService, { engineEnabled: true });
   other = await provisionTenant(prisma, permissionService, { engineEnabled: true });
   tracked.push(t.tenantId, other.tenantId);
-  full = await actor(t.tenantId, ['doc:view', 'case-timeline:view']);
+  // In the tenant's department: the dashboard's cross-department gate rejects a null-department non-admin.
+  full = await actor(t.tenantId, ['doc:view', 'case-timeline:view'], t.deptId);
   docOnly = await actor(t.tenantId, ['doc:view']);
   const off = await provisionTenant(prisma, permissionService, { engineEnabled: false });
   tracked.push(off.tenantId);

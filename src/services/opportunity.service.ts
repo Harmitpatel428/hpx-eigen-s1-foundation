@@ -1,6 +1,8 @@
 import { PrismaClient, Prisma, OpportunityStage, OpportunityCurrency } from '@prisma/client';
 import { AuditService } from './audit.service';
 import { ValidationError, ResourceNotFoundError, BusinessRuleViolationError } from '../types/exceptions';
+import type { OwnerFilter } from '../utils/scope.helper';
+import { orNotFound } from '../utils/atomic-scope';
 
 export interface TenantContext {
   tenantId: string;
@@ -42,6 +44,40 @@ export class OpportunityService {
     this.audit = new AuditService(prisma);
   }
 
+  /**
+   * Every referenced lead/contact/owner must belong to the caller's tenant (prevents cross-tenant
+   * linking and PII reads via the nested includes). A contact bound to a lead must match leadId.
+   */
+  private async assertTenantRefs(
+    db: Prisma.TransactionClient | PrismaClient,
+    ctx: TenantContext,
+    refs: { leadId: string; contactId?: string | null; ownerId?: string | null; checkLead?: boolean }
+  ) {
+    if (refs.checkLead !== false) {
+      const lead = await db.lead.findFirst({
+        where: { id: refs.leadId, tenantId: ctx.tenantId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!lead) throw new ValidationError('Invalid lead.');
+    }
+    if (refs.contactId) {
+      const contact = await db.contact.findFirst({
+        where: { id: refs.contactId, tenantId: ctx.tenantId, deletedAt: null },
+        select: { leadId: true },
+      });
+      if (!contact || (contact.leadId && contact.leadId !== refs.leadId)) {
+        throw new ValidationError('Invalid contact.');
+      }
+    }
+    if (refs.ownerId) {
+      const owner = await db.user.findFirst({
+        where: { id: refs.ownerId, tenantId: ctx.tenantId, deletedAt: null, status: 'ACTIVE' },
+        select: { id: true },
+      });
+      if (!owner) throw new ValidationError('Invalid owner.');
+    }
+  }
+
   /** Create a new opportunity (must be linked to an existing lead) */
   async createOpportunity(ctx: TenantContext, input: CreateOpportunityInput) {
     if (!input.title?.trim()) {
@@ -71,6 +107,7 @@ export class OpportunityService {
 
     // Create opportunity and open its first pipeline stage atomically
     const result = await this.prisma.$transaction(async (tx) => {
+      await this.assertTenantRefs(tx, ctx, input);
       const opportunity = await tx.opportunity.create({
         data: {
           tenantId: ctx.tenantId,
@@ -172,7 +209,7 @@ export class OpportunityService {
   }
 
   /** Update opportunity metadata (title, value, dates, owner) */
-  async updateOpportunity(ctx: TenantContext, opportunityId: string, input: UpdateOpportunityInput) {
+  async updateOpportunity(ctx: TenantContext, opportunityId: string, input: UpdateOpportunityInput, ownerFilter: OwnerFilter = {}) {
     if (input.opportunityTypeId) {
       const type = await this.prisma.opportunityType.findFirst({
         where: { id: input.opportunityTypeId, tenantId: ctx.tenantId, deletedAt: { equals: null } }
@@ -189,9 +226,17 @@ export class OpportunityService {
     }
     
     const existing = await this.getOpportunityById(ctx, opportunityId);
+    await this.assertTenantRefs(this.prisma, ctx, {
+      leadId: existing.leadId,
+      contactId: input.contactId,
+      ownerId: input.ownerId,
+      checkLead: false, // lead is not editable here
+    });
 
-    const opportunity = await this.prisma.opportunity.update({
-      where: { id: opportunityId },
+    // Scope folded into the write's own WHERE (atomic with the write): a row reassigned out of the
+    // caller's scope after the router's pre-check matches nothing -> P2025 -> 404.
+    const opportunity = await orNotFound(this.prisma.opportunity.update({
+      where: { id: opportunityId, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter } as Prisma.OpportunityWhereUniqueInput,
       data: {
         ...(input.contactId !== undefined ? { contactId: input.contactId } : {}),
         ...(input.ownerId !== undefined ? { ownerId: input.ownerId } : {}),
@@ -202,7 +247,7 @@ export class OpportunityService {
         ...(input.customOpportunityType !== undefined ? { customOpportunityType: input.customOpportunityType } : {}),
         ...(input.expectedCloseDate !== undefined ? { expectedCloseDate: input.expectedCloseDate } : {})
       }
-    });
+    }));
 
     await this.audit.log({
       tenantId: ctx.tenantId,
@@ -221,7 +266,7 @@ export class OpportunityService {
    * Advance an opportunity to a new pipeline stage.
    * Records a Pipeline transition entry and updates stage atomically.
    */
-  async advanceStage(ctx: TenantContext, opportunityId: string, newStage: OpportunityStage, lostReason?: string) {
+  async advanceStage(ctx: TenantContext, opportunityId: string, newStage: OpportunityStage, lostReason?: string, ownerFilter: OwnerFilter = {}) {
     const validStages = Object.values(OpportunityStage);
     if (!validStages.includes(newStage)) {
       throw new ValidationError(`Invalid stage. Must be one of: ${validStages.join(', ')}`);
@@ -255,8 +300,9 @@ export class OpportunityService {
         }
       });
 
-      return tx.opportunity.update({
-        where: { id: opportunityId },
+      // Scope-guarded stage write (rolls back the pipeline rows above on 404).
+      return orNotFound(tx.opportunity.update({
+        where: { id: opportunityId, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter } as Prisma.OpportunityWhereUniqueInput,
         data: {
           stage: newStage,
           ...(isClosing ? { closedAt: new Date() } : {}),
@@ -264,7 +310,7 @@ export class OpportunityService {
             ? { lostReason }
             : {})
         }
-      });
+      }));
     });
 
     await this.audit.log({
@@ -284,7 +330,7 @@ export class OpportunityService {
    * Close an opportunity as WON or LOST.
    * Convenience wrapper around advanceStage for the terminal states.
    */
-  async closeOpportunity(ctx: TenantContext, opportunityId: string, input: CloseOpportunityInput) {
+  async closeOpportunity(ctx: TenantContext, opportunityId: string, input: CloseOpportunityInput, ownerFilter: OwnerFilter = {}) {
     const stage = input.outcome === 'WON'
       ? OpportunityStage.CLOSED_WON
       : OpportunityStage.CLOSED_LOST;
@@ -293,17 +339,17 @@ export class OpportunityService {
       throw new ValidationError('lostReason is required when closing as LOST.');
     }
 
-    return this.advanceStage(ctx, opportunityId, stage, input.lostReason);
+    return this.advanceStage(ctx, opportunityId, stage, input.lostReason, ownerFilter);
   }
 
   /** Soft-delete an opportunity */
-  async deleteOpportunity(ctx: TenantContext, opportunityId: string) {
+  async deleteOpportunity(ctx: TenantContext, opportunityId: string, ownerFilter: OwnerFilter = {}) {
     const existing = await this.getOpportunityById(ctx, opportunityId);
     
-    await this.prisma.opportunity.update({
-      where: { id: opportunityId },
+    await orNotFound(this.prisma.opportunity.update({
+      where: { id: opportunityId, tenantId: ctx.tenantId, deletedAt: null, ...ownerFilter } as Prisma.OpportunityWhereUniqueInput,
       data: { deletedAt: new Date() }
-    });
+    }));
 
     await this.audit.log({
       tenantId: ctx.tenantId,

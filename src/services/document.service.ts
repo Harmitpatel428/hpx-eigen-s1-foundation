@@ -247,9 +247,17 @@ export class DocumentService {
   // ─── view-url ─────────────────────────────────────────────────────────────
 
   /** E6: inactive/replaced docs stay viewable for history; soft-deleted → 404. */
-  async getViewUrl(ctx: TenantContext, documentId: string) {
+  async getViewUrl(ctx: TenantContext, documentId: string, opts: { restrictToUserId?: string } = {}) {
     const doc = await this.prisma.document.findFirst({
-      where: { id: documentId, tenantId: ctx.tenantId, deletedAt: null },
+      where: {
+        id: documentId, tenantId: ctx.tenantId, deletedAt: null,
+        // Same case-queue union as listCases/getCaseById: out-of-scope reads as not-found.
+        ...(opts.restrictToUserId ? { case: { OR: [
+          { assignedTo: opts.restrictToUserId },
+          { processAssignedTo: opts.restrictToUserId },
+          { lead: { ownerId: opts.restrictToUserId } },
+        ] } } : {}),
+      },
       select: { storageKey: true, name: true, mimeType: true, sizeBytes: true },
     });
     if (!doc) throw new ResourceNotFoundError();

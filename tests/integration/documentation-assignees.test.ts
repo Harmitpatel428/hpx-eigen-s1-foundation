@@ -1,8 +1,10 @@
 /**
  * GET /api/v1/leads/bulk-assign/documentation-assignees — HTTP integration tests
  * Real Express router + auth/permission middleware + PostgreSQL, no mocks.
- * Pool = ALL active users in the Documentation department (NO role filter);
- * response also carries the resolved Documentation departmentId for AUTO.
+ * Pool = active tenant users who HOLD the `lead:receive:documentation` marker via a
+ * NON-system role, regardless of department. Organization Admin (the only isSystem role,
+ * which holds every permission) and plain lead:view holders (e.g. Sales Executives) are
+ * excluded. Response still carries the resolved Documentation departmentId for AUTO.
  */
 
 import 'dotenv/config';
@@ -125,74 +127,81 @@ async function makeTenant(callerSlugs: string[]) {
   return { tenantId, token, someRole, mkUser };
 }
 
-describe('GET /bulk-assign/documentation-assignees', () => {
-  it('D1 — 403 without lead:assign', async () => {
+// Helper: a role carrying exactly the given permission slugs, in the given tenant.
+async function roleWith(tenantId: string, slugs: string[], isSystem = false): Promise<string> {
+  const role = await prisma.role.create({ data: { tenantId, name: `Role-${uid().slice(0, 8)}`, isSystem } });
+  for (const slug of slugs) {
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: await permId(slug) } });
+  }
+  return role.id;
+}
+
+const MARKER = 'lead:receive:documentation';
+
+describe('GET /bulk-assign/documentation-assignees (marker: lead:receive:documentation via non-system role)', () => {
+  it('C1 — 403 without lead:assign', async () => {
     const t = await makeTenant(['lead:view']);
     const res = await get(t.token);
     expect(res.status).toBe(403);
   });
 
-  it('D2 — returns ALL active Documentation-dept users (no role filter), excluding inactive/deleted/wrong-dept', async () => {
+  it('C2 — returns active marker holders (non-system role); excludes system-role, lead:view-only, inactive, deleted', async () => {
     const t = await makeTenant(['lead:view', 'lead:assign']);
-    const docs = await prisma.department.create({ data: { tenantId: t.tenantId, name: 'Documentation' } });
-    const sales = await prisma.department.create({ data: { tenantId: t.tenantId, name: 'Sales' } });
+    const markerRole = await roleWith(t.tenantId, ['lead:view', MARKER]);
+    const adminRole = await roleWith(t.tenantId, [MARKER], true);
+    const leadViewOnly = await roleWith(t.tenantId, ['lead:view']);
 
-    // All three below are in Documentation and must ALL be returned regardless of role.
-    const amy = await t.mkUser('Amy', { dept: docs.id });                    // no role
-    const bob = await t.mkUser('Bob', { dept: docs.id, role: t.someRole.id }); // arbitrary role
-    const zed = await t.mkUser('Zed', { dept: docs.id });                    // no role
-    // Excluded:
-    await t.mkUser('WrongDept', { dept: sales.id });
-    await t.mkUser('NoDept', {});
-    await t.mkUser('Suspended', { dept: docs.id, status: UserStatus.SUSPENDED });
-    await t.mkUser('Deleted', { dept: docs.id, deleted: true });
+    const included = await t.mkUser('Inc', { role: markerRole });
+    const adminLike = await t.mkUser('Adm', { role: adminRole });
+    const salesLike = await t.mkUser('Sal', { role: leadViewOnly });
+    const noRole = await t.mkUser('NoRole', {});
+    const inactive = await t.mkUser('Inactive', { role: markerRole, status: UserStatus.SUSPENDED });
+    const deleted = await t.mkUser('Deleted', { role: markerRole, deleted: true });
 
     const res = await get(t.token);
     expect(res.status).toBe(200);
-    expect(res.body.departmentId).toBe(docs.id);
-    expect(res.body.users.map((u: any) => u.id)).toEqual([amy.id, bob.id, zed.id]); // firstName asc
+    const ids = res.body.users.map((u: any) => u.id);
+    expect(ids).toContain(included.id);
+    expect(ids).not.toContain(adminLike.id);
+    expect(ids).not.toContain(salesLike.id);
+    expect(ids).not.toContain(noRole.id);
+    expect(ids).not.toContain(inactive.id);
+    expect(ids).not.toContain(deleted.id);
     expect(Object.keys(res.body.users[0]).sort()).toEqual(['email', 'firstName', 'id', 'lastName']);
   });
 
-  it('D3 — tenant isolation: another tenant\'s Documentation users never returned', async () => {
+  it('C3 — tenant isolation: another tenant\'s marker holders never returned', async () => {
     const a = await makeTenant(['lead:view', 'lead:assign']);
     const b = await makeTenant(['lead:view', 'lead:assign']);
-    const docsA = await prisma.department.create({ data: { tenantId: a.tenantId, name: 'Documentation' } });
-    const docsB = await prisma.department.create({ data: { tenantId: b.tenantId, name: 'Documentation' } });
-    const mine = await a.mkUser('Mine', { dept: docsA.id });
-    const theirs = await b.mkUser('Theirs', { dept: docsB.id });
+    const mine = await a.mkUser('Mine', { role: await roleWith(a.tenantId, [MARKER]) });
+    const theirs = await b.mkUser('Theirs', { role: await roleWith(b.tenantId, [MARKER]) });
 
     const res = await get(a.token);
     const ids = res.body.users.map((u: any) => u.id);
-    expect(ids).toEqual([mine.id]);
+    expect(ids).toContain(mine.id);
     expect(ids).not.toContain(theirs.id);
   });
 
-  it('D4 — no Documentation dept -> 200 {departmentId:null,users:[]}; dept but no users -> 200 {departmentId,users:[]}', async () => {
-    const noDept = await makeTenant(['lead:view', 'lead:assign']);
-    const sales = await prisma.department.create({ data: { tenantId: noDept.tenantId, name: 'Sales' } });
-    await noDept.mkUser('SalesGuy', { dept: sales.id });
-    const r1 = await get(noDept.token);
-    expect(r1.status).toBe(200);
-    expect(r1.body).toEqual({ departmentId: null, users: [] });
+  it('C4 — departmentId still resolves the Documentation dept for AUTO (single → id; none/ambiguous → null)', async () => {
+    const single = await makeTenant(['lead:view', 'lead:assign']);
+    const d = await prisma.department.create({ data: { tenantId: single.tenantId, name: 'Documentation' } });
+    expect((await get(single.token)).body.departmentId).toBe(d.id);
 
-    const noUsers = await makeTenant(['lead:view', 'lead:assign']);
-    const docs = await prisma.department.create({ data: { tenantId: noUsers.tenantId, name: 'Documentation' } });
-    const r2 = await get(noUsers.token);
-    expect(r2.status).toBe(200);
-    expect(r2.body).toEqual({ departmentId: docs.id, users: [] });
+    const none = await makeTenant(['lead:view', 'lead:assign']);
+    expect((await get(none.token)).body.departmentId).toBeNull();
+
+    const ambiguous = await makeTenant(['lead:view', 'lead:assign']);
+    await prisma.department.create({ data: { tenantId: ambiguous.tenantId, name: 'Documentation' } });
+    await prisma.department.create({ data: { tenantId: ambiguous.tenantId, name: 'Doc Control' } });
+    expect((await get(ambiguous.token)).body.departmentId).toBeNull();
   });
 
-  it('D5 — multiple Documentation depts -> departmentId null (ambiguous), users span all', async () => {
+  it('C5 — pool is dept-independent: a marker holder is returned even with NO Documentation department', async () => {
     const t = await makeTenant(['lead:view', 'lead:assign']);
-    const d1 = await prisma.department.create({ data: { tenantId: t.tenantId, name: 'Documentation' } });
-    const d2 = await prisma.department.create({ data: { tenantId: t.tenantId, name: 'Doc Control' } });
-    const u1 = await t.mkUser('Ann', { dept: d1.id });
-    const u2 = await t.mkUser('Cyd', { dept: d2.id });
-
+    const holder = await t.mkUser('Holder', { role: await roleWith(t.tenantId, [MARKER]) }); // no dept
     const res = await get(t.token);
     expect(res.status).toBe(200);
     expect(res.body.departmentId).toBeNull();
-    expect(res.body.users.map((u: any) => u.id).sort()).toEqual([u1.id, u2.id].sort());
+    expect(res.body.users.map((u: any) => u.id)).toContain(holder.id);
   });
 });

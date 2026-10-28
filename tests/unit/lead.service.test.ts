@@ -496,8 +496,9 @@ describe('LeadService', () => {
 
       const result = await service.setWaitingHigherAuthority(CTX, 'lead-1', true);
 
+      // Scope is folded into the write's WHERE (atomic): id + tenant + live (+ owner filter when given)
       expect(prisma.lead.update).toHaveBeenCalledWith({
-        where: { id: 'lead-1' },
+        where: { id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null },
         data: { waitingHigherAuthority: true },
       });
       expect(prisma.auditLog.create).toHaveBeenCalled();
@@ -512,7 +513,7 @@ describe('LeadService', () => {
 
       expect(prisma.lead.findFirst).toHaveBeenCalled(); // existence/tenant check
       expect(prisma.lead.update).toHaveBeenCalledWith({
-        where: { id: 'lead-1' },
+        where: { id: 'lead-1', tenantId: CTX.tenantId, deletedAt: null },
         data: { waitingHigherAuthority: false },
       });
     });

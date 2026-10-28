@@ -138,7 +138,7 @@ beforeAll(async () => {
   ] });
 
   const adminRole = await prisma.role.create({ data: { tenantId: TENANT_ID, name: 'FU Admin', isSystem: true } });
-  for (const s of ['mandate:upload', 'mandate:verify', 'mandate:view', 'doc:view', 'doc:upload', 'doc:verify', 'doc:file:manage', 'doc:edit']) await grant(adminRole.id, s);
+  for (const s of ['mandate:upload', 'mandate:verify', 'mandate:view', 'doc:view', 'doc:upload', 'doc:verify', 'doc:file:manage', 'doc:edit', 'doc:case:view-all']) await grant(adminRole.id, s);
   await prisma.userRole.create({ data: { userId: ADMIN_ID, roleId: adminRole.id, scopeType: ScopeType.ORGANIZATION } });
   adminToken = await makeSession(ADMIN_ID, TENANT_ID);
 

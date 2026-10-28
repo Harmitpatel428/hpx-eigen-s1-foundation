@@ -2,12 +2,29 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { PrismaClient, OpportunityStage, OpportunityCurrency, Prisma } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { OpportunityService } from '../services/opportunity.service';
-import { ValidationError } from '../types/exceptions';
+import { ValidationError, ResourceNotFoundError } from '../types/exceptions';
 import { buildOwnerFilter, ScopeType } from '../utils/scope.helper';
 
 export function createOpportunitiesRouter(prisma: PrismaClient): Router {
   const router = Router();
   const opportunityService = new OpportunityService(prisma);
+
+  /** Caller's owner-scope WHERE fragment (opportunities have no managerId delegation). */
+  async function ownerFilterFor(req: Request) {
+    const { userId, scope, teamId, departmentId } = (req as AuthenticatedRequest).user;
+    return buildOwnerFilter((scope ?? 'OWN') as ScopeType, userId, teamId ?? null, departmentId ?? null, prisma);
+  }
+
+  /** ABAC gate for /:id handlers: the opportunity must be inside the caller's scope, else 404. */
+  async function assertInScope(req: Request): Promise<void> {
+    const { tenantId } = (req as AuthenticatedRequest).user;
+    const ownerFilter = await ownerFilterFor(req);
+    const inScope = await prisma.opportunity.findFirst({
+      where: { id: req.params.id, tenantId, deletedAt: null, ...ownerFilter },
+      select: { id: true },
+    });
+    if (!inScope) throw new ResourceNotFoundError();
+  }
 
   // ─── POST /api/v1/opportunities ───────────────────────────────────
   /** Create a new opportunity — requires opportunity:create */
@@ -142,6 +159,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
+        await assertInScope(req);
         const opportunity = await opportunityService.getOpportunityById(
           { tenantId, userId },
           req.params.id
@@ -182,6 +200,7 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
           expectedCloseDate?: string;
         };
 
+        await assertInScope(req);
         const opportunity = await opportunityService.updateOpportunity(
           { tenantId, userId },
           req.params.id,
@@ -194,7 +213,8 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
             opportunityTypeId,
             customOpportunityType,
             expectedCloseDate: expectedCloseDate ? new Date(expectedCloseDate) : undefined,
-          }
+          },
+          await ownerFilterFor(req)
         );
 
         res.json(opportunity);
@@ -220,11 +240,13 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
 
         if (!stage) throw new ValidationError('stage is required.');
 
+        await assertInScope(req);
         const opportunity = await opportunityService.advanceStage(
           { tenantId, userId },
           req.params.id,
           stage,
-          lostReason
+          lostReason,
+          await ownerFilterFor(req)
         );
 
         res.json(opportunity);
@@ -252,10 +274,12 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
           throw new ValidationError('outcome must be WON or LOST.');
         }
 
+        await assertInScope(req);
         const opportunity = await opportunityService.closeOpportunity(
           { tenantId, userId },
           req.params.id,
-          { outcome, lostReason }
+          { outcome, lostReason },
+          await ownerFilterFor(req)
         );
 
         res.json(opportunity);
@@ -274,7 +298,8 @@ export function createOpportunitiesRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { userId, tenantId } = (req as AuthenticatedRequest).user;
-        await opportunityService.deleteOpportunity({ tenantId, userId }, req.params.id);
+        await assertInScope(req);
+        await opportunityService.deleteOpportunity({ tenantId, userId }, req.params.id, await ownerFilterFor(req));
         res.status(204).send();
       } catch (err) {
         next(err);
