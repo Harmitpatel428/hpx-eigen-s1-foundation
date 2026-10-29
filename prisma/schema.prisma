@@ -752,6 +752,14 @@ model Contact {
   // Trigram GIN makes those index scans. Requires the pg_trgm extension (created in the migration).
   @@index([phone(ops: raw("gin_trgm_ops"))], type: Gin)
   @@index([email(ops: raw("gin_trgm_ops"))], type: Gin)
+  // Contact search (GET /contacts?search=) ORs ILIKE '%x%' across the name/company columns too,
+  // not just phone/email. EXPLAIN (ANALYZE) on 150k Contact rows showed a Bitmap Heap Scan that
+  // filtered ALL ~50k tenant rows (findMany 145.9ms / count 142.7ms, "Rows Removed by Filter").
+  // Trigram GIN on these three turns the OR into a BitmapOr of index scans (findMany -> 1.73ms).
+  // Same pg_trgm pattern/extension as phone/email above; prod applies CONCURRENTLY out-of-band.
+  @@index([firstName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([lastName(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([company(ops: raw("gin_trgm_ops"))], type: Gin)
 }
 
 // ─── OpportunityType ──────────────────────────────────────────────
