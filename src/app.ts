@@ -115,6 +115,22 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+// ─── Security headers (additive hardening; does not touch auth/tenant rules) ────────────────────
+// CSP ships REPORT-ONLY first so it cannot break the UI — it only logs violations. NB: connect-src
+// 'self' will REPORT the cross-origin API calls (frontend origin -> this API origin); widen
+// connect-src to the API origin before switching the header to the enforcing `Content-Security-Policy`.
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains'); // honored only over HTTPS
+  res.setHeader(
+    'Content-Security-Policy-Report-Only',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+  );
+  next();
+});
+
 // Keep raw bytes for webhook HMAC verification (signature is computed over the
 // exact request body, not the re-serialized parsed object).
 app.use(express.json({
