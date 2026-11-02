@@ -173,7 +173,8 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
-        const kpis = await svc.getDashboardKPIs({ tenantId, userId });
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const kpis = await svc.getDashboardKPIs({ tenantId, userId }, { restrictToUserId: canViewAll ? undefined : userId });
         res.json({ success: true, data: kpis });
       } catch (err) { next(err); }
     }

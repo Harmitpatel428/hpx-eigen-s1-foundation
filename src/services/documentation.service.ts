@@ -1321,7 +1321,18 @@ export class DocumentationService {
     }, { maxWait: 5000, timeout: 20000 });
   }
 
-  async getDashboardKPIs(ctx: TenantContext) {
+  async getDashboardKPIs(ctx: TenantContext, opts: { restrictToUserId?: string } = {}) {
+    // Same union scope as listCases: callers without doc:case:view-all see only their own cases.
+    const userScope: Prisma.DocCaseWhereInput = opts.restrictToUserId
+      ? { OR: [
+          { assignedTo: opts.restrictToUserId },
+          { processAssignedTo: opts.restrictToUserId },
+          { lead: { ownerId: opts.restrictToUserId } },
+        ] }
+      : {};
+
+    const base: Prisma.DocCaseWhereInput = { tenantId: ctx.tenantId, deletedAt: null, ...userScope };
+
     const [
       totalCases,
       activeCases,
@@ -1332,12 +1343,12 @@ export class DocumentationService {
       pendingVerification,
       overdueDocCount,
     ] = await this.prisma.$transaction([
-      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null } }),
-      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'ACTIVE' } }),
-      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, isReady: true, status: 'DOCUMENTATION_READY' } }),
-      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'PENDING_PROCESS_REVIEW' } }),
-      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'RETURNED_TO_DOCUMENTATION' } }),
-      this.prisma.docCase.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'TRANSFERRED_TO_PROCESS' } }),
+      this.prisma.docCase.count({ where: base }),
+      this.prisma.docCase.count({ where: { ...base, status: 'ACTIVE' } }),
+      this.prisma.docCase.count({ where: { ...base, isReady: true, status: 'DOCUMENTATION_READY' } }),
+      this.prisma.docCase.count({ where: { ...base, status: 'PENDING_PROCESS_REVIEW' } }),
+      this.prisma.docCase.count({ where: { ...base, status: 'RETURNED_TO_DOCUMENTATION' } }),
+      this.prisma.docCase.count({ where: { ...base, status: 'TRANSFERRED_TO_PROCESS' } }),
       this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'UNDER_VERIFICATION' } }),
       this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'EXPIRED' } }),
     ]);
