@@ -32,7 +32,15 @@ import type { TenantContext } from './documentation.service';
  * "wrong digits" from "locked out".
  */
 export class PortalVerificationFailed extends Error {
-  constructor(public readonly internalReason: string) {
+  /**
+   * `locked` distinguishes a rate-limit lockout from an ordinary verification
+   * failure. The router maps a locked failure to a distinct 429 so a legitimate
+   * caller is not told "wrong details" when they are actually rate-limited. This
+   * is safe: lockout is keyed on (caseNumber, ip) and fires regardless of whether
+   * the case exists, so a 429 only reaches an ip that already made the attempts —
+   * it is never a case-number oracle.
+   */
+  constructor(public readonly internalReason: string, public readonly locked = false) {
     super('VERIFICATION_FAILED');
     this.name = 'PortalVerificationFailed';
   }
@@ -81,8 +89,10 @@ export class PortalService {
     }
 
     if (await this.isLockedOut(caseNumber, ip)) {
-      await record(false, null, null);
-      throw new PortalVerificationFailed('locked_out');
+      // Do NOT record while locked: counting a locked caller's retries would keep
+      // extending their own window, so the lockout could never expire under
+      // continuous retry. The window stays anchored to the real failed attempts.
+      throw new PortalVerificationFailed('locked_out', true);
     }
 
     const docCase = await this.prisma.docCase.findFirst({
@@ -123,6 +133,13 @@ export class PortalService {
     });
 
     await record(true, docCase.id, docCase.tenantId);
+
+    // A correct verification resets the lockout counter for this (caseNumber, ip):
+    // only wrong digits can reach here falsely, and they can't (digits just matched),
+    // so a legitimate client is never held behind stale failures after signing in.
+    await this.prisma.portalAuthAttempt.deleteMany({
+      where: { caseNumber, ipAddress: ip, succeeded: false },
+    });
 
     return { sessionToken: token, expiresAt: sessionExpiry().toISOString() };
   }

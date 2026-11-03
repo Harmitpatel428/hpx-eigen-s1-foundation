@@ -9,10 +9,16 @@ import { ValidationError } from '../types/exceptions';
 /**
  * PUBLIC router — no authMiddleware on the client-facing routes.
  *
- * Every failure returns the identical status and body. The internal reason is
- * written to the server log only. Do not add a distinguishing status code, a
- * different message, or a "remaining attempts" counter here: each of those
- * turns the endpoint into an oracle for valid case numbers.
+ * Every verification FAILURE returns the identical 401 status and body, and the
+ * internal reason is written to the server log only. Do not add a distinguishing
+ * status code, a different message, or a "remaining attempts" counter for the
+ * failure path: each turns the endpoint into an oracle for valid case numbers.
+ *
+ * The ONE exception is lockout (429): it is keyed on (caseNumber, ip) and fires
+ * regardless of whether the case exists, so a 429 only reaches an ip that already
+ * made the failed attempts — it reveals nothing a prober didn't already cause,
+ * and it stops a legitimate caller with the CORRECT details from being told
+ * "wrong details" while they are merely rate-limited.
  */
 export function createPortalRouter(prisma: PrismaClient): Router {
   const router = Router();
@@ -20,6 +26,10 @@ export function createPortalRouter(prisma: PrismaClient): Router {
 
   const fail = (res: Response, err: PortalVerificationFailed, path: string) => {
     logger.warn({ internalReason: err.internalReason, path }, 'Portal verification failed');
+    if (err.locked) {
+      res.status(429).json({ error: 'TOO_MANY_ATTEMPTS', message: 'Too many attempts. Please wait and try again later.' });
+      return;
+    }
     res.status(PORTAL_HTTP_STATUS).json(PORTAL_VERIFICATION_FAILED);
   };
 
