@@ -55,6 +55,7 @@ export interface PortalCaseView {
   company: string | null;
   status: string;
   mandateStatus: 'UPLOADED' | 'PENDING';
+  portalActive: boolean;
   portalActivatedAt: string;
   progressStages: Array<{ key: string; label: string; completedAt: string | null; isCurrent: boolean }>;
   documents: Array<{ id: string; name: string; status: ClientDocStatus; receivedAt: string | null }>;
@@ -197,7 +198,7 @@ export class PortalService {
    * percentages, storage references, rejection reasons, audit history, return counts, every handoff
    * field, and any per-document verification detail.
    */
-  async getCaseView(caseId: string): Promise<PortalCaseView> {
+  async getCaseView(caseId: string, opts: { preview?: boolean } = {}): Promise<PortalCaseView> {
     const docCase = await this.prisma.docCase.findFirst({
       where: { id: caseId, deletedAt: null },
       include: {
@@ -220,13 +221,19 @@ export class PortalService {
 
     if (!docCase) throw new PortalVerificationFailed('case_missing_on_view');
 
-    if (!isPortalAccessible({
+    // Staff preview (opts.preview) renders content regardless of client-portal activation — it exists to show
+    // staff what the client WILL see, and reports portalActive so the UI can flag "not yet activated". The
+    // client-facing path keeps the activation gate: a client never sees a case whose portal is not active.
+    if (!opts.preview && !isPortalAccessible({
       portalEnabledAt: docCase.portalEnabledAt,
       portalPhoneLast4: docCase.portalPhoneLast4,
       status: docCase.status,
     })) {
       throw new PortalVerificationFailed('portal_deactivated_mid_session');
     }
+
+    // When not yet activated (preview only), fall back to the case creation date for the "opened" timestamps.
+    const openedAt = (docCase.portalEnabledAt ?? docCase.createdAt).toISOString();
 
     const currentStage = progressStageFor(docCase.status);
     const currentIdx = PORTAL_PROGRESS_STAGES.findIndex(s => s.key === currentStage);
@@ -239,11 +246,12 @@ export class PortalService {
       mandateStatus: docCase.mandateRequests.some(
         r => r.status === 'UPLOADED' || r.status === 'VERIFIED' || r._count.uploads > 0,
       ) ? 'UPLOADED' : 'PENDING',
-      portalActivatedAt: docCase.portalEnabledAt!.toISOString(),
+      portalActive: docCase.portalEnabledAt != null,
+      portalActivatedAt: openedAt,
       progressStages: PORTAL_PROGRESS_STAGES.map((s, i) => ({
         key: s.key,
         label: s.label,
-        completedAt: i < currentIdx ? docCase.portalEnabledAt!.toISOString() : null,
+        completedAt: i < currentIdx ? openedAt : null,
         isCurrent: i === currentIdx,
       })),
       // NOT_APPLICABLE/WAIVED map to null → dropped (nothing actionable for the client). The

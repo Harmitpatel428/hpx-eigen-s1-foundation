@@ -89,17 +89,19 @@ export function createPortalRouter(prisma: PrismaClient): Router {
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
-        // Tenant-scope the lookup before rendering — permission alone does not
-        // authorise reading another tenant's case.
+        // The preview URL carries a CASE NUMBER (HPX-XXXX-XXXX), not the internal UUID — resolve by caseNumber,
+        // tenant-scoped (permission alone does not authorise reading another tenant's case). Resolving by `id`
+        // would throw P2023 on the non-UUID input and surface as a generic 500.
         const owned = await prisma.docCase.findFirst({
-          where: { id: req.params.caseId, tenantId, deletedAt: null },
+          where: { caseNumber: req.params.caseId, tenantId, deletedAt: null },
           select: { id: true },
         });
         if (!owned) { res.status(404).json({ code: 'RESOURCE_NOT_FOUND', message: 'Case not found.' }); return; }
 
         // Audit the staff preview access (read-only; no client session is ever minted here).
         await portal.recordPreviewAccess({ tenantId, userId }, owned.id);
-        res.json({ success: true, data: { ...await portal.getCaseView(owned.id), isPreview: true } });
+        // preview: render content even if the client portal is not yet activated; payload carries portalActive.
+        res.json({ success: true, data: { ...await portal.getCaseView(owned.id, { preview: true }), isPreview: true } });
       } catch (err) {
         if (err instanceof PortalVerificationFailed) {
           res.status(409).json({
