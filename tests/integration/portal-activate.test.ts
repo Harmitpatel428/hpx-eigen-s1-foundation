@@ -211,10 +211,21 @@ describe('POST /cases/:caseId/portal/activate', () => {
     expect(r.status).toBe(404);
   });
 
-  it('5. INCOMING status → 422', async () => {
-    const c = await createCase({ status: DocCaseStatus.INCOMING });
+  it('5. DOCUMENTATION_READY (non-closed) → 200, portalEnabledAt set (activation gate == access gate)', async () => {
+    const c = await createCase({ status: DocCaseStatus.DOCUMENTATION_READY });
+    const r = await activate(c.id, jwtToken);
+    expect(r.status).toBe(200);
+    expect(r.body.data.portalEnabledAt).toBeTruthy();
+    const updated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(updated!.portalEnabledAt).toBeTruthy();
+  });
+
+  it('5b. CANCELLED (closed) → 422, still refused', async () => {
+    const c = await createCase({ status: DocCaseStatus.CANCELLED });
     const r = await activate(c.id, jwtToken);
     expect(r.status).toBe(422);
+    const updated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(updated!.portalEnabledAt).toBeNull();
   });
 
   it('6. missing portalPhoneLast4 → 400', async () => {
@@ -341,8 +352,8 @@ describe('portal auto-activation via publish flow (reconcilePortalActivation)', 
     expect(audits[0].hashVersion).toBe(1);
   });
 
-  it('14. publish note on INCOMING case → does NOT auto-activate', async () => {
-    const c = await createCase({ status: DocCaseStatus.INCOMING });
+  it('14. publish note on CLOSED (ineligible) case → does NOT auto-activate', async () => {
+    const c = await createCase({ status: DocCaseStatus.CLOSED });
     const note = await createNote(c.id);
 
     await portalService.setNoteVisibility(ctx, note.id, true);
@@ -354,6 +365,21 @@ describe('portal auto-activation via publish flow (reconcilePortalActivation)', 
       where: { tenantId: TENANT_ID, entityId: c.id, eventType: 'PORTAL_AUTO_ACTIVATED' },
     });
     expect(audits).toHaveLength(0);
+  });
+
+  it('14b. publish note on DOCUMENTATION_READY (non-closed) case → auto-activates', async () => {
+    const c = await createCase({ status: DocCaseStatus.DOCUMENTATION_READY });
+    const note = await createNote(c.id);
+
+    await portalService.setNoteVisibility(ctx, note.id, true);
+
+    const updated = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(updated!.portalEnabledAt).toBeTruthy();
+
+    const audits = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityId: c.id, eventType: 'PORTAL_AUTO_ACTIVATED' },
+    });
+    expect(audits).toHaveLength(1);
   });
 
   it('15. publish note on case with no portalPhoneLast4 → does NOT auto-activate', async () => {

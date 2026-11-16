@@ -1644,8 +1644,8 @@ model DocCaseNote {
   caseId          String      @db.Uuid
   noteType        DocNoteType @default(INTERNAL)
   content         String
-  // noteType records intent; clientVisible records the audited publish decision.
-  // A CUSTOMER note is not on the portal until it is explicitly published.
+  // noteType records intent; clientVisible is the publish decision the portal filters on (never noteType).
+  // Creating a CUSTOMER note publishes it (clientVisible=true); staff may toggle later via setNoteVisibility.
   clientVisible   Boolean     @default(false)
   clientVisibleAt DateTime?
   createdBy       String      @db.Uuid

@@ -20,7 +20,10 @@ import {
   sessionExpiry,
   safeCompareDigits,
   isPortalAccessible,
+  isPortalEligibleStatus,
+  PORTAL_CLOSED_STATUSES,
   toClientDocStatus,
+  type ClientDocStatus,
   progressStageFor,
   PORTAL_PROGRESS_STAGES,
 } from '../domain/portal';
@@ -49,10 +52,12 @@ export class PortalVerificationFailed extends Error {
 export interface PortalCaseView {
   caseNumber: string;
   clientName: string;
+  company: string | null;
   status: string;
+  mandateStatus: 'UPLOADED' | 'PENDING';
   portalActivatedAt: string;
   progressStages: Array<{ key: string; label: string; completedAt: string | null; isCurrent: boolean }>;
-  documents: Array<{ id: string; name: string; status: 'RECEIVED' | 'PENDING'; receivedAt: string | null }>;
+  documents: Array<{ id: string; name: string; status: ClientDocStatus; receivedAt: string | null }>;
   notes: Array<{ id: string; content: string; createdAt: string }>;
 }
 
@@ -187,15 +192,16 @@ export class PortalService {
   /**
    * Everything the client may see, and nothing else.
    *
-   * Explicitly excluded: internal notes, owner/assignee identity, completion
-   * percentages, storage references, rejection reasons, audit history, return
-   * counts, and every handoff field.
+   * Document `status` is the 3-category client abstraction (toClientDocStatus); NOT_APPLICABLE/WAIVED
+   * are dropped entirely. Explicitly excluded: internal notes, owner/assignee identity, completion
+   * percentages, storage references, rejection reasons, audit history, return counts, every handoff
+   * field, and any per-document verification detail.
    */
   async getCaseView(caseId: string): Promise<PortalCaseView> {
     const docCase = await this.prisma.docCase.findFirst({
       where: { id: caseId, deletedAt: null },
       include: {
-        lead: { select: { firstName: true, lastName: true } },
+        lead: { select: { firstName: true, lastName: true, company: true } },
         documents: {
           where: { clientVisible: true, deletedAt: null },
           select: { id: true, name: true, status: true, receivedAt: true },
@@ -206,6 +212,9 @@ export class PortalService {
           select: { id: true, content: true, createdAt: true },
           orderBy: { createdAt: 'desc' },
         },
+        // Mandate status is DERIVED, never a client-supplied flag: a request counts as uploaded once its
+        // status reaches UPLOADED/VERIFIED or it has any upload row. Tenant+case scoped (children of this case).
+        mandateRequests: { select: { status: true, _count: { select: { uploads: true } } } },
       },
     });
 
@@ -225,7 +234,11 @@ export class PortalService {
     return {
       caseNumber: docCase.caseNumber!,
       clientName: [docCase.lead.firstName, docCase.lead.lastName].filter(Boolean).join(' '),
+      company: docCase.lead.company ?? null,
       status: docCase.status,
+      mandateStatus: docCase.mandateRequests.some(
+        r => r.status === 'UPLOADED' || r.status === 'VERIFIED' || r._count.uploads > 0,
+      ) ? 'UPLOADED' : 'PENDING',
       portalActivatedAt: docCase.portalEnabledAt!.toISOString(),
       progressStages: PORTAL_PROGRESS_STAGES.map((s, i) => ({
         key: s.key,
@@ -233,18 +246,33 @@ export class PortalService {
         completedAt: i < currentIdx ? docCase.portalEnabledAt!.toISOString() : null,
         isCurrent: i === currentIdx,
       })),
-      documents: docCase.documents.map(d => ({
-        id: d.id,
-        name: d.name,
-        status: toClientDocStatus(d.status),
-        receivedAt: d.receivedAt?.toISOString() ?? null,
-      })),
+      // NOT_APPLICABLE/WAIVED map to null → dropped (nothing actionable for the client). The
+      // delivered `status` is the 3-category client abstraction; reasons/storage refs stay excluded.
+      documents: docCase.documents.flatMap(d => {
+        const status = toClientDocStatus(d.status);
+        return status === null
+          ? []
+          : [{ id: d.id, name: d.name, status, receivedAt: d.receivedAt?.toISOString() ?? null }];
+      }),
       notes: docCase.caseNotes.map(n => ({
         id: n.id,
         content: n.content,
         createdAt: n.createdAt.toISOString(),
       })),
     };
+  }
+
+  /** Audit a staff preview of a case's client portal. Read-only; never mints a client session. */
+  async recordPreviewAccess(ctx: TenantContext, caseId: string) {
+    await this.audit.log({
+      tenantId: ctx.tenantId,
+      eventType: 'PORTAL_PREVIEW_VIEWED',
+      entityType: 'DocCase',
+      entityId: caseId,
+      actorUserId: ctx.userId,
+      operation: 'READ',
+      payload: { preview: true },
+    });
   }
 
   // ─── Publishing (staff side) ───────────────────────────────────────────────
@@ -306,8 +334,8 @@ export class PortalService {
     ]);
     const visibleCount = visibleNotes + visibleDocs;
 
-    // Activation requires: visible content + phone + ACTIVE status.
-    const canActivate = visibleCount > 0 && !!docCase.portalPhoneLast4 && docCase.status === DocCaseStatus.ACTIVE;
+    // Activation requires: visible content + phone + a portal-eligible (non-closed) status.
+    const canActivate = visibleCount > 0 && !!docCase.portalPhoneLast4 && isPortalEligibleStatus(docCase.status);
 
     if (canActivate && !docCase.portalEnabledAt) {
       await this.enablePortalInTx(tx, {
@@ -345,7 +373,7 @@ export class PortalService {
 
   /**
    * Race-safe, idempotent portal enable. A single conditional updateMany
-   * checks every invariant (not deleted, not already enabled, ACTIVE status,
+   * checks every invariant (not deleted, not already enabled, non-closed status,
    * phone set) and flips portalEnabledAt atomically — no read-then-write
    * TOCTOU window. Audits only the transition, never a no-op.
    */
@@ -366,7 +394,7 @@ export class PortalService {
         tenantId: opts.tenantId,
         deletedAt: null,
         portalEnabledAt: null,
-        status: DocCaseStatus.ACTIVE,
+        status: { notIn: PORTAL_CLOSED_STATUSES },
         portalPhoneLast4: { not: null },
       },
       data: { portalEnabledAt: now },
@@ -605,9 +633,9 @@ export class PortalService {
         return { caseId, portalEnabledAt: docCase.portalEnabledAt.toISOString(), alreadyEnabled: true };
       }
 
-      // Wrong status
-      if (docCase.status !== DocCaseStatus.ACTIVE) {
-        throw new BusinessRuleViolationError(`Case must be in ACTIVE status to activate portal (current: ${docCase.status}).`);
+      // Closed/cancelled status — not portal-eligible
+      if (!isPortalEligibleStatus(docCase.status)) {
+        throw new BusinessRuleViolationError(`Case must not be closed or cancelled to activate portal (current: ${docCase.status}).`);
       }
 
       // No phone

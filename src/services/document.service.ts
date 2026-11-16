@@ -9,6 +9,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import crypto from 'crypto';
+import type { Readable } from 'stream';
 import { AuditService } from './audit.service';
 import { storageService } from './storage.service';
 import { virusScanService } from './virus-scan.service';
@@ -264,6 +265,54 @@ export class DocumentService {
     const { url, expiresAt } = await storageService.generateViewUrl(doc.storageKey, DOCUMENT_POLICY.PRESIGNED_URL_SECONDS);
     // storageKey deliberately omitted (R5).
     return { viewUrl: url, fileName: doc.name, contentType: doc.mimeType, sizeBytes: doc.sizeBytes, expiresAt };
+  }
+
+  // ─── Download all (streaming ZIP) ───────────────────────────────────────────
+
+  /** Documents for a staff "Download All", using the SAME view predicate as getViewUrl: doc:view + the optional
+   *  (assignedTo | processAssignedTo | lead.ownerId) union-scope, resolved within the tenant. A case the caller
+   *  may not see (or another tenant's) resolves as not-found → 404. Returns the sanitize-source company name and
+   *  each doc's storage key / name / size. */
+  async listCaseDocumentsForDownload(
+    ctx: TenantContext, caseId: string, opts: { restrictToUserId?: string } = {},
+  ): Promise<{ company: string; documents: Array<{ storageKey: string; name: string; sizeBytes: number }> }> {
+    const docCase = await this.prisma.docCase.findFirst({
+      where: {
+        id: caseId, tenantId: ctx.tenantId, deletedAt: null,
+        ...(opts.restrictToUserId ? { OR: [
+          { assignedTo: opts.restrictToUserId },
+          { processAssignedTo: opts.restrictToUserId },
+          { lead: { ownerId: opts.restrictToUserId } },
+        ] } : {}),
+      },
+      select: { id: true, lead: { select: { company: true, firstName: true, lastName: true } } },
+    });
+    if (!docCase) throw new ResourceNotFoundError();
+    const documents = await this.prisma.document.findMany({
+      where: { caseId, tenantId: ctx.tenantId, deletedAt: null },
+      select: { storageKey: true, name: true, sizeBytes: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    const company = docCase.lead.company
+      || [docCase.lead.firstName, docCase.lead.lastName].filter(Boolean).join(' ')
+      || 'Documents';
+    return { company, documents };
+  }
+
+  /** Open a readable stream for a stored document (no whole-file buffering). */
+  streamDocument(storageKey: string): Promise<Readable> {
+    return storageService.getObjectStream(storageKey);
+  }
+
+  /** Audit a Download-All lifecycle event (started / completed / failed). */
+  async auditDownloadAll(
+    ctx: TenantContext, caseId: string, outcome: 'started' | 'completed' | 'failed', meta: Record<string, unknown> = {},
+  ): Promise<void> {
+    await this.audit.log({
+      tenantId: ctx.tenantId, eventType: `DOCUMENTS_DOWNLOAD_ALL_${outcome.toUpperCase()}`,
+      entityType: 'DocCase', entityId: caseId, actorUserId: ctx.userId,
+      operation: 'READ', payload: meta,
+    });
   }
 
   // ─── status PATCH (G1) ──────────────────────────────────────────────────────

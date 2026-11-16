@@ -9,7 +9,7 @@
  */
 import 'dotenv/config';
 import { describe, it, beforeAll, afterAll, expect } from '@jest/globals';
-import { PrismaClient, DocCaseStatus, DocDocumentStatus } from '@prisma/client';
+import { PrismaClient, DocCaseStatus, DocDocumentStatus, DocNoteType } from '@prisma/client';
 import * as crypto from 'crypto';
 import * as http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
@@ -18,6 +18,7 @@ import { createPortalRouter } from '../../src/routes/portal.router';
 import { AppException } from '../../src/types/exceptions';
 import { hashSessionToken } from '../../src/domain/portal';
 import { generateCaseNumber } from '../../src/domain/caseNumber';
+import { DocumentationService } from '../../src/services/documentation.service';
 
 const prisma = new PrismaClient();
 
@@ -49,7 +50,7 @@ async function createCase(overrides: Partial<{
   portalEnabledAt: Date | null;
 }> = {}): Promise<{ id: string; caseNumber: string }> {
   const lead = await prisma.lead.create({
-    data: { tenantId: TENANT_ID, firstName: 'Test', lastName: 'Client', email: `lead-${crypto.randomUUID()}@example.com` },
+    data: { tenantId: TENANT_ID, firstName: 'Test', lastName: 'Client', company: 'Acme Industries Pvt Ltd', email: `lead-${crypto.randomUUID()}@example.com` },
   });
   // Use the production generator: the case-number alphabet omits 0/1/I/O, so a
   // hex slice of a UUID would often be rejected by isValidCaseNumber.
@@ -239,6 +240,92 @@ describe('GET /portal/case', () => {
     expect(view).not.toHaveProperty('portalPhoneLast4');
     expect(JSON.stringify(view)).not.toContain('INTERNAL ONLY');
     expect(JSON.stringify(view)).not.toContain('Internal Check');
+  });
+
+  it('ROOT CAUSE: addNote(CUSTOMER) publishes to the portal; addNote(INTERNAL) stays staff-only', async () => {
+    const c = await createCase();
+    const svc = new DocumentationService(prisma);
+    const ctx = { tenantId: TENANT_ID, userId: crypto.randomUUID() };
+
+    const customer = await svc.addNote(ctx, c.id, { noteType: DocNoteType.CUSTOMER, content: 'Published client note' });
+    const internal = await svc.addNote(ctx, c.id, { noteType: DocNoteType.INTERNAL, content: 'STAFF ONLY note' });
+
+    // The fix: a CUSTOMER note is client-visible the moment it is created; INTERNAL is not. Single source of truth.
+    expect(customer.clientVisible).toBe(true);
+    expect(customer.clientVisibleAt).not.toBeNull();
+    expect(internal.clientVisible).toBe(false);
+    expect(internal.clientVisibleAt).toBeNull();
+
+    // End-to-end: the portal returns the published note and never the internal one.
+    const token = await verifiedToken(c.caseNumber);
+    const r = await get('/api/v1/portal/case', { Authorization: `Bearer ${token}` });
+    expect(r.status).toBe(200);
+    const contents = (r.body.data.notes as Array<{ content: string }>).map(n => n.content);
+    expect(contents).toContain('Published client note');
+    expect(contents).not.toContain('STAFF ONLY note');
+    expect(JSON.stringify(r.body.data)).not.toContain('STAFF ONLY note');
+  });
+
+  it('mandate status: PENDING with no request or no upload; UPLOADED once a mandate is uploaded', async () => {
+    const mkReq = (caseId: string, status: 'PENDING_UPLOAD' | 'UPLOADED') =>
+      prisma.mandateRequest.create({ data: {
+        tenantId: TENANT_ID, caseId, mandateType: 'ECS', status,
+        uploadTokenHash: crypto.randomBytes(32).toString('hex'),
+        tokenExpiresAt: new Date(Date.now() + 864e5), sentByUserId: crypto.randomUUID(),
+      } });
+    const mandate = async (caseNumber: string) => {
+      const r = await get('/api/v1/portal/case', { Authorization: `Bearer ${await verifiedToken(caseNumber)}` });
+      expect(r.status).toBe(200);
+      return r.body.data.mandateStatus as string;
+    };
+
+    // (a) no mandate request → PENDING
+    const a = await createCase();
+    expect(await mandate(a.caseNumber)).toBe('PENDING');
+
+    // (b) request without an upload → PENDING
+    const b = await createCase();
+    await mkReq(b.id, 'PENDING_UPLOAD');
+    expect(await mandate(b.caseNumber)).toBe('PENDING');
+
+    // (c) uploaded (status UPLOADED + an upload row) → UPLOADED
+    const c = await createCase();
+    const req = await mkReq(c.id, 'UPLOADED');
+    await prisma.mandateUpload.create({ data: {
+      tenantId: TENANT_ID, mandateRequestId: req.id, storageKey: 'k',
+      fileName: 'm.pdf', contentType: 'application/pdf', fileSizeBytes: 100,
+    } });
+    expect(await mandate(c.caseNumber)).toBe('UPLOADED');
+  });
+
+  it('document contract: 3-category status vocabulary, NOT_APPLICABLE/WAIVED dropped, no reasons/refs', async () => {
+    const c = await createCase();
+    const mk = (name: string, status: DocDocumentStatus) =>
+      prisma.docCaseDocument.create({ data: { tenantId: TENANT_ID, caseId: c.id, name, status, clientVisible: true, receivedAt: new Date() } });
+    await mk('Pending Doc', DocDocumentStatus.PENDING_COLLECTION);  // → ACTION_REQUIRED
+    await mk('Rejected Doc', DocDocumentStatus.REJECTED);            // → ACTION_REQUIRED (no reason leaked)
+    await mk('Submitted Doc', DocDocumentStatus.UNDER_VERIFICATION); // → AWAITING_REVIEW
+    await mk('Approved Doc', DocDocumentStatus.APPROVED);            // → APPROVED
+    await mk('N/A Doc', DocDocumentStatus.NOT_APPLICABLE);           // → dropped
+    await mk('Waived Doc', DocDocumentStatus.WAIVED);               // → dropped
+
+    const token = await verifiedToken(c.caseNumber);
+    const r = await get('/api/v1/portal/case', { Authorization: `Bearer ${token}` });
+    expect(r.status).toBe(200);
+    const docs = r.body.data.documents as Array<{ id: string; name: string; status: string; receivedAt: string | null }>;
+
+    expect(r.body.data.company).toBe('Acme Industries Pvt Ltd'); // company name surfaced to the client
+    expect(r.body.data.clientName).toBe('Test Client');
+    expect(docs).toHaveLength(4); // N/A + Waived dropped
+    for (const d of docs) {
+      expect(['ACTION_REQUIRED', 'AWAITING_REVIEW', 'APPROVED']).toContain(d.status);
+      expect(Object.keys(d).sort()).toEqual(['id', 'name', 'receivedAt', 'status']);
+    }
+    const blob = JSON.stringify(docs);
+    expect(blob).not.toMatch(/RECEIVED|PENDING\b/); // old vocabulary gone
+    expect(blob).not.toContain('N/A Doc');
+    expect(blob).not.toContain('Waived Doc');
+    expect(blob).not.toMatch(/reason|rejection|storage|verification|remarks/i);
   });
 
   it('missing / malformed token → 401', async () => {

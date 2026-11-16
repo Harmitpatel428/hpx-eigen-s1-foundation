@@ -8,6 +8,7 @@ import {
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import type { Readable } from 'stream';
 import { ConfigurationError } from '../types/exceptions';
 
 /**
@@ -102,6 +103,15 @@ class StorageService {
     const body = res.Body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined;
     if (!body?.transformToByteArray) throw new Error('R2 object body is not readable.');
     return Buffer.from(await body.transformToByteArray());
+  }
+
+  /** Stream an object's bytes (no whole-file buffering) — the SDK v3 Node runtime returns Body as a Readable.
+   *  Used to pipe each document into a streaming ZIP without staging large files in memory or on disk. */
+  async getObjectStream(key: string): Promise<Readable> {
+    const { client, bucket } = this.config();
+    const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    if (!res.Body) throw new Error('R2 object body is empty.');
+    return res.Body as Readable;
   }
 
   async deleteObject(key: string): Promise<void> {

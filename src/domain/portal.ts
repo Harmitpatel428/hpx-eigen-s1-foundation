@@ -60,10 +60,22 @@ export function safeCompareDigits(a: string, b: string): boolean {
 
 // ─── Activation ──────────────────────────────────────────────────────────────
 
-const PORTAL_CLOSED_STATUSES: DocCaseStatus[] = [
+export const PORTAL_CLOSED_STATUSES: DocCaseStatus[] = [
   DocCaseStatus.CLOSED,
   DocCaseStatus.CANCELLED,
 ];
+
+/**
+ * Single status source of truth for the portal: a case is portal-eligible in
+ * any status except the closed ones. Activation (enable + manual activate) uses
+ * the SAME predicate as access, so a case can never be stranded — permitted to
+ * hold a portal by the access gate yet forbidden from ever activating one.
+ * Activation still requires its explicit trigger (a client-visible publish or an
+ * audited manual activation); eligibility only removes the status dead-end.
+ */
+export function isPortalEligibleStatus(status: DocCaseStatus): boolean {
+  return !PORTAL_CLOSED_STATUSES.includes(status);
+}
 
 export interface PortalAccessInput {
   portalEnabledAt: Date | null;
@@ -79,23 +91,45 @@ export interface PortalAccessInput {
 export function isPortalAccessible(input: PortalAccessInput): boolean {
   if (!input.portalEnabledAt) return false;
   if (!input.portalPhoneLast4) return false;
-  if (PORTAL_CLOSED_STATUSES.includes(input.status)) return false;
+  if (!isPortalEligibleStatus(input.status)) return false;
   return true;
 }
 
 // ─── Client-facing projections ───────────────────────────────────────────────
 
 /**
- * Internal document statuses collapse to two client-facing words.
+ * Client-facing document status: the 11 internal DocDocumentStatus values collapse to THREE
+ * client-meaningful categories, and two are withheld entirely.
  *
- * REJECTED must never reach the portal: a client seeing "rejected" on a
- * document they submitted generates a support call and leaks an internal
- * verification judgement. Pending is the honest client-facing state.
+ * Policy (product-owner decision 2026-11-03, widening the prior 2-value RECEIVED/PENDING collapse):
+ *  - ACTION_REQUIRED ← REQUESTED, PENDING_COLLECTION, REJECTED, RE_REQUESTED, EXPIRED
+ *  - AWAITING_REVIEW ← RECEIVED, UNDER_VERIFICATION
+ *  - APPROVED        ← APPROVED, MANAGER_APPROVED
+ *  - null (not delivered) ← NOT_APPLICABLE, WAIVED (nothing actionable for the client)
+ *  - unknown/future value → ACTION_REQUIRED (safe default; never crash)
+ *
+ * Still excluded by security policy: rejection reasons, storage/download references, internal
+ * verification notes. REJECTED folds into ACTION_REQUIRED with NO reason — a client never sees an
+ * internal verification judgement, only that the document needs their attention.
  */
-export function toClientDocStatus(status: string): 'RECEIVED' | 'PENDING' {
-  return ['RECEIVED', 'UNDER_VERIFICATION', 'VERIFIED', 'APPROVED', 'MANAGER_APPROVED'].includes(status)
-    ? 'RECEIVED'
-    : 'PENDING';
+export type ClientDocStatus = 'ACTION_REQUIRED' | 'AWAITING_REVIEW' | 'APPROVED';
+
+const CLIENT_DOC_STATUS: Record<string, ClientDocStatus | null> = {
+  REQUESTED: 'ACTION_REQUIRED',
+  PENDING_COLLECTION: 'ACTION_REQUIRED',
+  REJECTED: 'ACTION_REQUIRED',
+  RE_REQUESTED: 'ACTION_REQUIRED',
+  EXPIRED: 'ACTION_REQUIRED',
+  RECEIVED: 'AWAITING_REVIEW',
+  UNDER_VERIFICATION: 'AWAITING_REVIEW',
+  APPROVED: 'APPROVED',
+  MANAGER_APPROVED: 'APPROVED',
+  NOT_APPLICABLE: null,
+  WAIVED: null,
+};
+
+export function toClientDocStatus(status: string): ClientDocStatus | null {
+  return status in CLIENT_DOC_STATUS ? CLIENT_DOC_STATUS[status] : 'ACTION_REQUIRED';
 }
 
 export const PORTAL_PROGRESS_STAGES = [

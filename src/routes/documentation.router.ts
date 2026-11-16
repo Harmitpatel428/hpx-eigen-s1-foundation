@@ -7,11 +7,31 @@ import { checkFirmUploadUrlAttempts } from '../services/auth/RateLimitService';
 import { ValidationError } from '../types/exceptions';
 import { requireCaseEngineEnabled } from '../middleware/case-engine.middleware';
 import { CaseReportsService } from '../services/case-reports.service';
+import archiver from 'archiver';
+import { logger } from '../utils/logger';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FIRM_SOURCE_CHANNELS = ['WHATSAPP', 'EMAIL', 'PHYSICAL', 'FIRM_UPLOAD', 'OTHER'] as const;
 const DOC_MIME_ALLOWLIST = ['application/pdf', 'image/jpeg', 'image/png'];
 const DOC_MAX_BYTES = 5 * 1024 * 1024;
+
+/** One safe ZIP path segment: strip path separators + control chars, collapse whitespace, fall back if empty. */
+function safeSegment(s: string, fallback: string): string {
+  const cleaned = String(s ?? '').replace(/[/\\]/g, '_').replace(/[\x00-\x1f\x7f]/g, '').replace(/\s+/g, ' ').trim();
+  return cleaned || fallback;
+}
+
+/** Dedupe a filename within a set by inserting " (n)" before the extension; tracks lowercased names. */
+function dedupeName(used: Set<string>, name: string): string {
+  const take = (n: string) => { used.add(n.toLowerCase()); return n; };
+  if (!used.has(name.toLowerCase())) return take(name);
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let n = 2;
+  while (used.has(`${base} (${n})${ext}`.toLowerCase())) n++;
+  return take(`${base} (${n})${ext}`);
+}
 
 /** Read a permission from the authed user's manifest (string scope or V2 decision). */
 function hasPermission(req: Request, slug: string): boolean {
@@ -429,6 +449,62 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
         const result = await docFiles.getViewUrl({ tenantId, userId }, req.params.id, { restrictToUserId: canViewAll ? undefined : userId });
         res.json({ success: true, data: result });
       } catch (err) { next(err); }
+    }
+  );
+
+  /** GET /api/v1/documentation/cases/:caseId/documents/download-all — streaming ZIP of a case's documents.
+   *  Same view predicate as the single-document download (doc:view + doc:case:view-all → unrestricted, else
+   *  the owner/assignee union-scope). One authorization point; streamed, never buffered or staged to disk. */
+  router.get('/cases/:caseId/documents/download-all', authMiddleware, permissionMiddleware('doc:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      const { tenantId, userId } = (req as AuthenticatedRequest).user;
+      const caseId = req.params.caseId;
+      const ctx = { tenantId, userId };
+      try {
+        if (!UUID_RE.test(caseId)) throw new ValidationError('Invalid case id.');
+        const canViewAll = hasPermission(req, 'doc:case:view-all');
+        // Preflight ALL validation before a byte is sent: case within tenant/scope (404 if not), ≥1 doc (else 409).
+        const { company, documents } = await docFiles.listCaseDocumentsForDownload(
+          ctx, caseId, { restrictToUserId: canViewAll ? undefined : userId },
+        );
+        if (documents.length === 0) {
+          res.status(409).json({ code: 'NO_DOCUMENTS', message: 'This case has no documents to download.' });
+          return;
+        }
+
+        const folder = safeSegment(company, 'Documents');
+        const totalBytes = documents.reduce((n, d) => n + (d.sizeBytes || 0), 0);
+        await docFiles.auditDownloadAll(ctx, caseId, 'started', { count: documents.length, totalBytes });
+
+        // Headers before the first byte. X-Total-Bytes drives the client's determinate progress.
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${folder}-documents.zip"`);
+        res.setHeader('X-Total-Bytes', String(totalBytes));
+        res.setHeader('Access-Control-Expose-Headers', 'X-Total-Bytes, Content-Disposition');
+
+        const archive = archiver('zip', { zlib: { level: 6 } });
+        let aborted = false;
+        archive.on('error', (err: Error) => {
+          aborted = true;
+          logger.error({ caseId, err: err.message }, 'Download-all archive error');
+          res.destroy(err); // truncate the response so the client detects failure
+        });
+        archive.pipe(res);
+
+        const used = new Set<string>();
+        for (const doc of documents) {
+          const name = dedupeName(used, safeSegment(doc.name, 'document'));
+          archive.append(await docFiles.streamDocument(doc.storageKey), { name: `${folder}/${name}` });
+        }
+        await archive.finalize();
+
+        await docFiles.auditDownloadAll(ctx, caseId, aborted ? 'failed' : 'completed', { count: documents.length, totalBytes });
+      } catch (err) {
+        if (!res.headersSent) { next(err); return; } // preflight error → normal pipeline (404/403/409/400)
+        logger.error({ caseId, err: (err as Error).message }, 'Download-all failed mid-stream');
+        await docFiles.auditDownloadAll(ctx, caseId, 'failed', { mid: true }).catch(() => {});
+        res.destroy(err as Error);
+      }
     }
   );
 

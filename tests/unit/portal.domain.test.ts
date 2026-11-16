@@ -161,21 +161,34 @@ describe('portal activation', () => {
   });
 });
 
-// Override 15 — the client must never see an internal verification judgement.
-describe('client-facing document status', () => {
-  it.each(['RECEIVED', 'UNDER_VERIFICATION', 'VERIFIED', 'APPROVED', 'MANAGER_APPROVED'])(
-    '%s collapses to RECEIVED', (s) => {
-      expect(toClientDocStatus(s)).toBe('RECEIVED');
-    });
+// Override 15 — the client sees a 3-category abstraction of the 11 internal statuses;
+// rejection reasons and internal verification judgements never leak (REJECTED folds into
+// ACTION_REQUIRED with no reason). NOT_APPLICABLE/WAIVED convey nothing actionable → not delivered.
+describe('client-facing document status (3 categories)', () => {
+  it.each([
+    ['REQUESTED', 'ACTION_REQUIRED'],
+    ['PENDING_COLLECTION', 'ACTION_REQUIRED'],
+    ['REJECTED', 'ACTION_REQUIRED'],
+    ['RE_REQUESTED', 'ACTION_REQUIRED'],
+    ['EXPIRED', 'ACTION_REQUIRED'],
+    ['RECEIVED', 'AWAITING_REVIEW'],
+    ['UNDER_VERIFICATION', 'AWAITING_REVIEW'],
+    ['APPROVED', 'APPROVED'],
+    ['MANAGER_APPROVED', 'APPROVED'],
+  ])('%s → %s', (status, expected) => {
+    expect(toClientDocStatus(status)).toBe(expected);
+  });
 
-  it.each(['REQUESTED', 'PENDING_COLLECTION', 'RE_REQUESTED', 'EXPIRED', 'NOT_APPLICABLE', 'WAIVED'])(
-    '%s collapses to PENDING', (s) => {
-      expect(toClientDocStatus(s)).toBe('PENDING');
-    });
+  it.each(['NOT_APPLICABLE', 'WAIVED'])('%s → null (not delivered to the client)', (status) => {
+    expect(toClientDocStatus(status)).toBeNull();
+  });
 
-  it('never surfaces REJECTED to the client', () => {
-    expect(toClientDocStatus('REJECTED')).toBe('PENDING');
-    expect(['RECEIVED', 'PENDING']).toContain(toClientDocStatus('REJECTED'));
+  it('maps an unknown/future status to ACTION_REQUIRED (safe default, never crashes)', () => {
+    expect(toClientDocStatus('SOME_FUTURE_STATUS')).toBe('ACTION_REQUIRED');
+  });
+
+  it('never surfaces REJECTED as its own client label', () => {
+    expect(toClientDocStatus('REJECTED')).toBe('ACTION_REQUIRED');
   });
 });
 

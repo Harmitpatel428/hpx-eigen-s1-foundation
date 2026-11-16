@@ -14,6 +14,7 @@ import {
 import { operatorAllowedForType, validateScalarConditionValue } from './case-field.validation';
 import { normalizeDedupeKey } from './case-type.service';
 import { AuditService } from './audit.service';
+import { PortalService } from './portal.service';
 import { logger } from '../utils/logger';
 import {
   ValidationError,
@@ -1623,6 +1624,17 @@ export class DocumentationService {
         payload:     { noteType: input.noteType } as unknown as Prisma.InputJsonValue,
       },
     });
+
+    // A CUSTOMER note is the staff "Publish to client" action. Publish it through the canonical path, which
+    // sets clientVisible + clientVisibleAt, reconciles portal activation (the first client-visible item
+    // activates the portal), and audits the publish — the single source of truth for note visibility. The
+    // portal filters on clientVisible, never on noteType.
+    // ponytail: create-then-publish is two statements, not one transaction — a failed publish leaves an
+    // unpublished CUSTOMER note staff can re-publish; acceptable for a note (no data-loss/money path).
+    if (input.noteType === 'CUSTOMER') {
+      await new PortalService(this.prisma).setNoteVisibility(ctx, note.id, true);
+      return this.prisma.docCaseNote.findFirstOrThrow({ where: { id: note.id } });
+    }
 
     return note;
   }

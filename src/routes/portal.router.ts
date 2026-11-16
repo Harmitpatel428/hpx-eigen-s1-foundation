@@ -88,7 +88,7 @@ export function createPortalRouter(prisma: PrismaClient): Router {
   router.get('/preview/:caseId', authMiddleware, permissionMiddleware('portal:preview'),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const { tenantId } = (req as AuthenticatedRequest).user;
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
         // Tenant-scope the lookup before rendering — permission alone does not
         // authorise reading another tenant's case.
         const owned = await prisma.docCase.findFirst({
@@ -97,6 +97,8 @@ export function createPortalRouter(prisma: PrismaClient): Router {
         });
         if (!owned) { res.status(404).json({ code: 'RESOURCE_NOT_FOUND', message: 'Case not found.' }); return; }
 
+        // Audit the staff preview access (read-only; no client session is ever minted here).
+        await portal.recordPreviewAccess({ tenantId, userId }, owned.id);
         res.json({ success: true, data: { ...await portal.getCaseView(owned.id), isPreview: true } });
       } catch (err) {
         if (err instanceof PortalVerificationFailed) {
