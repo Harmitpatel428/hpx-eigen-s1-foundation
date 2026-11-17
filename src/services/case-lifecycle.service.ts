@@ -166,6 +166,15 @@ export class CaseLifecycleService {
         );
       }
 
+      // Mirror of the close path (which deactivates): an open case with a phone snapshot has a live
+      // portal. No-op when there is no phone to verify against.
+      await this.portal.enablePortalInTx(tx, {
+        caseId,
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.userId,
+        activationType: 'AUTO',
+      });
+
       const updated = await tx.docCase.findUniqueOrThrow({
         where: { id: caseId },
         select: { caseNumber: true, status: true, reopenedAt: true },

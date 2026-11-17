@@ -63,6 +63,9 @@ export function safeCompareDigits(a: string, b: string): boolean {
 export const PORTAL_CLOSED_STATUSES: DocCaseStatus[] = [
   DocCaseStatus.CLOSED,
   DocCaseStatus.CANCELLED,
+  // closeWithoutDocs deactivates the portal; without this entry any activation path
+  // (publish, contact change, manual activate, backfill) could switch it back on.
+  DocCaseStatus.CLOSED_NO_DOCS,
 ];
 
 /**
@@ -84,8 +87,9 @@ export interface PortalAccessInput {
 }
 
 /**
- * A portal is reachable only after a first client-visible publish set
- * portalEnabledAt, and only while the case is open. Callers must not surface
+ * A portal is reachable only once portalEnabledAt is set (at handoff or an
+ * approved contact change, i.e. as soon as a phone snapshot exists), and only
+ * while the case is open. Callers must not surface
  * WHY this returned false to an unauthenticated client.
  */
 export function isPortalAccessible(input: PortalAccessInput): boolean {

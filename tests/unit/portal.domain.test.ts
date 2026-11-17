@@ -144,7 +144,7 @@ describe('portal activation', () => {
     expect(isPortalAccessible(active)).toBe(true);
   });
 
-  it('is NOT accessible before the first client-visible publish', () => {
+  it('is NOT accessible before activation (portalEnabledAt unset)', () => {
     expect(isPortalAccessible({ ...active, portalEnabledAt: null })).toBe(false);
   });
 
@@ -152,7 +152,9 @@ describe('portal activation', () => {
     expect(isPortalAccessible({ ...active, portalPhoneLast4: null })).toBe(false);
   });
 
-  it.each([DocCaseStatus.CLOSED, DocCaseStatus.CANCELLED])('is NOT accessible when %s', (status) => {
+  // CLOSED_NO_DOCS is a closed status too: closing a case that way deactivates its portal, so the
+  // gate must never let one be re-activated or accessed while it stays closed.
+  it.each([DocCaseStatus.CLOSED, DocCaseStatus.CANCELLED, DocCaseStatus.CLOSED_NO_DOCS])('is NOT accessible when %s', (status) => {
     expect(isPortalAccessible({ ...active, status })).toBe(false);
   });
 

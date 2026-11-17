@@ -15,7 +15,8 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
 import { createCasesRouter } from '../../src/routes/handoff.router';
-import { PortalService } from '../../src/services/portal.service';
+import { PortalService, PortalVerificationFailed } from '../../src/services/portal.service';
+import { HandoffService } from '../../src/services/handoff.service';
 import { AppException } from '../../src/types/exceptions';
 
 const prisma = new PrismaClient();
@@ -154,6 +155,7 @@ async function activate(caseId: string, token?: string) {
 }
 
 async function cleanupTestData() {
+  await prisma.portalAuthAttempt.deleteMany({ where: { tenantId: { in: [TENANT_ID, OTHER_TENANT_ID] } } });
   await prisma.portalSession.deleteMany({ where: { case: { tenantId: { in: [TENANT_ID, OTHER_TENANT_ID] } } } });
   await prisma.docCaseEvent.deleteMany({ where: { tenantId: { in: [TENANT_ID, OTHER_TENANT_ID] } } });
   await prisma.docCaseNote.deleteMany({ where: { case: { tenantId: { in: [TENANT_ID, OTHER_TENANT_ID] } } } });
@@ -406,7 +408,7 @@ describe('portal auto-activation via publish flow (reconcilePortalActivation)', 
     expect(audits).toHaveLength(1);
   });
 
-  it('17. unpublish all visible content → deactivates portal + revokes sessions + PORTAL_DEACTIVATED audit', async () => {
+  it('17. unpublish all visible content → portal STAYS active, sessions survive, no PORTAL_DEACTIVATED audit', async () => {
     const c = await createCase();
     const note = await createNote(c.id);
 
@@ -425,18 +427,137 @@ describe('portal auto-activation via publish flow (reconcilePortalActivation)', 
       },
     });
 
-    // Unpublish → should deactivate + revoke sessions
+    // Unpublish the only visible item → zero visible content, but the portal must not go dark:
+    // activation is tied to the phone snapshot + an open case, not to published content.
     await portalService.setNoteVisibility(ctx, note.id, false);
 
-    const deactivated = await prisma.docCase.findUnique({ where: { id: c.id } });
-    expect(deactivated!.portalEnabledAt).toBeNull();
+    const after = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(after!.portalEnabledAt).toEqual(activated!.portalEnabledAt);
 
     const sessions = await prisma.portalSession.findMany({ where: { caseId: c.id } });
-    expect(sessions.every(s => s.revokedAt !== null)).toBe(true);
+    expect(sessions.every(s => s.revokedAt === null)).toBe(true);
 
     const audits = await prisma.auditLog.findMany({
       where: { tenantId: TENANT_ID, entityId: c.id, eventType: 'PORTAL_DEACTIVATED' },
     });
-    expect(audits).toHaveLength(1);
+    expect(audits).toHaveLength(0);
+  });
+
+  it('17b. visibility change on a case that has since CLOSED → still deactivates + revokes sessions', async () => {
+    const c = await createCase({ portalEnabledAt: new Date() });
+    const note = await createNote(c.id);
+    await prisma.portalSession.create({
+      data: {
+        tenantId: TENANT_ID,
+        caseId: c.id,
+        tokenHash: crypto.randomBytes(32).toString('hex'),
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      },
+    });
+    await prisma.docCase.update({ where: { id: c.id }, data: { status: DocCaseStatus.CLOSED } });
+
+    await portalService.setNoteVisibility(ctx, note.id, true);
+
+    const after = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(after!.portalEnabledAt).toBeNull();
+    const sessions = await prisma.portalSession.findMany({ where: { caseId: c.id } });
+    expect(sessions.every(s => s.revokedAt !== null)).toBe(true);
+  });
+});
+
+describe('portal activates when the phone snapshot is captured (handoff + contact change)', () => {
+  const portalService = new PortalService(prisma);
+  const handoff = new HandoffService(prisma);
+  const ctx = { tenantId: TENANT_ID, userId: USER_ID };
+
+  async function qualifiedLead(phone: string | null) {
+    return prisma.lead.create({
+      data: {
+        tenantId: TENANT_ID, firstName: 'Hand', lastName: 'Off',
+        email: `handoff-${crypto.randomUUID()}@example.com`, stage: 'QUALIFIED', phone,
+      },
+    });
+  }
+
+  async function pendingContactChange(caseId: string, newPhone: string) {
+    // requestedBy must differ from the approver (USER_ID) — self-approval is blocked.
+    return prisma.portalContactChangeRequest.create({
+      data: { tenantId: TENANT_ID, caseId, newPhone, reason: 'client changed number', requestedBy: OTHER_USER_ID },
+    });
+  }
+
+  const activationAudits = (caseId: string) => prisma.auditLog.findMany({
+    where: { tenantId: TENANT_ID, entityId: caseId, eventType: 'PORTAL_AUTO_ACTIVATED' },
+  });
+
+  it('18. confirmHandoff with a phone → portalPhoneLast4 AND portalEnabledAt set + one PORTAL_AUTO_ACTIVATED audit', async () => {
+    const lead = await qualifiedLead('+91 98765-43210');
+
+    const c = await handoff.confirmHandoff(ctx, lead.id);
+
+    expect(c.portalPhoneLast4).toBe('3210');
+    expect(c.portalEnabledAt).toBeTruthy();
+    expect(await activationAudits(c.id)).toHaveLength(1);
+  });
+
+  it('19. confirmHandoff without a phone → portal stays dark (nothing to verify against)', async () => {
+    const lead = await qualifiedLead(null);
+
+    const c = await handoff.confirmHandoff(ctx, lead.id);
+
+    expect(c.portalPhoneLast4).toBeNull();
+    expect(c.portalEnabledAt).toBeNull();
+    expect(await activationAudits(c.id)).toHaveLength(0);
+  });
+
+  it('20. handed-off case with ZERO published items → client verify succeeds; wrong digits still rejected', async () => {
+    const lead = await qualifiedLead('098765 43210');
+    const c = await handoff.confirmHandoff(ctx, lead.id);
+
+    await expect(portalService.verify(c.caseNumber!, '9999', '10.0.0.20')).rejects.toBeInstanceOf(PortalVerificationFailed);
+
+    const session = await portalService.verify(c.caseNumber!, '3210', '10.0.0.20');
+    expect(session.sessionToken).toBeTruthy();
+  });
+
+  it('21. approving a contact change on a dark case (no phone yet) → activates the portal', async () => {
+    const c = await createCase({ portalPhoneLast4: null });
+    const req = await pendingContactChange(c.id, '+91 90000 05678');
+
+    await portalService.approveContactChange(ctx, req.id);
+
+    const after = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(after!.portalPhoneLast4).toBe('5678');
+    expect(after!.portalEnabledAt).toBeTruthy();
+    expect(await activationAudits(c.id)).toHaveLength(1);
+    const approved = await prisma.auditLog.findMany({
+      where: { tenantId: TENANT_ID, entityId: req.id, eventType: 'PORTAL_CONTACT_CHANGE_APPROVED' },
+    });
+    expect(approved).toHaveLength(1);
+  });
+
+  it.each([DocCaseStatus.CLOSED, DocCaseStatus.CLOSED_NO_DOCS])('22. approving a contact change on a %s case → phone swaps but portal is NOT activated', async (status) => {
+    const c = await createCase({ status, portalPhoneLast4: null });
+    const req = await pendingContactChange(c.id, '+91 90000 05678');
+
+    await portalService.approveContactChange(ctx, req.id);
+
+    const after = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(after!.portalPhoneLast4).toBe('5678');
+    expect(after!.portalEnabledAt).toBeNull();
+    expect(await activationAudits(c.id)).toHaveLength(0);
+  });
+
+  it('23. approving a contact change on an already-active case → original portalEnabledAt kept, no second activation audit', async () => {
+    const enabledAt = new Date('2026-10-01T00:00:00.000Z');
+    const c = await createCase({ portalEnabledAt: enabledAt });
+    const req = await pendingContactChange(c.id, '+91 90000 05678');
+
+    await portalService.approveContactChange(ctx, req.id);
+
+    const after = await prisma.docCase.findUnique({ where: { id: c.id } });
+    expect(after!.portalPhoneLast4).toBe('5678');
+    expect(after!.portalEnabledAt).toEqual(enabledAt);
+    expect(await activationAudits(c.id)).toHaveLength(0);
   });
 });

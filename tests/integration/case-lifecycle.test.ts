@@ -294,6 +294,21 @@ describe('POST /cases/:caseId/reopen', () => {
     expect(audits).toHaveLength(1);
   });
 
+  it('12b. reopen re-activates the portal when a phone snapshot exists; stays dark without one', async () => {
+    const withPhone = await createCase({ status: DocCaseStatus.ACTIVE, portalEnabledAt: new Date() });
+    await prisma.docCase.update({ where: { id: withPhone.id }, data: { portalPhoneLast4: '1234' } });
+    const noPhone = await createCase({ status: DocCaseStatus.ACTIVE });
+
+    for (const c of [withPhone, noPhone]) {
+      await postClose(c.id, 'CLIENT_UNRESPONSIVE', jwtToken);
+      expect((await prisma.docCase.findUniqueOrThrow({ where: { id: c.id } })).portalEnabledAt).toBeNull();
+      expect((await postReopen(c.id, jwtToken)).status).toBe(200);
+    }
+
+    expect((await prisma.docCase.findUniqueOrThrow({ where: { id: withPhone.id } })).portalEnabledAt).toBeTruthy();
+    expect((await prisma.docCase.findUniqueOrThrow({ where: { id: noPhone.id } })).portalEnabledAt).toBeNull();
+  });
+
   it('13. ACTIVE (non-closed) → 422', async () => {
     const c = await createCase({ status: DocCaseStatus.ACTIVE });
     const r = await postReopen(c.id, jwtToken);

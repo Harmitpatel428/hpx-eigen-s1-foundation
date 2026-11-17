@@ -68,6 +68,7 @@ export class HandoffService {
       const caseNumber = await this.mintCaseNumber(tx);
       const now = new Date();
       const phone = lead.phone ?? null;
+      const last4 = phone ? phoneLast4(phone) : null;
 
       const data = {
         caseNumber,
@@ -77,10 +78,12 @@ export class HandoffService {
         handoffBy: ctx.userId,
         handoffPhoneSnapshot: phone,
         handoffPresetSnapshot: presetId ?? null,
-        // Portal phone is snapshotted at handoff but the portal stays dark until
-        // the first client-visible publish sets portalEnabledAt.
+        // The portal goes live at handoff, the moment there is a phone to verify against.
+        // It does NOT wait for a client-visible publish: a client holding a case number must
+        // be able to sign in to a case that has nothing published yet.
         portalPhoneSnapshot: phone,
-        portalPhoneLast4: phone ? phoneLast4(phone) : null,
+        portalPhoneLast4: last4,
+        portalEnabledAt: last4 ? now : null,
         lastInternalChangeAt: now,
       };
 
@@ -110,6 +113,19 @@ export class HandoffService {
         operation: 'CREATE',
         payload: { caseNumber, leadId },
       });
+
+      // Same audit event the publish/contact-change paths emit, so every activation is in the chain.
+      if (data.portalEnabledAt) {
+        await this.audit.appendInTx(tx, {
+          tenantId: ctx.tenantId,
+          eventType: 'PORTAL_AUTO_ACTIVATED',
+          entityType: 'DocCase',
+          entityId: docCase.id,
+          actorUserId: ctx.userId,
+          operation: 'UPDATE',
+          payload: { caseId: docCase.id, activationType: 'AUTO' },
+        });
+      }
 
       return docCase;
     });

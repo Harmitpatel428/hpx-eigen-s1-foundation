@@ -342,17 +342,19 @@ export class PortalService {
     ]);
     const visibleCount = visibleNotes + visibleDocs;
 
-    // Activation requires: visible content + phone + a portal-eligible (non-closed) status.
-    const canActivate = visibleCount > 0 && !!docCase.portalPhoneLast4 && isPortalEligibleStatus(docCase.status);
+    // The portal is tied to a phone snapshot + a portal-eligible (non-closed) status, NOT to
+    // published content: handoff/contact-change activate it, and unpublishing everything must not
+    // take it dark. A publish still activates a case that isn't live yet (pre-backfill rows).
+    const eligible = !!docCase.portalPhoneLast4 && isPortalEligibleStatus(docCase.status);
 
-    if (canActivate && !docCase.portalEnabledAt) {
+    if (eligible && visibleCount > 0 && !docCase.portalEnabledAt) {
       await this.enablePortalInTx(tx, {
         caseId,
         tenantId: ctx.tenantId,
         actorUserId: ctx.userId,
         activationType: 'AUTO',
       });
-    } else if (!canActivate && docCase.portalEnabledAt) {
+    } else if (!eligible && docCase.portalEnabledAt) {
       await this.disablePortalInTx(tx, {
         caseId,
         tenantId: ctx.tenantId,
@@ -385,7 +387,7 @@ export class PortalService {
    * phone set) and flips portalEnabledAt atomically — no read-then-write
    * TOCTOU window. Audits only the transition, never a no-op.
    */
-  private async enablePortalInTx(
+  async enablePortalInTx(
     tx: Prisma.TransactionClient,
     opts: {
       caseId: string;
@@ -555,6 +557,14 @@ export class PortalService {
         data: { revokedAt: now },
       });
 
+      // A phone snapshot now exists, so the portal goes live (no-op if already live, closed, or deleted).
+      await this.enablePortalInTx(tx, {
+        caseId: request.caseId,
+        tenantId: ctx.tenantId,
+        actorUserId: ctx.userId,
+        activationType: 'AUTO',
+      });
+
       await tx.docCaseEvent.create({
         data: {
           tenantId: ctx.tenantId, caseId: request.caseId,
@@ -564,7 +574,9 @@ export class PortalService {
         },
       });
 
-      await this.audit.log({
+      // In-tx append: the activation above may already hold this tenant's audit advisory lock in
+      // this transaction, so an own-transaction audit.log() here would wait on it forever.
+      await this.audit.appendInTx(tx, {
         tenantId: ctx.tenantId, eventType: 'PORTAL_CONTACT_CHANGE_APPROVED',
         entityType: 'PortalContactChangeRequest', entityId: requestId,
         actorUserId: ctx.userId, operation: 'UPDATE',
