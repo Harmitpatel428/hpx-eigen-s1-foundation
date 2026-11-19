@@ -1,6 +1,7 @@
 /**
  * GET /api/v1/documentation/cases — assignedUser resolution (HTTP integration, real Postgres).
- * Mirrors Sales owner resolution: tenant-scoped, no status filter.
+ * The Documentation "Assign" action writes lead.ownerId (same field Sales owns), NOT DocCase.assignedTo.
+ * So assignedUser is resolved from lead.ownerId, mirroring Sales: tenant-scoped, no status filter.
  */
 
 import 'dotenv/config';
@@ -115,8 +116,8 @@ async function mkCase(tenantId: string, createdBy: string, o: { ownerId?: string
 }
 
 
-describe('GET /documentation/cases — assignedUser', () => {
-  it('resolves assigned / unassigned / foreign-tenant / suspended assignees', async () => {
+describe('GET /documentation/cases — assignedUser (resolved from lead.ownerId)', () => {
+  it('resolves assigned / unassigned / foreign-tenant / suspended owners, and ignores DocCase.assignedTo', async () => {
     const tenantId = uid();
     trackedTenants.push(tenantId);
     await prisma.tenant.create({ data: { id: tenantId, name: `docassign-${tenantId.slice(0, 8)}` } });
@@ -128,13 +129,24 @@ describe('GET /documentation/cases — assignedUser', () => {
     const active = await mkUser(tenantId, ['doc:view']);
     const suspended = await mkUser(tenantId, ['doc:view']);
     const foreign = await mkUser(otherTenant, ['doc:view']);
+    const other = await mkUser(tenantId, ['doc:view']);
     await prisma.user.update({ where: { id: active.user.id }, data: { firstName: 'Ada', lastName: 'Active' } });
     await prisma.user.update({ where: { id: suspended.user.id }, data: { firstName: 'Sam', lastName: 'Suspended', status: UserStatus.SUSPENDED } });
+    await prisma.user.update({ where: { id: other.user.id }, data: { firstName: 'Otto', lastName: 'Other' } });
 
-    const cAssigned = await mkCase(tenantId, viewer.user.id, { assignedTo: active.user.id });
+    // assigned: the lead is owned by the active user (this is what the Documentation Assign action writes).
+    const cAssigned = await mkCase(tenantId, viewer.user.id, { ownerId: active.user.id });
+    // unassigned: no owner.
     const cNone = await mkCase(tenantId, viewer.user.id);
-    const cForeign = await mkCase(tenantId, viewer.user.id, { assignedTo: foreign.user.id });
-    const cSuspended = await mkCase(tenantId, viewer.user.id, { assignedTo: suspended.user.id });
+    // owner is in another tenant → cannot resolve → null (missing-user state).
+    const cForeign = await mkCase(tenantId, viewer.user.id, { ownerId: foreign.user.id });
+    // suspended/restricted owner still resolves by name (Sales parity).
+    const cSuspended = await mkCase(tenantId, viewer.user.id, { ownerId: suspended.user.id });
+    // REGRESSION: the row must reflect the OWNER (Otto), never DocCase.assignedTo (Ada). This is the bug
+    // that shipped — the column read assignedTo, which the Assign action never writes.
+    const cOwnerNotAssignedTo = await mkCase(tenantId, viewer.user.id, { ownerId: other.user.id, assignedTo: active.user.id });
+    // A case with ONLY assignedTo set (no owner) must show as unassigned — assignedTo is not the source.
+    const cAssignedToOnly = await mkCase(tenantId, viewer.user.id, { assignedTo: active.user.id });
 
     const res = await get('/cases', viewer.token);
     expect(res.status).toBe(200);
@@ -143,5 +155,7 @@ describe('GET /documentation/cases — assignedUser', () => {
     expect(row(cNone).assignedUser).toBeNull();
     expect(row(cForeign).assignedUser).toBeNull();
     expect(row(cSuspended).assignedUser).toEqual({ id: suspended.user.id, firstName: 'Sam', lastName: 'Suspended' });
+    expect(row(cOwnerNotAssignedTo).assignedUser).toEqual({ id: other.user.id, firstName: 'Otto', lastName: 'Other' });
+    expect(row(cAssignedToOnly).assignedUser).toBeNull();
   });
 });

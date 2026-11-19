@@ -632,7 +632,7 @@ export class DocumentationService {
       this.prisma.docCase.findMany({
         where,
         include: {
-          lead:   { select: { id: true, firstName: true, lastName: true, company: true, email: true, phone: true } },
+          lead:   { select: { id: true, firstName: true, lastName: true, company: true, email: true, phone: true, ownerId: true } },
           preset: { select: { id: true, name: true, category: true, color: true, icon: true } },
           _count: { select: { documents: true, caseNotes: true, reminders: true } },
           mandateRequests: { orderBy: { createdAt: 'desc' }, take: 1, select: { status: true } },
@@ -645,21 +645,23 @@ export class DocumentationService {
     ]);
 
     // Flatten the single latest mandate request into a scalar status for list rows.
-    // DocCase.assignedTo has no User relation (like Lead.ownerId) → scalar map, mirroring Sales owner resolution.
-    // No status filter (Sales parity). User bypasses the tenant-scoping middleware, so tenantId here is load-bearing.
-    const assigneeIds = [...new Set(rows.map(r => r.assignedTo).filter((id): id is string => !!id))];
-    const assignees = assigneeIds.length
+    // The Documentation "Assign" action writes lead.ownerId (same field Sales owns), NOT DocCase.assignedTo
+    // (that is set only at case creation / handoff-accept). So the assigned user shown here is the lead OWNER —
+    // resolved exactly like Sales. No User relation on ownerId → scalar map. No status filter (Sales parity).
+    // User bypasses the tenant-scoping middleware, so tenantId here is load-bearing.
+    const ownerIds = [...new Set(rows.map(r => r.lead?.ownerId).filter((id): id is string => !!id))];
+    const owners = ownerIds.length
       ? await this.prisma.user.findMany({
-          where: { id: { in: assigneeIds }, tenantId: ctx.tenantId },
+          where: { id: { in: ownerIds }, tenantId: ctx.tenantId },
           select: { id: true, firstName: true, lastName: true },
         })
       : [];
-    const assigneeMap = new Map(assignees.map(u => [u.id, u]));
+    const ownerMap = new Map(owners.map(u => [u.id, u]));
 
     const data = rows.map(({ mandateRequests, ...c }) => ({
       ...c,
       latestMandateStatus: mandateRequests[0]?.status ?? null,
-      assignedUser: c.assignedTo ? (assigneeMap.get(c.assignedTo) ?? null) : null,
+      assignedUser: c.lead?.ownerId ? (ownerMap.get(c.lead.ownerId) ?? null) : null,
     }));
 
     return { data, total, page, pageSize };
