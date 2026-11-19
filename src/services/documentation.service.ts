@@ -645,9 +645,21 @@ export class DocumentationService {
     ]);
 
     // Flatten the single latest mandate request into a scalar status for list rows.
+    // DocCase.assignedTo has no User relation (like Lead.ownerId) → scalar map, mirroring Sales owner resolution.
+    // No status filter (Sales parity). User bypasses the tenant-scoping middleware, so tenantId here is load-bearing.
+    const assigneeIds = [...new Set(rows.map(r => r.assignedTo).filter((id): id is string => !!id))];
+    const assignees = assigneeIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: assigneeIds }, tenantId: ctx.tenantId },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [];
+    const assigneeMap = new Map(assignees.map(u => [u.id, u]));
+
     const data = rows.map(({ mandateRequests, ...c }) => ({
       ...c,
       latestMandateStatus: mandateRequests[0]?.status ?? null,
+      assignedUser: c.assignedTo ? (assigneeMap.get(c.assignedTo) ?? null) : null,
     }));
 
     return { data, total, page, pageSize };
