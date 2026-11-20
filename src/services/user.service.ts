@@ -162,7 +162,7 @@ export class UserService {
    * Admin sets a member's password (Settings → Members, "Change Password").
    *
    * Security contract:
-   * - Caller authorization (holds `user:manage`) is enforced at the route.
+   * - Caller authorization (holds the strictly-admin `user:password:reset`) is enforced at the route.
    * - Tenant/IDOR guard: the target is looked up WITHIN the caller's tenant, so a
    *   cross-tenant id is indistinguishable from a non-existent one → 404, never a leak.
    * - Strong-password policy (incl. not containing the target's name/email) enforced here.

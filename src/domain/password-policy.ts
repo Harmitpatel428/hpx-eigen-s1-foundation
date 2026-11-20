@@ -13,7 +13,11 @@
  */
 
 const MIN_LENGTH = 12;
-const MAX_LENGTH = 128; // bcrypt only hashes the first 72 bytes; cap well above that but bound input.
+// bcrypt silently truncates at 72 BYTES — anything longer collides on the first 72. Cap at 72 so
+// the stored hash always covers the whole password the user typed.
+// ponytail: cap is on character count (matches the user-facing message); a 72-char multibyte
+// password can still exceed 72 bytes — switch to Buffer.byteLength only if multibyte passwords matter.
+const MAX_LENGTH = 72;
 
 export interface PasswordIdentity {
   email?: string | null;
@@ -35,7 +39,7 @@ function identityTokens(id: PasswordIdentity): string[] {
 export function validatePasswordStrength(password: unknown, identity: PasswordIdentity = {}): string | null {
   if (typeof password !== 'string') return 'Password is required.';
   if (password.length < MIN_LENGTH) return `Password must be at least ${MIN_LENGTH} characters.`;
-  if (password.length > MAX_LENGTH) return `Password must be at most ${MAX_LENGTH} characters.`;
+  if (password.length > MAX_LENGTH) return `Password must not exceed ${MAX_LENGTH} characters.`;
 
   if (!/[a-z]/.test(password)) return 'Password must include a lowercase letter.';
   if (!/[A-Z]/.test(password)) return 'Password must include an uppercase letter.';

@@ -5,13 +5,14 @@ import { validatePasswordStrength } from '../src/domain/password-policy';
 const id = { email: 'jane.doe@acme.test', firstName: 'Jane', lastName: 'Doe' };
 
 describe('validatePasswordStrength', () => {
-  it('accepts a strong password unrelated to the identity', () => {
+  it('accepts a strong password unrelated to the identity (incl. the 72-char boundary)', () => {
     expect(validatePasswordStrength('Str0ng!Passw0rd', id)).toBeNull();
+    expect(validatePasswordStrength('Aa1!' + 'x'.repeat(68), id)).toBeNull(); // exactly 72
   });
 
-  it('rejects too-short and over-long passwords', () => {
+  it('rejects too-short and over-72 passwords (bcrypt truncates past 72 bytes)', () => {
     expect(validatePasswordStrength('Ab1!xyz', id)).toMatch(/at least 12/);
-    expect(validatePasswordStrength('A1!a'.repeat(40), id)).toMatch(/at most/);
+    expect(validatePasswordStrength('Aa1!' + 'x'.repeat(69), id)).toMatch(/72/); // 73 chars → rejected
   });
 
   it('requires every character class', () => {

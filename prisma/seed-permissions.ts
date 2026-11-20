@@ -69,6 +69,10 @@ const PERMISSIONS = [
   // Users
   { slug: 'user:view',        module: 'Admin', description: 'View users' },
   { slug: 'user:manage',      module: 'Admin', description: 'Invite, suspend, and manage users' },
+  // Strictly Organization-Admin (granted ONLY via the all-perms Admin grant below — never in a
+  // PRESET_ROLES list). Resetting another member's password must not ride on user:manage, which
+  // tenants routinely delegate to HR/Support/Dept managers (privilege-escalation vector onto admins).
+  { slug: 'user:password:reset', module: 'Admin', description: "Admin-only: set/reset another member's password (Settings → Members)" },
   // reg #10 (WP-1 PR-1): the admin-impersonation permission was removed with the feature (V10).
   // Anti-resurrection guard: tests/unit/impersonation-removed.test.ts fails if the slug returns.
   // Departments & Teams

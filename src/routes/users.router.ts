@@ -216,12 +216,13 @@ export function createUsersRouter(prisma: PrismaClient): Router {
 
   // ─── PUT /api/users/:id/password ──────────────────────────────────
   // Admin-only member password reset (Settings → Members → Change Password).
-  // `user:manage` is the member-management permission (same gate as suspend/terminate);
-  // only the Organization Admin role holds it by default. Server-enforced — the UI gate
-  // is convenience only. Self is excluded: an admin changes their OWN password via
-  // POST /api/auth/change-password, which keeps self-service separate and avoids a
+  // Gated on `user:password:reset`, a STRICTLY-admin marker — NOT `user:manage`, which tenants
+  // routinely delegate to HR/Support/Dept managers (letting them reset an admin's password is a
+  // privilege-escalation vector). The seed grants this marker to Organization Admin only.
+  // Server-enforced — the UI gate is convenience. Self is excluded: an admin changes their OWN
+  // password via POST /api/auth/change-password, keeping self-service separate and avoiding a
   // self-session-revoke lockout here.
-  router.put('/:id/password', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
+  router.put('/:id/password', permissionMiddleware('user:password:reset'), async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { userId: actorUserId, tenantId } = (req as AuthenticatedRequest).user;
       const targetUserId = req.params['id'] as string;

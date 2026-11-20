@@ -116,9 +116,12 @@ describe('PUT /users/:id/password — admin member password reset', () => {
     trackedTenants.push(otherTenant);
     await prisma.tenant.create({ data: { id: otherTenant, name: `pwreset-${otherTenant.slice(0, 8)}` } });
 
-    const admin = await mkUser(tenantId, ['user:manage', 'user:view']);
+    const admin = await mkUser(tenantId, ['user:password:reset', 'user:view']);
     const target = await mkUser(tenantId, ['lead:view']);
-    const plain = await mkUser(tenantId, ['lead:view']); // no user:manage
+    const plain = await mkUser(tenantId, ['lead:view']); // no admin perms at all
+    // Delegated manager: holds user:manage (invite/suspend/terminate) but NOT the strictly-admin
+    // reset marker. Must be rejected — this is the privilege-escalation guard.
+    const delegatedMgr = await mkUser(tenantId, ['user:manage', 'user:view']);
     const foreign = await mkUser(otherTenant, ['lead:view']);
 
     const NEW = 'N3w!StrongPass';
@@ -138,6 +141,11 @@ describe('PUT /users/:id/password — admin member password reset', () => {
     // 2. Non-admin caller → 403 (server-enforced, not just UI).
     const forbidden = await put(`/${target.user.id}/password`, plain.token, { newPassword: NEW });
     expect(forbidden.status).toBe(403);
+
+    // 2b. Delegated manager WITH user:manage but WITHOUT user:password:reset → 403.
+    //     Proves the gate no longer rides on user:manage (privilege-escalation fix).
+    const delegated = await put(`/${target.user.id}/password`, delegatedMgr.token, { newPassword: NEW });
+    expect(delegated.status).toBe(403);
 
     // 3. Cross-tenant target → 404 (no existence leak).
     const crossTenant = await put(`/${foreign.user.id}/password`, admin.token, { newPassword: NEW });
