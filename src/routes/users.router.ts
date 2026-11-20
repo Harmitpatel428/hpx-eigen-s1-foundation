@@ -6,6 +6,8 @@ import { InvitationService } from '../services/invitation.service';
 import { AdminLockoutService } from '../services/admin-lockout.service';
 import { ValidationError, BusinessRuleViolationError, DuplicateResourceError } from '../types/exceptions';
 import { AuditService } from '../services/audit.service';
+import { NotificationService } from '../services/notification.service';
+import { emailService } from '../services/email.service';
 import { checkInviteCreation } from '../services/auth/RateLimitService';
 
 export function createUsersRouter(prisma: PrismaClient): Router {
@@ -14,6 +16,7 @@ export function createUsersRouter(prisma: PrismaClient): Router {
   const invitationService = new InvitationService(prisma);
   const adminLockoutService = new AdminLockoutService(prisma);
   const auditService = new AuditService(prisma);
+  const notificationService = new NotificationService(prisma);
 
   router.use(authMiddleware);
 
@@ -206,6 +209,49 @@ export function createUsersRouter(prisma: PrismaClient): Router {
         result = await userService.suspendUser(targetUserId, tenantId, reason, actorUserId);
       }
       res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ─── PUT /api/users/:id/password ──────────────────────────────────
+  // Admin-only member password reset (Settings → Members → Change Password).
+  // `user:manage` is the member-management permission (same gate as suspend/terminate);
+  // only the Organization Admin role holds it by default. Server-enforced — the UI gate
+  // is convenience only. Self is excluded: an admin changes their OWN password via
+  // POST /api/auth/change-password, which keeps self-service separate and avoids a
+  // self-session-revoke lockout here.
+  router.put('/:id/password', permissionMiddleware('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId: actorUserId, tenantId } = (req as AuthenticatedRequest).user;
+      const targetUserId = req.params['id'] as string;
+      const { newPassword } = req.body as { newPassword?: unknown };
+
+      if (typeof newPassword !== 'string' || newPassword.length === 0) {
+        throw new ValidationError('newPassword is required.');
+      }
+      if (targetUserId === actorUserId) {
+        throw new BusinessRuleViolationError('Use account settings to change your own password.');
+      }
+
+      const { sessionsRevoked, email } = await userService.adminResetPassword(
+        targetUserId, tenantId, actorUserId, newPassword,
+      );
+
+      // Security comms are best-effort and fire AFTER the password commit (mirrors
+      // /api/auth/reset-password); a mail/notification hiccup must not fail the reset.
+      await emailService.sendPasswordChangedEmail(email).catch(e =>
+        console.error('[ADMIN_PASSWORD_RESET] Security email failed:', e),
+      );
+      await notificationService.create({
+        tenantId,
+        recipientUserId: targetUserId,
+        type: 'PASSWORD_RESET_COMPLETED',
+        title: 'Password changed by an administrator',
+        message: 'An administrator set a new password for your account. All active sessions were signed out.',
+      }).catch(e => console.error('[ADMIN_PASSWORD_RESET] Notification failed:', e));
+
+      res.json({ success: true, message: 'Password updated. The member must sign in again.', sessionsRevoked });
     } catch (err) {
       next(err);
     }

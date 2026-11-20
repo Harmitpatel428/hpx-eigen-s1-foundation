@@ -14,13 +14,34 @@ const canSend = () => (process.env.RESEND_API_KEY ?? '').startsWith('re_');
 export const emailCanSend = canSend;
 
 export class EmailService {
+  /**
+   * Decide whether to skip the real Resend call, centralising the old per-method
+   * `if (!canSend()) { log; return }` blocks. Issue 4 fix: in PRODUCTION an unconfigured
+   * key is a loud, greppable error — never a silent "DEV MODE" skip that makes
+   * forgot-password look like it worked while no mail is ever delivered.
+   *
+   * Returns true when the caller should skip sending. Does NOT throw: every caller
+   * treats mail as best-effort, so we surface the misconfig without failing the request.
+   */
+  private skipSend(devLog: string): boolean {
+    if (canSend()) return false;
+    if ((process.env.NODE_ENV ?? '') === 'production') {
+      // Ops alerting keys off this marker. Do not soften or remove.
+      console.error(
+        '[EMAIL_CONFIG_ERROR] RESEND_API_KEY is missing or invalid in production — ' +
+        'password-reset / verification / invitation emails are NOT being delivered. ' +
+        'Set a valid re_… key and verify the sender domain (SPF/DKIM) in the Resend dashboard.',
+      );
+      return true;
+    }
+    console.log(`\n${devLog}\n`);
+    return true;
+  }
+
   async sendVerificationEmail(email: string, token: string): Promise<void> {
     const verifyUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${token}`;
 
-    if (!canSend()) {
-      console.log(`\n[DEV MODE] Verification URL: ${verifyUrl}\n`);
-      return;
-    }
+    if (this.skipSend(`[DEV MODE] Verification URL: ${verifyUrl}`)) return;
 
     await resend.emails.send({
       from: 'HPX Eigen <noreply@hpxeigen.com>',
@@ -44,10 +65,7 @@ export class EmailService {
   async sendPasswordResetEmail(email: string, token: string): Promise<void> {
     const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${token}`;
 
-    if (!canSend()) {
-      console.log(`\n[DEV MODE] Password Reset URL: ${resetUrl}\n`);
-      return;
-    }
+    if (this.skipSend(`[DEV MODE] Password Reset URL: ${resetUrl}`)) return;
 
     await resend.emails.send({
       from: 'HPX Eigen <noreply@hpxeigen.com>',
@@ -69,10 +87,7 @@ export class EmailService {
   }
 
   async sendPasswordChangedEmail(email: string): Promise<void> {
-    if (!canSend()) {
-      console.log(`\n[DEV MODE] Password changed notification would be sent to: ${email}\n`);
-      return;
-    }
+    if (this.skipSend(`[DEV MODE] Password changed notification would be sent to: ${email}`)) return;
 
     const timestamp = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -97,10 +112,7 @@ export class EmailService {
   // acceptUrl contains the raw token — logged only when sending is unconfigured
   // (mirrors verify/reset flows); never returned in an API response once SENT.
   async sendInvitationEmail(to: string, acceptUrl: string, roleName: string, expiresAt: Date): Promise<void> {
-    if (!canSend()) {
-      console.log(`\n[DEV MODE] Invitation URL: ${acceptUrl}\n`);
-      return;
-    }
+    if (this.skipSend(`[DEV MODE] Invitation URL: ${acceptUrl}`)) return;
 
     const expiryStr = expiresAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
@@ -129,10 +141,7 @@ export class EmailService {
     email: string,
     opts: { clientName?: string; mandateType: string; uploadUrl: string; expiresAt: Date; orgName?: string },
   ): Promise<void> {
-    if (!canSend()) {
-      console.log(`\n[DEV MODE] Mandate upload URL: ${opts.uploadUrl}\n`);
-      return;
-    }
+    if (this.skipSend(`[DEV MODE] Mandate upload URL: ${opts.uploadUrl}`)) return;
 
     const expiryStr = opts.expiresAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
     const greeting = opts.clientName ? `Dear ${opts.clientName},` : 'Hello,';
@@ -165,10 +174,7 @@ export class EmailService {
     email: string,
     opts: { clientName?: string; mandateType: string; reason: string; uploadUrl: string; expiresAt: Date },
   ): Promise<void> {
-    if (!canSend()) {
-      console.log(`\n[DEV MODE] Mandate rejected — new upload URL: ${opts.uploadUrl}\n`);
-      return;
-    }
+    if (this.skipSend(`[DEV MODE] Mandate rejected — new upload URL: ${opts.uploadUrl}`)) return;
 
     const expiryStr = opts.expiresAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
     const greeting = opts.clientName ? `Dear ${opts.clientName},` : 'Hello,';

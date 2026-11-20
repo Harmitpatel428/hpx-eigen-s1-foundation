@@ -1,9 +1,12 @@
 import { PrismaClient, Prisma, UserStatus, SessionStatus } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import { AuditService } from './audit.service';
 import {
   ResourceNotFoundError,
-  BusinessRuleViolationError
+  BusinessRuleViolationError,
+  ValidationError
 } from '../types/exceptions';
+import { validatePasswordStrength } from '../domain/password-policy';
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -153,6 +156,68 @@ export class UserService {
     }
 
     return { success: true, sessionsRevoked: sessionResult.count };
+  }
+
+  /**
+   * Admin sets a member's password (Settings → Members, "Change Password").
+   *
+   * Security contract:
+   * - Caller authorization (holds `user:manage`) is enforced at the route.
+   * - Tenant/IDOR guard: the target is looked up WITHIN the caller's tenant, so a
+   *   cross-tenant id is indistinguishable from a non-existent one → 404, never a leak.
+   * - Strong-password policy (incl. not containing the target's name/email) enforced here.
+   * - New password is bcrypt-hashed (cost 12, same as signup/reset); never logged or returned.
+   * - All CREATED/ACTIVE sessions of the target are REVOKED, forcing re-authentication.
+   * - Audit logged (who/when/for-whom); the password itself is never in the payload.
+   */
+  async adminResetPassword(
+    targetUserId: string,
+    tenantId: string,
+    actorUserId: string,
+    newPassword: string,
+  ): Promise<{ sessionsRevoked: number; email: string }> {
+    const target = await this.prisma.user.findFirst({
+      where: { id: targetUserId, tenantId, deletedAt: { equals: null } },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
+    if (!target) throw new ResourceNotFoundError(); // also the cross-tenant guard (404, no leak)
+
+    const policyError = validatePasswordStrength(newPassword, {
+      email: target.email, firstName: target.firstName, lastName: target.lastName,
+    });
+    if (policyError) throw new ValidationError(policyError);
+
+    const hashed = await bcrypt.hash(newPassword, 12);
+
+    const sessionsRevoked = await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: targetUserId }, data: { password: hashed } });
+      const revoked = await tx.session.updateMany({
+        where: {
+          userId: targetUserId,
+          tenantId,
+          status: { in: [SessionStatus.CREATED, SessionStatus.ACTIVE] },
+          deletedAt: { equals: null },
+        },
+        data: { status: SessionStatus.REVOKED, revokedAt: new Date() },
+      });
+      return revoked.count;
+    });
+
+    try {
+      await this.auditService.log({
+        tenantId,
+        eventType: 'ADMIN_PASSWORD_RESET',
+        entityType: 'User',
+        entityId: targetUserId,
+        actorUserId,
+        operation: 'PASSWORD_RESET',
+        payload: { sessionsRevoked }, // never the password
+      });
+    } catch (auditErr) {
+      console.error('[AUDIT_DELIVERY_FAILURE]', { eventType: 'ADMIN_PASSWORD_RESET', entityId: targetUserId, tenantId }, auditErr);
+    }
+
+    return { sessionsRevoked, email: target.email };
   }
 
   /**
