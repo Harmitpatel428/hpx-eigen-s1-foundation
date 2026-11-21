@@ -10,6 +10,10 @@ import { NotificationService } from '../services/notification.service';
 import { emailService } from '../services/email.service';
 import { checkInviteCreation } from '../services/auth/RateLimitService';
 
+// Same guard as documentation.router.ts: a non-UUID :id reaches Prisma's uuid column and
+// throws P2023 ("Inconsistent column data"), surfacing as a 500. Reject it as a 400 instead.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function createUsersRouter(prisma: PrismaClient): Router {
   const router = Router();
   const userService = new UserService(prisma);
@@ -228,6 +232,9 @@ export function createUsersRouter(prisma: PrismaClient): Router {
       const targetUserId = req.params['id'] as string;
       const { newPassword } = req.body as { newPassword?: unknown };
 
+      if (!UUID_RE.test(targetUserId)) {
+        throw new ValidationError('Invalid user id.');
+      }
       if (typeof newPassword !== 'string' || newPassword.length === 0) {
         throw new ValidationError('newPassword is required.');
       }

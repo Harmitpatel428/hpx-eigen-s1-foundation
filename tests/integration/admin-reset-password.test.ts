@@ -170,4 +170,44 @@ describe('PUT /users/:id/password — admin member password reset', () => {
     const anon = await put(`/${target.user.id}/password`, undefined, { newPassword: NEW });
     expect(anon.status).toBe(401);
   }, 30_000);
+
+  it('changes ONLY the targeted member — other members and the acting admin are untouched', async () => {
+    const tenantId = uid();
+    trackedTenants.push(tenantId);
+    await prisma.tenant.create({ data: { id: tenantId, name: `pwiso-${tenantId.slice(0, 8)}` } });
+
+    const admin = await mkUser(tenantId, ['user:password:reset', 'user:view']);
+    const memberA = await mkUser(tenantId, ['lead:view']);
+    const memberB = await mkUser(tenantId, ['lead:view']);
+
+    const hashOf = async (id: string) =>
+      (await prisma.user.findUnique({ where: { id }, select: { password: true } }))!.password!;
+
+    const adminBefore = await hashOf(admin.user.id);
+    const bBefore = await hashOf(memberB.user.id);
+
+    const NEW_A = 'Alpha9#Rotate!x';
+    const NEW_B = 'Bravo7#Rotate!x';
+
+    // Reset A → ONLY A's hash changes.
+    expect((await put(`/${memberA.user.id}/password`, admin.token, { newPassword: NEW_A })).status).toBe(200);
+    expect(await bcryptjs.compare(NEW_A, await hashOf(memberA.user.id))).toBe(true);
+    expect(await hashOf(memberB.user.id)).toBe(bBefore);   // B untouched
+    expect(await hashOf(admin.user.id)).toBe(adminBefore); // acting admin untouched
+
+    // Reset B → ONLY B's hash changes; A keeps the hash it just got.
+    const aAfterFirstReset = await hashOf(memberA.user.id);
+    expect((await put(`/${memberB.user.id}/password`, admin.token, { newPassword: NEW_B })).status).toBe(200);
+    expect(await bcryptjs.compare(NEW_B, await hashOf(memberB.user.id))).toBe(true);
+    expect(await hashOf(memberA.user.id)).toBe(aAfterFirstReset); // A untouched by B's reset
+    expect(await hashOf(admin.user.id)).toBe(adminBefore);        // admin STILL untouched
+
+    // The admin's own session survived both resets (only the target's are revoked) —
+    // proven by admin.token still authorizing the second call above.
+
+    // Malformed target id must fail safely (4xx), never a 500.
+    const malformed = await put('/not-a-uuid/password', admin.token, { newPassword: NEW_A });
+    expect(malformed.status).toBeGreaterThanOrEqual(400);
+    expect(malformed.status).toBeLessThan(500);
+  }, 30_000);
 });
