@@ -1328,6 +1328,7 @@ model DocCase {
   caseNotes DocCaseNote[]
   reminders DocReminder[]
   overrides DocManagerOverride[]
+  docActivities DocActivity[]
 
   portalSessions        PortalSession[]
   contactChangeRequests PortalContactChangeRequest[]
@@ -1712,6 +1713,49 @@ model DocManagerOverride {
 
   @@index([caseId])
   @@index([tenantId])
+}
+
+// ─── DocActivity — Documentation-department case timeline / follow-ups ─────
+// Physically separate from LeadActivity so Documentation rows can never bleed
+// into Sales surfaces (/activities, /leads/:id/activities). Anchored to DocCase;
+// the lead is reached via case.lead, so there is no second ownership field to sync.
+enum DocActivityType {
+  FOLLOW_UP
+  CALL
+  MEETING
+  DOC_REQUESTED
+  NOTE
+  OTHER
+}
+
+enum DocActivityState {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+model DocActivity {
+  id          String           @id @default(uuid()) @db.Uuid
+  tenantId    String           @db.Uuid
+  caseId      String           @db.Uuid
+  actorUserId String?          @db.Uuid
+  type        DocActivityType
+  state       DocActivityState @default(COMPLETED)
+  subject     String
+  metadata    Json             @default("{}")
+  scheduledAt DateTime?
+  completedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  deletedAt   DateTime?
+
+  case DocCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, caseId])
+  @@index([tenantId, caseId, createdAt(sort: Desc)])
+  @@index([tenantId, scheduledAt])
+  @@index([caseId, state])
+  @@index([deletedAt])
 }
 
 model TenantSettings {

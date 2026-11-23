@@ -3,6 +3,8 @@ import { PrismaClient, DocCaseStatus, DocDocumentStatus, DocNoteType, DocStorage
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { DocumentationService, getSuggestions } from '../services/documentation.service';
 import { DocumentService } from '../services/document.service';
+import { DocActivitiesService, DocActivityFilter } from '../services/doc-activities.service';
+import { DocActivityType } from '@prisma/client';
 import { checkFirmUploadUrlAttempts } from '../services/auth/RateLimitService';
 import { ValidationError } from '../types/exceptions';
 import { requireCaseEngineEnabled } from '../middleware/case-engine.middleware';
@@ -46,6 +48,7 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
   const router = Router();
   const svc      = new DocumentationService(prisma);
   const docFiles = new DocumentService(prisma);
+  const docActs  = new DocActivitiesService(prisma);
 
   // ─── PRESETS ───────────────────────────────────────────────────────────────
 
@@ -228,6 +231,91 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
         const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
         const docCase = await svc.getCaseById({ tenantId, userId }, req.params.id, { restrictToUserId: canViewAll ? undefined : userId });
         res.json({ success: true, data: docCase });
+      } catch (err) { next(err); }
+    }
+  );
+
+  // ─── DOC ACTIVITIES (Documentation-only; never surfaces in Sales /activities) ──
+
+  const VALID_DOC_FILTERS: DocActivityFilter[] = ['ALL', 'DUE_TODAY', 'UPCOMING', 'OVERDUE', 'MINE'];
+
+  /** GET /api/v1/documentation/activities?filter=&page=&pageSize= */
+  router.get('/activities', authMiddleware, permissionMiddleware('doc:view'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const filter = (req.query.filter as DocActivityFilter) ?? 'ALL';
+        if (!VALID_DOC_FILTERS.includes(filter)) throw new ValidationError('Invalid filter value.');
+        const page = req.query.page ? parseInt(req.query.page as string, 10) : 1;
+        const pageSize = req.query.pageSize ? parseInt(req.query.pageSize as string, 10) : 50;
+        if (page < 1 || isNaN(page)) throw new ValidationError('page must be a positive integer.');
+        if (pageSize < 1 || pageSize > 200 || isNaN(pageSize)) throw new ValidationError('pageSize must be between 1 and 200.');
+        const result = await docActs.listGlobal(
+          { tenantId, userId }, canViewAll ? undefined : userId, filter, page, pageSize,
+        );
+        res.json({ success: true, ...result });
+      } catch (err) { next(err); }
+    }
+  );
+
+  /** POST /api/v1/documentation/cases/:caseId/activities */
+  router.post('/cases/:caseId/activities', authMiddleware, permissionMiddleware('doc:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const { type, subject, scheduledAt, metadata } = req.body as {
+          type: DocActivityType; subject: string; scheduledAt?: string; metadata?: Record<string, unknown>;
+        };
+        const activity = await docActs.create(
+          { tenantId, userId }, canViewAll ? undefined : userId, req.params.caseId,
+          { type, subject, scheduledAt, metadata },
+        );
+        res.status(201).json({ success: true, data: activity });
+      } catch (err) { next(err); }
+    }
+  );
+
+  /** PATCH /api/v1/documentation/activities/:id — update follow-up date and/or notes in place */
+  router.patch('/activities/:id', authMiddleware, permissionMiddleware('doc:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const { scheduledAt, notes } = req.body as { scheduledAt?: string; notes?: string };
+        const updated = await docActs.update(
+          { tenantId, userId }, canViewAll ? undefined : userId, req.params.id, { scheduledAt, notes },
+        );
+        res.json({ success: true, data: updated });
+      } catch (err) { next(err); }
+    }
+  );
+
+  /** PATCH /api/v1/documentation/activities/:id/complete */
+  router.patch('/activities/:id/complete', authMiddleware, permissionMiddleware('doc:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const { nextFollowUp, note } = req.body as { nextFollowUp?: string; note?: string };
+        const completed = await docActs.complete(
+          { tenantId, userId }, canViewAll ? undefined : userId, req.params.id, { nextFollowUp, note },
+        );
+        res.json({ success: true, data: completed });
+      } catch (err) { next(err); }
+    }
+  );
+
+  /** POST /api/v1/documentation/activities/bulk-complete — complete many visible PENDING activities */
+  router.post('/activities/bulk-complete', authMiddleware, permissionMiddleware('doc:edit'),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const { tenantId, userId } = (req as AuthenticatedRequest).user;
+        const canViewAll = !!(req as AuthenticatedRequest).user.permissions['doc:case:view-all'];
+        const { ids } = req.body as { ids?: string[] };
+        const result = await docActs.bulkComplete({ tenantId, userId }, canViewAll ? undefined : userId, ids ?? []);
+        res.json({ success: true, ...result });
       } catch (err) { next(err); }
     }
   );

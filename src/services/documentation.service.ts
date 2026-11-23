@@ -783,6 +783,11 @@ export class DocumentationService {
           where:   { isTriggered: false },
           orderBy: { reminderDate: 'asc' },
         },
+        docActivities: {
+          where:   { deletedAt: null },
+          orderBy: { createdAt: 'desc' },
+          take:    100,
+        },
         overrides: {
           orderBy: { allowedAt: 'desc' },
         },
