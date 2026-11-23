@@ -109,6 +109,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>(res => server.close(() => res()));
   for (const tenantId of trackedTenants) {
+    await prisma.auditLog.deleteMany({ where: { tenantId } }).catch(() => {});
     await prisma.notification.deleteMany({ where: { tenantId } }).catch(() => {});
     await prisma.session.deleteMany({ where: { tenantId } }).catch(() => {});
     await prisma.userRole.deleteMany({ where: { user: { tenantId } } }).catch(() => {});
@@ -269,6 +270,57 @@ describe('RED TEAM — admin password reset', () => {
 
     const res = await put(`/${a.user.id}/password`, mgr.token, { newPassword: 'Golf4#Delegated!' });
     expect(res.status).toBe(403);
+    expect(await hashOf(a.user.id)).toBe(before);
+  }, 30_000);
+
+  it("revokes the target's PENDING reset tokens (an emailed link must not overwrite the new password)", async () => {
+    const t = await mkTenant('rt-token');
+    const admin = await mkUser(t, ['user:password:reset']);
+    const a = await mkUser(t, ['lead:view']);
+
+    // A forgot-password token already sitting in the target's inbox.
+    const pending = await prisma.passwordResetToken.create({
+      data: {
+        userId: a.user.id,
+        tokenHash: crypto.createHash('sha256').update(uid()).digest('hex'),
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+        status: 'PENDING',
+      },
+    });
+
+    expect((await put(`/${a.user.id}/password`, admin.token, { newPassword: 'Hotel6#Tokens!!' })).status).toBe(200);
+
+    const after = await prisma.passwordResetToken.findUnique({ where: { id: pending.id }, select: { status: true } });
+    expect(after!.status).toBe('REVOKED');
+  }, 30_000);
+
+  it('writes an audit row naming actor and target, never the password', async () => {
+    const t = await mkTenant('rt-audit');
+    const admin = await mkUser(t, ['user:password:reset']);
+    const a = await mkUser(t, ['lead:view']);
+    const PW = 'India3#Audited!!';
+
+    expect((await put(`/${a.user.id}/password`, admin.token, { newPassword: PW })).status).toBe(200);
+
+    const row = await prisma.auditLog.findFirst({
+      where: { tenantId: t, eventType: 'ADMIN_PASSWORD_RESET', entityId: a.user.id },
+      select: { actorUserId: true, entityType: true, operation: true, payload: true },
+    });
+    expect(row).not.toBeNull();
+    expect(row!.actorUserId).toBe(admin.user.id);
+    expect(row!.entityType).toBe('User');
+    expect(JSON.stringify(row!.payload)).not.toContain(PW);
+  }, 30_000);
+
+  it('soft-deleted target is 404 and writes nothing', async () => {
+    const t = await mkTenant('rt-softdel');
+    const admin = await mkUser(t, ['user:password:reset']);
+    const a = await mkUser(t, ['lead:view']);
+    await prisma.user.update({ where: { id: a.user.id }, data: { deletedAt: new Date() } });
+    const before = await hashOf(a.user.id);
+
+    const res = await put(`/${a.user.id}/password`, admin.token, { newPassword: 'Juliet8#Deleted!' });
+    expect(res.status).toBe(404);
     expect(await hashOf(a.user.id)).toBe(before);
   }, 30_000);
 });

@@ -190,7 +190,22 @@ export class UserService {
     const hashed = await bcrypt.hash(newPassword, 12);
 
     const sessionsRevoked = await this.prisma.$transaction(async (tx) => {
-      await tx.user.update({ where: { id: targetUserId }, data: { password: hashed } });
+      // Tenant-scoped write (defence in depth) — also fails closed if the target was
+      // soft-deleted between the lookup above and this write.
+      const updated = await tx.user.updateMany({
+        where: { id: targetUserId, tenantId, deletedAt: { equals: null } },
+        data: { password: hashed },
+      });
+      if (updated.count !== 1) throw new ResourceNotFoundError();
+
+      // A PENDING forgot-password token still sitting in the target's inbox would let
+      // its holder overwrite the password we just set — precisely the attacker an admin
+      // reset exists to lock out. Mirrors the invalidation in auth.router.ts.
+      await tx.passwordResetToken.updateMany({
+        where: { userId: targetUserId, status: 'PENDING' },
+        data: { status: 'REVOKED', revokedAt: new Date() },
+      });
+
       const revoked = await tx.session.updateMany({
         where: {
           userId: targetUserId,
