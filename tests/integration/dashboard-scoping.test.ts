@@ -186,4 +186,44 @@ describe('GET /documentation/dashboard — scoping', () => {
     expect(execR.status).toBe(200);
     expect(execR.body.data.totalCases).toBe(2); // only the 2 assigned to exec
   });
+
+  it('document/event stats are scoped to the same case visibility as the case counts', async () => {
+    const tenantId = uid();
+    tenantIds.push(tenantId);
+    await prisma.tenant.create({ data: { id: tenantId, name: `DST4-${tenantId.slice(0, 8)}` } });
+
+    const admin = await mkActor(tenantId, ['doc:view', 'doc:case:view-all']);
+    const exec  = await mkActor(tenantId, ['doc:view']);
+    const other = await mkActor(tenantId, ['doc:view']);
+    await permSvc.invalidatePermissionCache(tenantId);
+
+    const mine   = await mkCase(tenantId, { assignedTo: exec.id });
+    const viaOwn = await mkCase(tenantId, { ownerId: exec.id });
+    const theirs = await mkCase(tenantId, { assignedTo: other.id });
+    const gone   = await mkCase(tenantId, { assignedTo: other.id });
+    await prisma.docCase.update({ where: { id: gone }, data: { deletedAt: new Date() } });
+
+    const seed = async (caseId: string) => {
+      for (const status of ['UNDER_VERIFICATION', 'EXPIRED', 'REJECTED'] as const) {
+        await prisma.docCaseDocument.create({ data: { tenantId, caseId, name: status, status } });
+      }
+      await prisma.docCaseEvent.create({ data: { tenantId, caseId, eventType: 'CASE_CREATED' } });
+    };
+    for (const c of [mine, viaOwn, theirs, gone]) await seed(c);
+
+    // Restricted exec: only the 2 cases in their union scope (assignedTo + lead.ownerId).
+    const execR = await req('GET', '/api/v1/documentation/dashboard', { token: exec.token });
+    expect(execR.status).toBe(200);
+    expect(execR.body.data.pendingVerification).toBe(2);
+    expect(execR.body.data.overdueDocCount).toBe(2);
+    expect(execR.body.data.rejectedDocs).toBe(2);
+    expect(execR.body.data.todayActivity).toBe(2);
+
+    // Full-queue admin: tenant-wide over non-deleted cases (soft-deleted case excluded).
+    const adminR = await req('GET', '/api/v1/documentation/dashboard', { token: admin.token });
+    expect(adminR.body.data.pendingVerification).toBe(3);
+    expect(adminR.body.data.overdueDocCount).toBe(3);
+    expect(adminR.body.data.rejectedDocs).toBe(3);
+    expect(adminR.body.data.todayActivity).toBe(3);
+  });
 });

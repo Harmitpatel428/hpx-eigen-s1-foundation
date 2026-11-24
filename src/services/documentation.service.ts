@@ -16,6 +16,7 @@ import { normalizeDedupeKey } from './case-type.service';
 import { AuditService } from './audit.service';
 import { PortalService } from './portal.service';
 import { logger } from '../utils/logger';
+import { docCaseVisibilityWhere } from '../utils/doc-case-visibility.helper';
 import {
   ValidationError,
   ResourceNotFoundError,
@@ -861,7 +862,11 @@ export class DocumentationService {
       }
     }
 
-    return { ...rest, documents: shapedDocuments, policyAssignments: shapedAssignments };
+    // Count of files the download-all ZIP would pack (same predicate as listCaseDocumentsForDownload): all non-deleted uploaded Documents, incl. inactive versions. Drives the Download-All button's enabled state so a 409 is never reachable from the UI.
+    const downloadableFileCount = await this.prisma.document.count({
+      where: { caseId, tenantId: ctx.tenantId, deletedAt: null },
+    });
+    return { ...rest, documents: shapedDocuments, policyAssignments: shapedAssignments, downloadableFileCount };
   }
 
   // ─── Multi-policy assignment ─────────────────────────────────────────────────
@@ -1343,15 +1348,10 @@ export class DocumentationService {
 
   async getDashboardKPIs(ctx: TenantContext, opts: { restrictToUserId?: string } = {}) {
     // Same union scope as listCases: callers without doc:case:view-all see only their own cases.
-    const userScope: Prisma.DocCaseWhereInput = opts.restrictToUserId
-      ? { OR: [
-          { assignedTo: opts.restrictToUserId },
-          { processAssignedTo: opts.restrictToUserId },
-          { lead: { ownerId: opts.restrictToUserId } },
-        ] }
-      : {};
-
+    const userScope = docCaseVisibilityWhere(opts.restrictToUserId);
     const base: Prisma.DocCaseWhereInput = { tenantId: ctx.tenantId, deletedAt: null, ...userScope };
+    // Child-table stats filter through the case relation with the SAME predicate the case counts use.
+    const caseScope: Prisma.DocCaseWhereInput = { deletedAt: null, ...userScope };
 
     const [
       totalCases,
@@ -1369,20 +1369,20 @@ export class DocumentationService {
       this.prisma.docCase.count({ where: { ...base, status: 'PENDING_PROCESS_REVIEW' } }),
       this.prisma.docCase.count({ where: { ...base, status: 'RETURNED_TO_DOCUMENTATION' } }),
       this.prisma.docCase.count({ where: { ...base, status: 'TRANSFERRED_TO_PROCESS' } }),
-      this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'UNDER_VERIFICATION' } }),
-      this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'EXPIRED' } }),
+      this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'UNDER_VERIFICATION', case: caseScope } }),
+      this.prisma.docCaseDocument.count({ where: { tenantId: ctx.tenantId, deletedAt: null, status: 'EXPIRED', case: caseScope } }),
     ]);
 
     // Today's activity
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayEvents = await this.prisma.docCaseEvent.count({
-      where: { tenantId: ctx.tenantId, createdAt: { gte: today } },
+      where: { tenantId: ctx.tenantId, createdAt: { gte: today }, case: caseScope },
     });
 
     // Rejected documents (active cases)
     const rejectedDocs = await this.prisma.docCaseDocument.count({
-      where: { tenantId: ctx.tenantId, deletedAt: null, status: 'REJECTED' },
+      where: { tenantId: ctx.tenantId, deletedAt: null, status: 'REJECTED', case: caseScope },
     });
 
     return {
