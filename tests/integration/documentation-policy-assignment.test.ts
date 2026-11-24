@@ -385,3 +385,15 @@ describe('RBAC / tenant / engine gates', () => {
     expect((await assign(c.id, { policies: [{ caseTypeId: uid() }] })).status).toBe(404);
   });
 });
+
+describe('Manager override audit', () => {
+  it('writes an audit entry carrying the actor and the (trimmed-source) reason; empty reason rejected', async () => {
+    const c = await makeCase(tenantId, mgr.id);
+    await expect(docService.managerOverride({ tenantId, userId: mgr.id }, c.id, { reason: '   ' })).rejects.toThrow();
+    await docService.managerOverride({ tenantId, userId: mgr.id }, c.id, { reason: 'Client docs verified offline' });
+    const audits = await prisma.auditLog.findMany({ where: { tenantId, eventType: 'DOC_MANAGER_OVERRIDE', entityId: c.id } });
+    expect(audits).toHaveLength(1);
+    expect(audits[0].actorUserId).toBe(mgr.id);
+    expect((audits[0].payload as any).reason).toBe('Client docs verified offline');
+  });
+});
