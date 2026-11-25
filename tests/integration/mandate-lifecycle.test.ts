@@ -319,8 +319,21 @@ describe('POST /cases/:caseId/mandate/send', () => {
     expect(r.body.data.mandateRequestId).toBeTruthy();
   });
 
+  it('2b. send mandate for DOCUMENTATION_READY case → 201 (Ready is still in-dept, open for mandates)', async () => {
+    const c = await createCase({ status: DocCaseStatus.DOCUMENTATION_READY });
+    const r = await sendMandate(c.id, adminToken);
+    expect(r.status).toBe(201);
+    expect(r.body.data.mandateRequestId).toBeTruthy();
+  });
+
   it('3. send mandate for CLOSED case → 422', async () => {
     const c = await createCase({ status: DocCaseStatus.CLOSED });
+    const r = await sendMandate(c.id, adminToken);
+    expect(r.status).toBe(422);
+  });
+
+  it('3b. send mandate for CLOSED_NO_DOCS case → 422 (terminal stays blocked)', async () => {
+    const c = await createCase({ status: DocCaseStatus.CLOSED_NO_DOCS });
     const r = await sendMandate(c.id, adminToken);
     expect(r.status).toBe(422);
   });

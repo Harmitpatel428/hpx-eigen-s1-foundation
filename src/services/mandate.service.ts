@@ -42,9 +42,14 @@ import {
 } from '../domain/mandate';
 import type { TenantContext } from './documentation.service';
 
+// Statuses where a NEW mandate request may be SENT. Mirrors the frontend
+// MandateSection `caseOpen` set (hpx-eigen-frontend/src/components/mandate/MandateSection.tsx)
+// — keep the two in sync. (Firm/client UPLOADS use the broader assertCaseAcceptsUploads,
+// which already allows any non-terminal case.)
 const OPEN_CASE_STATUSES: DocCaseStatus[] = [
   DocCaseStatus.INCOMING,
   DocCaseStatus.ACTIVE,
+  DocCaseStatus.DOCUMENTATION_READY,
 ];
 
 export class MandateService {
