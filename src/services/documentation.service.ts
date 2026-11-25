@@ -658,10 +658,15 @@ export class DocumentationService {
     const assignees = assigneeIds.length
       ? await this.prisma.user.findMany({
           where: { id: { in: assigneeIds }, tenantId: ctx.tenantId },
-          select: { id: true, firstName: true, lastName: true },
+          select: { id: true, firstName: true, lastName: true, email: true },
         })
       : [];
-    const userMap = new Map(assignees.map(u => [u.id, u]));
+    // emailHandle = email local part only: a fallback identifier for nameless assignees that never
+    // leaks the full address to the broader doc:view audience. The full email stays in this service.
+    const userMap = new Map(assignees.map(u => [u.id, {
+      id: u.id, firstName: u.firstName, lastName: u.lastName,
+      emailHandle: u.email ? u.email.split('@')[0] : null,
+    }]));
 
     let fallbackCount = 0;
     const data = rows.map(({ mandateRequests, ...c }) => {

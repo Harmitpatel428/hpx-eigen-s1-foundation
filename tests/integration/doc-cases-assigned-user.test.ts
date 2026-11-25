@@ -131,6 +131,7 @@ describe('GET /documentation/cases — assignedUser (owner, with legacy assigned
     const suspended = await mkUser(tenantId, ['doc:view']);
     const foreign = await mkUser(otherTenant, ['doc:view']);
     const other = await mkUser(tenantId, ['doc:view']);
+    const nameless = await mkUser(tenantId, ['doc:view']); // left nameless: firstName/lastName stay null
     await prisma.user.update({ where: { id: active.user.id }, data: { firstName: 'Ada', lastName: 'Active' } });
     await prisma.user.update({ where: { id: suspended.user.id }, data: { firstName: 'Sam', lastName: 'Suspended', status: UserStatus.SUSPENDED } });
     await prisma.user.update({ where: { id: other.user.id }, data: { firstName: 'Otto', lastName: 'Other' } });
@@ -150,16 +151,21 @@ describe('GET /documentation/cases — assignedUser (owner, with legacy assigned
     const cModernAssignedTo = await mkCase(tenantId, viewer.user.id, { assignedTo: active.user.id, createdAt: new Date('2099-01-01T00:00:00Z') });
     // LEGACY case (created before the release): assignedTo IS the historical assignee → show it.
     const cLegacyAssignedTo = await mkCase(tenantId, viewer.user.id, { assignedTo: active.user.id, createdAt: new Date('2000-01-01T00:00:00Z') });
+    // (d) owner resolves but has no name → assignedUser carries the email local-part handle, never "—".
+    const cNamelessOwner = await mkCase(tenantId, viewer.user.id, { ownerId: nameless.user.id });
 
     const res = await get('/cases', viewer.token);
     expect(res.status).toBe(200);
     const row = (id: string) => res.body.data.find((c: any) => c.id === id);
-    expect(row(cAssigned).assignedUser).toEqual({ id: active.user.id, firstName: 'Ada', lastName: 'Active' });
+    // Named assignees: assert identity fields; an additive emailHandle is present but not pinned here.
+    expect(row(cAssigned).assignedUser).toMatchObject({ id: active.user.id, firstName: 'Ada', lastName: 'Active' });
     expect(row(cNone).assignedUser).toBeNull();
     expect(row(cForeign).assignedUser).toBeNull();
-    expect(row(cSuspended).assignedUser).toEqual({ id: suspended.user.id, firstName: 'Sam', lastName: 'Suspended' });
-    expect(row(cOwnerNotAssignedTo).assignedUser).toEqual({ id: other.user.id, firstName: 'Otto', lastName: 'Other' });
+    expect(row(cSuspended).assignedUser).toMatchObject({ id: suspended.user.id, firstName: 'Sam', lastName: 'Suspended' });
+    expect(row(cOwnerNotAssignedTo).assignedUser).toMatchObject({ id: other.user.id, firstName: 'Otto', lastName: 'Other' });
     expect(row(cModernAssignedTo).assignedUser).toBeNull();
-    expect(row(cLegacyAssignedTo).assignedUser).toEqual({ id: active.user.id, firstName: 'Ada', lastName: 'Active' });
+    expect(row(cLegacyAssignedTo).assignedUser).toMatchObject({ id: active.user.id, firstName: 'Ada', lastName: 'Active' });
+    // (d) nameless owner → exact shape incl. the local-part handle, and NO full-email key present (toEqual pins it).
+    expect(row(cNamelessOwner).assignedUser).toEqual({ id: nameless.user.id, firstName: null, lastName: null, emailHandle: nameless.user.email.split('@')[0] });
   });
 });

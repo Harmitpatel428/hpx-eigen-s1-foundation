@@ -34,4 +34,10 @@ describe('resolveDocAssignee', () => {
     expect(resolveDocAssignee(null, null, LEGACY, userMap, RELEASE)).toBeNull();
     expect(resolveDocAssignee(undefined, undefined, MODERN, userMap, RELEASE)).toBeNull();
   });
+
+  it('resolved-but-nameless owner → returns the user object unchanged (handle fallback is the UI\'s job)', () => {
+    const nameless = { id: 'nameless', firstName: null, lastName: null, emailHandle: 'u-xyz' };
+    const m = new Map([['nameless', nameless]]);
+    expect(resolveDocAssignee('nameless', null, LEGACY, m, RELEASE)).toBe(nameless);
+  });
 });
