@@ -17,6 +17,7 @@ import { AuditService } from './audit.service';
 import { PortalService } from './portal.service';
 import { logger } from '../utils/logger';
 import { docCaseVisibilityWhere } from '../utils/doc-case-visibility.helper';
+import { resolveDocAssignee } from '../utils/doc-assignee.helper';
 import {
   ValidationError,
   ResourceNotFoundError,
@@ -646,24 +647,37 @@ export class DocumentationService {
     ]);
 
     // Flatten the single latest mandate request into a scalar status for list rows.
-    // The Documentation "Assign" action writes lead.ownerId (same field Sales owns), NOT DocCase.assignedTo
-    // (that is set only at case creation / handoff-accept). So the assigned user shown here is the lead OWNER —
-    // resolved exactly like Sales. No User relation on ownerId → scalar map. No status filter (Sales parity).
+    // Assigned-user precedence (see resolveDocAssignee): the "Assign" action writes lead.ownerId
+    // (same field Sales owns) and always wins; historical cases were assigned only via
+    // DocCase.assignedTo (creation / handoff-accept) with no owner, so fall back to that instead of
+    // rendering "—". Same tenant-scoped lookup → no cross-tenant leak; new assignments never shadowed.
     // User bypasses the tenant-scoping middleware, so tenantId here is load-bearing.
-    const ownerIds = [...new Set(rows.map(r => r.lead?.ownerId).filter((id): id is string => !!id))];
-    const owners = ownerIds.length
+    const assigneeIds = [...new Set(
+      rows.flatMap(r => [r.lead?.ownerId, r.assignedTo]).filter((id): id is string => !!id),
+    )];
+    const assignees = assigneeIds.length
       ? await this.prisma.user.findMany({
-          where: { id: { in: ownerIds }, tenantId: ctx.tenantId },
+          where: { id: { in: assigneeIds }, tenantId: ctx.tenantId },
           select: { id: true, firstName: true, lastName: true },
         })
       : [];
-    const ownerMap = new Map(owners.map(u => [u.id, u]));
+    const userMap = new Map(assignees.map(u => [u.id, u]));
 
-    const data = rows.map(({ mandateRequests, ...c }) => ({
-      ...c,
-      latestMandateStatus: mandateRequests[0]?.status ?? null,
-      assignedUser: c.lead?.ownerId ? (ownerMap.get(c.lead.ownerId) ?? null) : null,
-    }));
+    let fallbackCount = 0;
+    const data = rows.map(({ mandateRequests, ...c }) => {
+      const assignedUser = resolveDocAssignee(c.lead?.ownerId, c.assignedTo, c.createdAt, userMap);
+      if (assignedUser && !c.lead?.ownerId) fallbackCount++;
+      return {
+        ...c,
+        latestMandateStatus: mandateRequests[0]?.status ?? null,
+        assignedUser,
+      };
+    });
+    // Observability: signal when historical cases are resolved via the assignedTo fallback
+    // (aggregated per request to avoid per-row log spam on this hot list endpoint).
+    if (fallbackCount > 0) {
+      logger.debug({ tenantId: ctx.tenantId, fallbackCount }, 'doc-case list: assignee resolved via DocCase.assignedTo fallback');
+    }
 
     return { data, total, page, pageSize };
   }

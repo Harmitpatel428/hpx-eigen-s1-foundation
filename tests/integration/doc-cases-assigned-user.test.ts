@@ -1,7 +1,8 @@
 /**
  * GET /api/v1/documentation/cases — assignedUser resolution (HTTP integration, real Postgres).
- * The Documentation "Assign" action writes lead.ownerId (same field Sales owns), NOT DocCase.assignedTo.
- * So assignedUser is resolved from lead.ownerId, mirroring Sales: tenant-scoped, no status filter.
+ * The "Assign" action writes lead.ownerId; assignedUser resolves from it first. For cases created
+ * before the Assigned-column release (2026-11-19) it falls back to the legacy DocCase.assignedTo so
+ * historical assignments still show; modern assignedTo-only cases stay unassigned. Tenant-scoped.
  */
 
 import 'dotenv/config';
@@ -104,20 +105,20 @@ async function mkUser(tenantId: string, slugs: string[]) {
   return { user, token: await makeSession(user.id, tenantId) };
 }
 
-async function mkCase(tenantId: string, createdBy: string, o: { ownerId?: string; assignedTo?: string; processAssignedTo?: string } = {}) {
+async function mkCase(tenantId: string, createdBy: string, o: { ownerId?: string; assignedTo?: string; processAssignedTo?: string; createdAt?: Date } = {}) {
   const lead = await prisma.lead.create({
     data: { tenantId, firstName: 'L', lastName: uid().slice(0, 6), ownerId: o.ownerId ?? null },
   });
   const c = await prisma.docCase.create({
-    data: { tenantId, leadId: lead.id, createdBy, assignedTo: o.assignedTo ?? null, processAssignedTo: o.processAssignedTo ?? null },
+    data: { tenantId, leadId: lead.id, createdBy, assignedTo: o.assignedTo ?? null, processAssignedTo: o.processAssignedTo ?? null, ...(o.createdAt ? { createdAt: o.createdAt } : {}) },
     select: { id: true },
   });
   return c.id;
 }
 
 
-describe('GET /documentation/cases — assignedUser (resolved from lead.ownerId)', () => {
-  it('resolves assigned / unassigned / foreign-tenant / suspended owners, and ignores DocCase.assignedTo', async () => {
+describe('GET /documentation/cases — assignedUser (owner, with legacy assignedTo fallback)', () => {
+  it('resolves owner; legacy assignedTo fallback shows; modern assignedTo-only stays unassigned', async () => {
     const tenantId = uid();
     trackedTenants.push(tenantId);
     await prisma.tenant.create({ data: { id: tenantId, name: `docassign-${tenantId.slice(0, 8)}` } });
@@ -142,11 +143,13 @@ describe('GET /documentation/cases — assignedUser (resolved from lead.ownerId)
     const cForeign = await mkCase(tenantId, viewer.user.id, { ownerId: foreign.user.id });
     // suspended/restricted owner still resolves by name (Sales parity).
     const cSuspended = await mkCase(tenantId, viewer.user.id, { ownerId: suspended.user.id });
-    // REGRESSION: the row must reflect the OWNER (Otto), never DocCase.assignedTo (Ada). This is the bug
-    // that shipped — the column read assignedTo, which the Assign action never writes.
+    // Precedence: the owner (Otto) always wins over DocCase.assignedTo (Ada), never shadowed.
     const cOwnerNotAssignedTo = await mkCase(tenantId, viewer.user.id, { ownerId: other.user.id, assignedTo: active.user.id });
-    // A case with ONLY assignedTo set (no owner) must show as unassigned — assignedTo is not the source.
-    const cAssignedToOnly = await mkCase(tenantId, viewer.user.id, { assignedTo: active.user.id });
+    // MODERN case (created after the Assigned-column release): assignedTo-only is a transient
+    // handoff, not an assignment — must stay unassigned (preserves the 8dab098 invariant).
+    const cModernAssignedTo = await mkCase(tenantId, viewer.user.id, { assignedTo: active.user.id, createdAt: new Date('2099-01-01T00:00:00Z') });
+    // LEGACY case (created before the release): assignedTo IS the historical assignee → show it.
+    const cLegacyAssignedTo = await mkCase(tenantId, viewer.user.id, { assignedTo: active.user.id, createdAt: new Date('2000-01-01T00:00:00Z') });
 
     const res = await get('/cases', viewer.token);
     expect(res.status).toBe(200);
@@ -156,6 +159,7 @@ describe('GET /documentation/cases — assignedUser (resolved from lead.ownerId)
     expect(row(cForeign).assignedUser).toBeNull();
     expect(row(cSuspended).assignedUser).toEqual({ id: suspended.user.id, firstName: 'Sam', lastName: 'Suspended' });
     expect(row(cOwnerNotAssignedTo).assignedUser).toEqual({ id: other.user.id, firstName: 'Otto', lastName: 'Other' });
-    expect(row(cAssignedToOnly).assignedUser).toBeNull();
+    expect(row(cModernAssignedTo).assignedUser).toBeNull();
+    expect(row(cLegacyAssignedTo).assignedUser).toEqual({ id: active.user.id, firstName: 'Ada', lastName: 'Active' });
   });
 });
