@@ -50,6 +50,16 @@ export function createDocumentationRouter(prisma: PrismaClient): Router {
   const docFiles = new DocumentService(prisma);
   const docActs  = new DocActivitiesService(prisma);
 
+  // Every :id / :caseId path param on this router is a UUID. Reject a malformed one with a 400
+  // before it reaches Prisma (which would otherwise throw → 500). One place, covers all routes.
+  const uuidParam = (label: string) =>
+    (_req: Request, _res: Response, next: NextFunction, value: string): void => {
+      if (!UUID_RE.test(value)) { next(new ValidationError(`Invalid ${label}.`)); return; }
+      next();
+    };
+  router.param('id', uuidParam('id'));
+  router.param('caseId', uuidParam('caseId'));
+
   // ─── PRESETS ───────────────────────────────────────────────────────────────
 
   /** GET /api/v1/documentation/presets */
