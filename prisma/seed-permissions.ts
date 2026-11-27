@@ -171,6 +171,7 @@ const PRESET_ROLES: Record<string, string[]> = {
   'Process Manager': [
     'process:view', 'process:accept', 'process:return',
     'process:case:view-all', 'process:assign',
+    'user:view', // read the tenant user list to populate the assignee picker (mirrors Sales Manager)
   ],
   'Process Executive': [
     'process:view', 'process:accept', 'process:return',
