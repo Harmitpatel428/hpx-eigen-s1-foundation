@@ -122,6 +122,9 @@ const PERMISSIONS = [
   { slug: 'process:view',   module: 'Process', description: 'View the Process incoming queue' },
   { slug: 'process:accept', module: 'Process', description: 'Accept a case handed to the Process department' },
   { slug: 'process:return', module: 'Process', description: 'Return a case to Documentation from the Process queue' },
+  // Process department Phase 0 (seeded via migration <TS>_process_rbac_phase0)
+  { slug: 'process:case:view-all', module: 'Process', description: 'View the full Process case queue; without it a process:view user sees only cases where processAssignedTo = self' },
+  { slug: 'process:assign',        module: 'Process', description: 'Assign a Process case to a Process Executive (writes processAssignedTo)' },
   // Case Operations Engine (Phase 1 (A) — new)
   { slug: 'case-engine:manage',      module: 'Case Engine', description: 'Enable or disable the Case Operations Engine for the tenant' },
   { slug: 'case-field:view',         module: 'Case Engine', description: 'View custom case field definitions' },
@@ -159,7 +162,17 @@ const PRESET_ROLES: Record<string, string[]> = {
   ],
   // Process department — exactly the three Doc→Process queue permissions (ratified 2026-10-19).
   // No doc:* / handoff:* here; Process neither documents nor runs the Sales handoff.
+  // Kept intact for back-compat; Phase 0 splits it into Manager/Executive below.
   'Process': [
+    'process:view', 'process:accept', 'process:return',
+  ],
+  // Process Phase 0 role split. Executive works only their own assigned cases;
+  // Manager sees the full queue (view-all) and can assign cases to Executives.
+  'Process Manager': [
+    'process:view', 'process:accept', 'process:return',
+    'process:case:view-all', 'process:assign',
+  ],
+  'Process Executive': [
     'process:view', 'process:accept', 'process:return',
   ],
   // Documentation department — the role that can assign Documentation-department leads
