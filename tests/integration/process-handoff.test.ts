@@ -70,7 +70,9 @@ async function seed() {
     ],
   });
 
-  const slugs = ['doc:transfer', 'process:view', 'process:accept', 'process:return'];
+  // Admin is the full-visibility actor: include process:case:view-all so the queue is
+  // unscoped (Phase 0 self-scopes non-view-all callers to processAssignedTo = self).
+  const slugs = ['doc:transfer', 'process:view', 'process:accept', 'process:return', 'process:case:view-all'];
   const perms = await prisma.permission.findMany({ where: { slug: { in: slugs } } });
   if (perms.length !== slugs.length) {
     throw new Error(`process/doc permissions not seeded (found ${perms.length}/${slugs.length}) — run prisma migrate deploy`);
@@ -162,7 +164,9 @@ describe('Doc → Process handover', () => {
     expect(accepted?.status).toBe(DocCaseStatus.TRANSFERRED_TO_PROCESS);
     expect(accepted?.processAssignedTo).toBe(ADMIN_ID);
 
-    const queue2 = await get('/api/v1/process/cases', adminToken);
+    // /cases now spans all three Process statuses, so assert against the incoming filter:
+    // the accepted case left PENDING_PROCESS_REVIEW (it is now TRANSFERRED_TO_PROCESS).
+    const queue2 = await get('/api/v1/process/cases?status=PENDING_PROCESS_REVIEW', adminToken);
     expect(queue2.body.data.cases.some((x: any) => x.id === c.id)).toBe(false);
     // The accepted case moved out of incoming and into processing.
     expect(queue2.body.data.counts.processing).toBeGreaterThanOrEqual(1);
