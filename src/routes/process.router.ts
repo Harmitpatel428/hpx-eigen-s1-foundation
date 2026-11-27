@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { PrismaClient, ProcessReturnReason, DocCaseStatus } from '@prisma/client';
+import { PrismaClient, ProcessReturnReason } from '@prisma/client';
 import { authMiddleware, permissionMiddleware, AuthenticatedRequest } from '../middleware/auth.middleware';
-import { ProcessHandoffService } from '../services/process-handoff.service';
+import { ProcessHandoffService, ProcessBucket } from '../services/process-handoff.service';
 import { ValidationError } from '../types/exceptions';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -29,12 +29,15 @@ export function createProcessRouter(prisma: PrismaClient): Router {
       try {
         const { tenantId, userId } = (req as AuthenticatedRequest).user;
         const q = req.query as Record<string, string | undefined>;
-        if (q.status && !(q.status in DocCaseStatus)) throw new ValidationError('Invalid status filter.');
+        const BUCKETS: ProcessBucket[] = ['incoming', 'processing', 'returned', 'overdue'];
+        if (q.status && !BUCKETS.includes(q.status as ProcessBucket)) {
+          throw new ValidationError('Invalid status filter.');
+        }
         const toInt = (v: string | undefined) => (v !== undefined ? Number.parseInt(v, 10) : undefined);
         const data = await svc.listCasesForProcess(
           { tenantId, userId },
           {
-            status: q.status as DocCaseStatus | undefined,
+            bucket: q.status as ProcessBucket | undefined,
             search: q.search?.trim() || undefined,
             page: toInt(q.page),
             pageSize: toInt(q.pageSize),

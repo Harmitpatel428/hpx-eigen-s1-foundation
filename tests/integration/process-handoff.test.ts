@@ -151,12 +151,14 @@ describe('Doc → Process handover', () => {
     expect(row.processHandoffByName.length).toBeGreaterThan(0);
 
     // Header counts travel in the process:view response and equal direct status counts.
-    const [inc, proc, ret] = await Promise.all([
+    const PROCESS_QUEUE = ['PENDING_PROCESS_REVIEW', 'TRANSFERRED_TO_PROCESS', 'RETURNED_TO_DOCUMENTATION'] as const;
+    const [inc, proc, ret, ovd] = await Promise.all([
       prisma.docCase.count({ where: { tenantId: TENANT_ID, deletedAt: null, status: 'PENDING_PROCESS_REVIEW' } }),
       prisma.docCase.count({ where: { tenantId: TENANT_ID, deletedAt: null, status: 'TRANSFERRED_TO_PROCESS' } }),
       prisma.docCase.count({ where: { tenantId: TENANT_ID, deletedAt: null, status: 'RETURNED_TO_DOCUMENTATION' } }),
+      prisma.docCase.count({ where: { tenantId: TENANT_ID, deletedAt: null, status: { in: PROCESS_QUEUE as unknown as string[] }, dueDate: { lt: new Date() } } }),
     ]);
-    expect(queue.body.data.counts).toEqual({ incoming: inc, processing: proc, returned: ret });
+    expect(queue.body.data.counts).toEqual({ incoming: inc, processing: proc, returned: ret, overdue: ovd });
     expect(inc).toBeGreaterThanOrEqual(1);
 
     expect((await accept(c.id)).status).toBe(200);
@@ -166,7 +168,7 @@ describe('Doc → Process handover', () => {
 
     // /cases now spans all three Process statuses, so assert against the incoming filter:
     // the accepted case left PENDING_PROCESS_REVIEW (it is now TRANSFERRED_TO_PROCESS).
-    const queue2 = await get('/api/v1/process/cases?status=PENDING_PROCESS_REVIEW', adminToken);
+    const queue2 = await get('/api/v1/process/cases?status=incoming', adminToken);
     expect(queue2.body.data.cases.some((x: any) => x.id === c.id)).toBe(false);
     // The accepted case moved out of incoming and into processing.
     expect(queue2.body.data.counts.processing).toBeGreaterThanOrEqual(1);

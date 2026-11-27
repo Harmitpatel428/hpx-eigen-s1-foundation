@@ -32,6 +32,13 @@ const TERMINAL_STATUSES: DocCaseStatus[] = [
 ];
 
 /**
+ * Process queue filter vocabulary shared with the frontend pills. These map 1:1 to the
+ * KPI counts — NOT raw DocCaseStatus values. `overdue` is a cross-cutting predicate over
+ * the (non-terminal) Process queue, not a status.
+ */
+export type ProcessBucket = 'incoming' | 'processing' | 'returned' | 'overdue';
+
+/**
  * Process-side of the Documentation → Process handover (Option B).
  * Mirrors handoff.service.ts (the Sales→Doc inbound side). Pure state rules live
  * in src/domain/process-handoff.ts; this service owns the DB writes, audit and
@@ -137,7 +144,7 @@ export class ProcessHandoffService {
   async listCasesForProcess(
     ctx: TenantContext,
     opts: {
-      status?: DocCaseStatus;
+      bucket?: ProcessBucket;
       search?: string;
       page?: number;
       pageSize?: number;
@@ -163,26 +170,31 @@ export class ProcessHandoffService {
         ],
       });
     }
-    const statusWhere: Prisma.DocCaseWhereInput = opts.status
-      ? { status: opts.status }
-      : { status: { in: PROCESS_QUEUE_STATUSES } };
+    // Pills speak the 4-token bucket vocabulary (see ProcessBucket); each maps to a
+    // predicate ANDed with the Process status set. `overdue` filters by due date across
+    // the (non-terminal) queue rather than a single status.
+    const bucketWhere: Prisma.DocCaseWhereInput =
+      opts.bucket === 'incoming'   ? { status: DocCaseStatus.PENDING_PROCESS_REVIEW } :
+      opts.bucket === 'processing' ? { status: DocCaseStatus.TRANSFERRED_TO_PROCESS } :
+      opts.bucket === 'returned'   ? { status: DocCaseStatus.RETURNED_TO_DOCUMENTATION } :
+      opts.bucket === 'overdue'    ? { dueDate: { lt: new Date() } } :
+      {};
+    const statusSet: Prisma.DocCaseWhereInput = { status: { in: PROCESS_QUEUE_STATUSES } };
 
     const where: Prisma.DocCaseWhereInput = {
       tenantId: ctx.tenantId,
       deletedAt: null,
-      ...statusWhere,
-      AND: conjuncts,
+      AND: [...conjuncts, statusSet, bucketWhere],
     };
-    // Counts use the SAME tenant+scope, but always over the full Process status set
-    // (independent of the `status` filter) so the header totals don't collapse to one.
+    // Counts use the SAME tenant+scope over the full Process status set (independent of
+    // the bucket filter) so the header totals never collapse to the active pill.
     const countsWhere: Prisma.DocCaseWhereInput = {
       tenantId: ctx.tenantId,
       deletedAt: null,
-      status: { in: PROCESS_QUEUE_STATUSES },
-      AND: conjuncts,
+      AND: [...conjuncts, statusSet],
     };
 
-    const [cases, grouped] = await Promise.all([
+    const [cases, grouped, overdueCount] = await Promise.all([
       this.prisma.docCase.findMany({
         where,
         include: {
@@ -199,6 +211,7 @@ export class ProcessHandoffService {
         where: countsWhere,
         _count: { _all: true },
       }),
+      this.prisma.docCase.count({ where: { ...countsWhere, dueDate: { lt: new Date() } } }),
     ]);
 
     // DocCase has no user relation for processHandoffBy — resolve display names with a
@@ -224,6 +237,7 @@ export class ProcessHandoffService {
         incoming: n(DocCaseStatus.PENDING_PROCESS_REVIEW),
         processing: n(DocCaseStatus.TRANSFERRED_TO_PROCESS),
         returned: n(DocCaseStatus.RETURNED_TO_DOCUMENTATION),
+        overdue: overdueCount,
       },
       page,
       pageSize,
